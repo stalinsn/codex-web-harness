@@ -1,0 +1,16 @@
+{
+  "name": "codex-web-harness-ui",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup-auth": "node ../scripts/setup-auth.mjs",
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
+  "dependencies": {
+    "nodemailer": "10.0.14"
+  }
+}

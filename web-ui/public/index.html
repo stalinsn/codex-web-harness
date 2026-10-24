@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#191a1d" />
+    <meta name="description" content="Converse com o Codex na sua VPS." />
+    <title>Codex Web Harness</title>
+    <link rel="manifest" href="/codex-agent/manifest.webmanifest" />
+    <link rel="stylesheet" href="/codex-agent/styles.css" />
+  </head>
+  <body>
+    <main class="auth-screen" id="authScreen" aria-labelledby="authTitle">
+      <div class="auth-layout">
+        <section class="auth-promo" aria-label="Codex Web Harness">
+          <a class="auth-brand" href="/codex-agent/" aria-label="Codex Web Harness">
+            <span class="brand-mark large"><svg viewBox="0 0 32 32"><path d="M16 3.2 27.1 9.6v12.8L16 28.8 4.9 22.4V9.6L16 3.2Z"/><path d="m11.2 11.2 4.8 4.8-4.8 4.8M20.8 11.2 16 16l4.8 4.8"/></svg></span>
+            <span><strong>Codex</strong><small>Web Harness</small></span>
+          </a>
+          <div class="auth-promo-copy">
+            <span class="auth-kicker"><span class="auth-kicker-dot"></span> AMBIENTE PRIVADO</span>
+            <h1>Seu espaço de trabalho.<br /><span>Sempre por perto.</span></h1>
+            <p>Converse com o Codex na sua VPS, acompanhe as tarefas e retome seus chats de qualquer dispositivo.</p>
+            <div class="auth-promo-points">
+              <div><span class="auth-point-icon">✦</span><span><strong>Uma experiência de chat</strong><small>Histórico, anexos e ferramentas em um só lugar.</small></span></div>
+              <div><span class="auth-point-icon">⌁</span><span><strong>Sessão persistente</strong><small>Seu trabalho continua na VPS mesmo ao fechar o navegador.</small></span></div>
+            </div>
+          </div>
+          <div class="auth-promo-glow" aria-hidden="true"></div>
+          <div class="auth-promo-footer"><span class="auth-live-dot"></span> Codex executando na sua VPS</div>
+        </section>
+
+        <section class="auth-panel" aria-label="Acesso ao Codex">
+          <div class="auth-card">
+            <div class="auth-card-symbol"><span class="icon" data-icon="lock"></span></div>
+            <div class="auth-card-heading">
+              <p class="auth-card-eyebrow" id="authEyebrow">ACESSO PRIVADO</p>
+              <h2 id="authTitle">Entrar no Codex</h2>
+              <p id="authSubtitle">Use sua senha e confirme o acesso com um código enviado ao seu e-mail.</p>
+            </div>
+
+            <form id="authForm" novalidate>
+              <div class="auth-step" id="credentialsStep">
+                <label class="auth-field" for="authPassword">Senha
+                  <span class="auth-input-wrap"><span class="icon" data-icon="lock"></span><input id="authPassword" name="password" type="password" autocomplete="current-password" required /><button class="password-toggle" id="togglePassword" type="button" aria-label="Mostrar senha">Mostrar</button></span>
+                </label>
+                <button class="auth-primary" id="loginSubmit" type="submit">Continuar <span class="icon" data-icon="arrow"></span></button>
+                <button class="auth-link" id="forgotPassword" type="button">Esqueci minha senha</button>
+              </div>
+
+              <div class="auth-step" id="setupStep" hidden>
+                <p class="auth-step-copy">No primeiro acesso, vamos confirmar sua identidade por e-mail para você criar sua senha pessoal.</p>
+                <button class="auth-primary" id="startSetup" type="button">Enviar código de ativação <span class="icon" data-icon="arrow"></span></button>
+              </div>
+
+              <div class="auth-step" id="codeStep" hidden>
+                <div class="auth-email-chip"><span class="auth-mail-icon">@</span><span>Código enviado para <strong id="authEmailHint">seu e-mail</strong></span></div>
+                <label class="auth-field" for="authCode">Código de 6 dígitos
+                  <span class="auth-input-wrap auth-code-wrap"><span class="icon" data-icon="key"></span><input id="authCode" name="one-time-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" /></span>
+                </label>
+                <div class="auth-new-password" id="newPasswordStep" hidden>
+                  <label class="auth-field" for="newPassword">Nova senha
+                    <span class="auth-input-wrap"><span class="icon" data-icon="lock"></span><input id="newPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128" /></span>
+                    <small class="auth-field-hint">Pelo menos 12 caracteres.</small>
+                  </label>
+                  <label class="auth-field" for="confirmPassword">Confirme a senha
+                    <span class="auth-input-wrap"><span class="icon" data-icon="lock"></span><input id="confirmPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128" /></span>
+                  </label>
+                </div>
+                <button class="auth-primary" id="verifyCode" type="button">Confirmar código <span class="icon" data-icon="arrow"></span></button>
+                <div class="auth-code-actions"><button class="auth-link" id="resendCode" type="button" disabled>Reenviar código</button><button class="auth-link" id="backToAuth" type="button">Voltar</button></div>
+              </div>
+            </form>
+            <div class="auth-notice" id="authNotice" role="status" aria-live="polite" hidden></div>
+            <p class="auth-card-note">Acesso privado para uma conta. Não há cadastro público.</p>
+          </div>
+          <div class="auth-panel-footer"><span class="icon" data-icon="shield"></span><span>Conexão protegida por HTTPS e código de uso único</span></div>
+        </section>
+      </div>
+    </main>
+
+    <div class="app-shell" id="appShell" hidden>
+      <div class="mobile-scrim" id="mobileScrim"></div>
+      <aside class="sidebar" id="sidebar" aria-label="Navegação e histórico">
+        <div class="sidebar-top">
+          <a class="brand" href="/codex-agent/" aria-label="Codex Web Harness início">
+            <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M16 3.2 27.1 9.6v12.8L16 28.8 4.9 22.4V9.6L16 3.2Z"/><path d="m11.2 11.2 4.8 4.8-4.8 4.8M20.8 11.2 16 16l4.8 4.8"/></svg></span>
+            <span><strong>Codex</strong><small>Web Harness</small></span>
+          </a>
+          <button class="icon-button sidebar-close" id="closeSidebar" aria-label="Fechar menu"></button>
+        </div>
+
+        <button class="new-chat-button" id="newChat">
+          <span class="icon" data-icon="plus"></span><span>Novo chat</span><kbd>⌘ K</kbd>
+        </button>
+        <label class="search-box">
+          <span class="icon" data-icon="search"></span>
+          <input id="threadSearch" type="search" placeholder="Buscar conversas" autocomplete="off" />
+          <kbd>⌘ F</kbd>
+        </label>
+
+        <div class="sidebar-section-heading project-heading">
+          <span>Projetos</span>
+          <button class="text-icon-button" id="addProject" type="button" aria-label="Criar projeto" title="Criar projeto"><span class="icon" data-icon="plus"></span></button>
+        </div>
+        <nav class="project-list" id="projectList" aria-label="Projetos"></nav>
+        <div class="sidebar-section-heading thread-heading"><span id="threadListTitle">Recentes</span><div class="thread-heading-actions"><button class="text-icon-button archive-toggle" id="toggleArchived" type="button">Arquivadas</button><button class="text-icon-button" id="refreshThreads" aria-label="Atualizar histórico" title="Atualizar histórico"><span class="icon" data-icon="refresh"></span></button></div></div>
+        <nav class="thread-list" id="threadList" aria-label="Conversas recentes"></nav>
+        <div class="sidebar-bottom">
+          <div class="connection-status"><span class="status-dot" id="connectionDot"></span><span id="connectionText">Conectando ao Codex…</span></div>
+          <div class="user-row"><span class="avatar">C</span><span><strong>Conta Codex</strong><small>Acesso privado</small></span><button class="logout-button" id="logoutButton" type="button">Sair</button></div>
+        </div>
+      </aside>
+
+      <dialog class="path-dialog project-dialog" id="projectDialog" aria-labelledby="projectDialogTitle">
+        <form id="projectForm" novalidate>
+          <div class="dialog-heading">
+            <div><p class="eyebrow">ORGANIZAÇÃO</p><h2 id="projectDialogTitle">Novo projeto</h2></div>
+          </div>
+          <p>Converse com o Codex dentro da pasta do projeto. As conversas iniciadas nessa pasta aparecem agrupadas aqui.</p>
+          <label class="project-field">Nome do projeto
+            <input id="projectName" name="name" type="text" maxlength="80" autocomplete="off" required placeholder="Ex.: Live Rooms" />
+          </label>
+          <label class="project-field">Pasta na VPS
+            <input id="projectPath" name="cwd" type="text" autocomplete="off" required placeholder="/home/codex/projects/my-project" />
+          </label>
+          <div class="dialog-actions">
+            <button class="secondary-button" id="cancelProject" type="button">Cancelar</button>
+            <button class="primary-button" type="submit">Criar projeto</button>
+          </div>
+        </form>
+      </dialog>
+
+      <main class="main-column">
+        <header class="topbar">
+          <div class="topbar-left">
+            <button class="icon-button menu-button" id="openSidebar" aria-label="Abrir menu"></button>
+            <div class="breadcrumb"><span>Codex</span><span class="breadcrumb-separator">/</span><strong id="activeTitle">Novo chat</strong></div>
+          </div>
+          <div class="topbar-actions">
+            <button class="icon-button usage-toggle" id="toggleUsage" aria-label="Abrir painel de uso" title="Uso e ambiente"><span class="icon" data-icon="chart"></span></button>
+          </div>
+        </header>
+
+        <section class="conversation" id="conversation" aria-live="polite">
+          <div class="welcome" id="welcome">
+            <div class="welcome-mark"><span class="brand-mark large"><svg viewBox="0 0 32 32"><path d="M16 3.2 27.1 9.6v12.8L16 28.8 4.9 22.4V9.6L16 3.2Z"/><path d="m11.2 11.2 4.8 4.8-4.8 4.8M20.8 11.2 16 16l4.8 4.8"/></svg></span></div>
+            <p class="eyebrow">SEU AMBIENTE</p>
+            <h1>O que vamos resolver?</h1>
+            <p class="welcome-copy">Converse com o Codex. Ele está executando na VPS e pode trabalhar nos diretórios que você escolher.</p>
+            <div class="prompt-suggestions">
+              <button class="suggestion" data-prompt="Faça um panorama do uso atual de CPU, memória e armazenamento desta VPS."><span class="suggestion-icon" data-icon="chart"></span><span><strong>Verificar recursos</strong><small>CPU, memória e disco</small></span><span class="icon suggestion-arrow" data-icon="arrow"></span></button>
+              <button class="suggestion" data-prompt="Faça um diagnóstico somente de leitura dos serviços Docker em execução e mostre seus nomes, imagens, portas e saúde."><span class="suggestion-icon" data-icon="containers"></span><span><strong>Mapear containers</strong><small>Serviços e estado atual</small></span><span class="icon suggestion-arrow" data-icon="arrow"></span></button>
+            </div>
+          </div>
+          <div class="messages" id="messages"></div>
+          <div class="running-indicator hidden" id="runningIndicator"><span class="loader"></span><span id="runningText">Codex está trabalhando…</span><button class="stop-turn" id="stopTurn">Parar</button></div>
+        </section>
+
+        <section class="composer-wrap" aria-label="Escrever mensagem">
+          <div class="attachment-strip hidden" id="attachmentStrip"></div>
+          <section class="queue-panel hidden" id="queuePanel" aria-label="Mensagens na fila">
+            <div class="queue-header"><strong>Na fila</strong><span id="queueCount"></span></div>
+            <div class="queue-list" id="queueList"></div>
+          </section>
+          <form class="composer" id="composerForm">
+            <div class="composer-topline"><span id="composerHint">Enter envia · Shift+Enter cria uma linha</span><button type="button" class="steer-button hidden" id="steerButton"><span class="icon" data-icon="bolt"></span>Orientar agora</button></div>
+            <textarea id="messageInput" rows="1" placeholder="Pergunte qualquer coisa" aria-label="Mensagem para o Codex"></textarea>
+            <div class="composer-bottom">
+              <div class="composer-tools">
+                <button type="button" class="composer-icon" id="attachImage" title="Anexar imagem" aria-label="Anexar imagem"><span class="icon" data-icon="paperclip"></span></button>
+                <input type="file" id="imageInput" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
+                <button type="button" class="cwd-control" id="cwdControl"><span class="icon" data-icon="folder"></span><span id="cwdLabel">/home/codex</span><span class="icon" data-icon="chevron"></span></button>
+              </div>
+              <div class="composer-controls">
+                <label class="select-wrap model-wrap" title="Modelo"><span class="sr-only">Modelo</span><select id="modelSelect" aria-label="Modelo"><option>Carregando modelos…</option></select><span class="icon" data-icon="chevron"></span></label>
+                <label class="select-wrap effort-wrap" title="Nível de raciocínio"><span class="effort-glyph">◉</span><select id="effortSelect" aria-label="Nível de raciocínio"></select><span class="icon" data-icon="chevron"></span></label>
+                <button class="send-button" id="sendButton" type="submit" aria-label="Enviar mensagem"><span class="icon" data-icon="arrow-up"></span></button>
+              </div>
+            </div>
+          </form>
+          <p class="composer-footnote">Durante a execução, novas mensagens entram na fila e usam a configuração atual da conversa. Modelo e raciocínio por item na fila não estão disponíveis. Use Orientar agora para redirecionar a execução em curso.</p>
+        </section>
+      </main>
+
+      <aside class="inspector" id="inspector" aria-label="Uso e ambiente">
+        <div class="inspector-header"><div><p class="eyebrow">VISÃO GERAL</p><h2>Uso e ambiente</h2></div><button class="icon-button inspector-close" id="closeUsage" aria-label="Fechar painel"><span class="icon" data-icon="close"></span></button></div>
+        <section class="inspector-card">
+          <div class="card-title-row"><div><span class="card-icon" data-icon="gauge"></span><strong>Uso do Codex</strong></div><button class="refresh-mini" id="refreshUsage" aria-label="Atualizar uso"><span class="icon" data-icon="refresh"></span></button></div>
+          <div id="rateLimitMeters" class="rate-limit-meters"><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+          <div class="token-summary" id="tokenSummary"></div>
+          <p class="muted-note">Os limites são os informados pela conta ChatGPT. Tokens são atividade, não valor em dólares.</p>
+        </section>
+        <section class="inspector-card environment-card">
+          <div class="card-title-row"><div><span class="card-icon" data-icon="server"></span><strong>Ambiente ativo</strong></div></div>
+              <div class="environment-row"><span class="environment-indicator"></span><span><strong>VPS</strong><small>Codex CLI · sessão persistente</small></span></div>
+          <div class="environment-path"><span class="icon" data-icon="folder"></span><code id="inspectorCwd">/home/codex</code></div>
+          <div class="access-pill"><span class="icon" data-icon="shield"></span>Acesso completo autorizado</div>
+        </section>
+        <section class="inspector-card thread-card hidden" id="threadInfo">
+          <div class="card-title-row"><div><span class="card-icon" data-icon="chat"></span><strong>Conversa</strong></div></div>
+          <div class="thread-meta" id="threadMeta"></div>
+        </section>
+        <div class="inspector-bottom"><span class="secure-icon" data-icon="lock"></span><span>Conexão HTTPS · sessão privada</span></div>
+      </aside>
+    </div>
+
+    <dialog class="path-dialog" id="pathDialog">
+      <form method="dialog" id="pathForm">
+        <div class="dialog-heading"><div><p class="eyebrow">DIRETÓRIO DE TRABALHO</p><h2>Onde o Codex deve trabalhar?</h2></div><button class="icon-button" value="cancel" aria-label="Fechar"><span class="icon" data-icon="close"></span></button></div>
+        <p>Informe uma pasta existente na VPS. O Codex terá o contexto desse diretório; com acesso completo, ele pode agir fora dele quando necessário.</p>
+        <label class="path-input-wrap"><span class="icon" data-icon="folder"></span><input id="cwdInput" type="text" value="/home/codex" spellcheck="false" autocomplete="off" /></label>
+        <div class="quick-paths"><button type="button" data-path="/home/codex">Home</button><button type="button" data-path="/opt">/opt</button><button type="button" data-path="/var/www">/var/www</button></div>
+        <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancelar</button><button class="primary-button" id="saveCwd" value="default">Usar pasta</button></div>
+      </form>
+    </dialog>
+
+    <div class="toast-container" id="toastContainer" aria-live="polite"></div>
+    <script src="/codex-agent/app.js" defer></script>
+  </body>
+</html>

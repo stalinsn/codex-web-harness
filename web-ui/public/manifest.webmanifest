@@ -1,0 +1,14 @@
+{
+  "name": "Codex Web Harness",
+  "short_name": "Codex Harness",
+  "description": "Converse com o Codex executando na sua VPS.",
+  "start_url": "/codex-agent/",
+  "scope": "/codex-agent/",
+  "display": "standalone",
+  "background_color": "#191a1d",
+  "theme_color": "#191a1d",
+  "lang": "pt-BR",
+  "icons": [
+    { "src": "/codex-agent/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

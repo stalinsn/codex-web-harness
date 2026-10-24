@@ -1,0 +1,25 @@
+[Unit]
+Description=Codex Web Harness
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=codex
+Group=codex
+WorkingDirectory=/opt/codex-web-harness/web-ui
+Environment=HOME=/home/codex
+Environment=CODEX_HOME=/home/codex/.codex
+Environment=CODEX_DEFAULT_CWD=/home/codex/work
+Environment=CODEX_UI_HOST=127.0.0.1
+Environment=CODEX_UI_PORT=7682
+Environment=CODEX_BIN=/home/codex/.local/bin/codex
+ExecStart=/usr/bin/node /opt/codex-web-harness/web-ui/server.mjs
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
