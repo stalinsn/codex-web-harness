@@ -1769,6 +1769,8 @@ async function restoreQueueItem(item, threadId) {
     restoredFiles.push({ name, mime: blob.type || 'image/png', dataUrl, data: String(dataUrl).split(',')[1] });
   }
 
+  if (state.selectedThreadId !== threadId) throw new Error('Volte a esta conversa para devolver a mensagem da fila. Ela continua guardada.');
+  if (state.files.length + restoredFiles.length > 4) throw new Error('Remova uma imagem do rascunho antes de devolver esta mensagem.');
   if (!item.localOnly) await api(`/api/threads/${encodeURIComponent(threadId)}/queue/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
   const textarea = $('#messageInput');
   const draft = textarea.value.trimEnd();
