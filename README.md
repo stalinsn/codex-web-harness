@@ -5,9 +5,10 @@ Uma interface web responsiva para conversar com o Codex CLI instalado na sua pr�
 ## Recursos
 
 - Conversas persistentes, projetos e histórico local do Codex.
-- Envio de imagens, seleção de modelo e nível de raciocínio.
+- Envio de imagens por arquivo ou colagem de prints, seleção de modelo e nível de raciocínio.
 - Fila de mensagens durante uma execução e ação para orientar a execução atual.
 - Resposta final visível, com reasoning resumido e atividades intermediárias agrupados e recolhidos por turno.
+- Rolagem na borda da conversa, preservando a posição durante a leitura e com atalho para voltar à última mensagem.
 - Ações para renomear, fixar, arquivar, restaurar e excluir conversas.
 - Login privado com senha e código de uso único enviado por e-mail. Não há cadastro público.
 - Visão de uso e limites informados pela conta Codex.

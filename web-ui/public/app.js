@@ -8,6 +8,7 @@ const state = {
   queueItems: [], turnStartedAtMs: null, turnTimer: null,
   streamedMessages: new Map(), activityCards: new Map(), commandGroups: new Map(), reasoningGroups: new Map(), turnIntermediates: new Map(), userMessageIds: new Set(), pendingApprovals: new Map(),
   activeTurnId: null,
+  followLatest: true,
 };
 const authUi = { mode: 'login', step: 'credentials', challengeId: '', setupRequired: false, countdown: null, started: false };
 
@@ -697,9 +698,16 @@ function makeMessage(role, { text = '', images = [], time = null, id = '', turnI
   return row;
 }
 
-function scrollConversation() {
+function scrollConversation(force = false) {
   const area = $('#messages');
-  requestAnimationFrame(() => { area.scrollTop = area.scrollHeight; });
+  if (force) {
+    state.followLatest = true;
+    $('#scrollToLatest')?.classList.add('hidden');
+  }
+  if (!state.followLatest) return;
+  requestAnimationFrame(() => {
+    if (state.followLatest) area.scrollTop = area.scrollHeight;
+  });
 }
 
 function imageFromContent(content, threadId) {
@@ -911,6 +919,10 @@ function renderActivity(item, append = false, turnId = '') {
 }
 
 function renderTurnHistory(turns, threadId) {
+  const sameThread = $('#messages').dataset.threadId === threadId;
+  const previousScrollTop = $('#messages').scrollTop;
+  if (!sameThread) state.followLatest = true;
+  $('#messages').dataset.threadId = threadId;
   state.streamedMessages.clear();
   state.activityCards.clear();
   state.commandGroups.clear();
@@ -962,7 +974,8 @@ function renderTurnHistory(turns, threadId) {
     else if (lastAssistant && durationMs > 0) $('.message-meta', lastAssistant).textContent = `Trabalhou por ${formatDuration(durationMs)}`;
   }
   $('#welcome').classList.toggle('hidden', count > 0);
-  scrollConversation();
+  if (sameThread && !state.followLatest) $('#messages').scrollTop = previousScrollTop;
+  else scrollConversation(true);
 }
 
 function getOrCreateStreamMessage(itemId, turnId = '', phase = '') {
@@ -1264,6 +1277,7 @@ async function openThread(threadId) {
 }
 
 function newChat() {
+  state.followLatest = true;
   state.selectedThreadId = null;
   state.selectedThread = null;
   state.loadingThreadId = null;
@@ -1414,6 +1428,12 @@ function openSidebar() { showInspector(false); $('#sidebar').classList.add('open
 function closeSidebar() { $('#sidebar').classList.remove('open'); if (!$('#inspector').classList.contains('open')) $('#mobileScrim').classList.remove('show'); }
 
 function bindEvents() {
+  $('#messages').addEventListener('scroll', () => {
+    const area = $('#messages');
+    state.followLatest = area.scrollHeight - area.clientHeight - area.scrollTop < 80;
+    $('#scrollToLatest').classList.toggle('hidden', state.followLatest);
+  }, { passive: true });
+  $('#scrollToLatest').addEventListener('click', () => scrollConversation(true));
   $('#newChat').addEventListener('click', newChat);
   $('#logoutButton').addEventListener('click', async () => {
     const button = $('#logoutButton'); button.disabled = true;
@@ -1424,6 +1444,21 @@ function bindEvents() {
   $('#messageInput').addEventListener('input', (event) => { event.target.style.height = 'auto'; event.target.style.height = `${Math.min(event.target.scrollHeight, 180)}px`; updateComposerControls(); });
   $('#messageInput').addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); submitMessage(event); }
+  });
+  $('#messageInput').addEventListener('paste', async (event) => {
+    let files = [...(event.clipboardData?.items || [])]
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile()).filter(Boolean);
+    if (!files.length) files = [...(event.clipboardData?.files || [])].filter((file) => file.type.startsWith('image/'));
+    if (!files.length) return;
+    event.preventDefault();
+    const text = event.clipboardData?.getData('text/plain');
+    if (text) {
+      const input = event.currentTarget;
+      input.setRangeText(text, input.selectionStart, input.selectionEnd, 'end');
+      input.dispatchEvent(new Event('input'));
+    }
+    await addFiles(files);
   });
   $('#steerButton').addEventListener('click', steerMessage);
   $('#modelSelect').addEventListener('change', () => { state.modelId = $('#modelSelect').value; localStorage.setItem('codex-model', state.modelId); updateEfforts(); });

@@ -134,14 +134,19 @@ kbd { margin-left: auto; padding: 2px 5px; color: #898a94; font-size: 10px; bord
 .suggestion small { display: block; margin-top: 4px; color: #8f9099; font-size: 10px; }
 .suggestion-arrow { width: 14px; height: 14px; margin-left: auto; color: #777985; opacity: 0; transition: opacity .15s; }
 .suggestion:hover .suggestion-arrow { opacity: 1; }
-.messages { display: flex; width: min(820px, calc(100% - 44px)); flex: 1; flex-direction: column; gap: 22px; align-self: center; overflow-x: hidden; overflow-y: auto; padding: 27px 2px 22px; scrollbar-width: thin; scrollbar-color: #393a40 transparent; }
+.messages { display: flex; width: 100%; min-height: 0; flex: 1; flex-direction: column; gap: 26px; overflow-x: hidden; overflow-y: auto; padding: 30px max(28px, calc((100% - 820px) / 2)) 32px; scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: #393a40 transparent; }
+.messages > * { flex-shrink: 0; }
+.messages > .message.assistant > .message-avatar, .messages > .message.assistant .assistant-label { display: none; }
+.messages > .message.assistant { gap: 0; }
+.messages > .message.assistant .message-body { max-width: 100%; font-size: 14px; }
+.scroll-to-latest { position: absolute; z-index: 3; right: 22px; bottom: 12px; display: grid; width: 34px; height: 34px; place-items: center; color: #d4d4da; border: 1px solid #45464d; border-radius: 50%; background: #25262a; box-shadow: 0 3px 12px #0005; cursor: pointer; }
 .message { display: flex; min-width: 0; gap: 12px; animation: rise .18s ease-out; }
 @keyframes rise { from { opacity: .25; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 .message.user { justify-content: flex-end; }
 .message-avatar { display: grid; width: 28px; height: 28px; flex: none; place-items: center; color: #d2d7ff; border: 1px solid #424657; border-radius: 9px; background: #292d3d; }
 .message-avatar svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .message-body { min-width: 0; max-width: min(100%, 740px); }
-.message.user .message-body { padding: 12px 15px; color: #f3f3f6; border: 1px solid #343947; border-radius: 15px 15px 4px 15px; background: #303447; }
+.message.user .message-body { max-width: 86%; padding: 12px 16px; color: #f3f3f6; border: 0; border-radius: 18px 18px 5px 18px; background: #234b7d; }
 .message.assistant .message-body { padding-top: 2px; color: #e0e0e5; font-size: 13px; line-height: 1.72; overflow-wrap: anywhere; }
 .message-content { white-space: pre-wrap; }
 .message.assistant .message-content { white-space: normal; }
@@ -179,15 +184,17 @@ kbd { margin-left: auto; padding: 2px 5px; color: #898a94; font-size: 10px; bord
 .command-entry + .command-entry { border-top: 1px solid #303137; }
 .command-name { display: block; max-height: 4.8em; overflow: auto; padding: 7px 8px; color: #d0d4e7; font-family: 'IBM Plex Mono', monospace; font-size: 10px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 6px; background: #17181c; }
 .command-entry .activity-output { max-height: 160px; margin-top: 6px; overflow-wrap: anywhere; }
-.turn-intermediates { padding: 0; overflow: hidden; }
-.turn-intermediates > summary { min-height: 39px; padding: 0 11px; list-style: none; cursor: pointer; }
+.turn-intermediates { min-height: 36px; padding: 0; overflow: visible; border: 0; border-bottom: 1px solid #303135; border-radius: 0; background: transparent; }
+.turn-intermediates > summary { min-height: 35px; justify-content: flex-start; padding: 6px 0 10px; color: #92939b; font-weight: 400; list-style: none; cursor: pointer; }
+.turn-intermediates > summary > .icon, .turn-intermediates-hint { display: none; }
 .turn-intermediates > summary::-webkit-details-marker { display: none; }
 .turn-intermediates[open] > summary { border-bottom: 1px solid #33343a; }
 .turn-intermediates > summary::after { content: '›'; margin-left: 1px; color: #858791; font-size: 18px; font-weight: 400; line-height: 1; transition: transform .15s ease; }
 .turn-intermediates[open] > summary::after { transform: rotate(90deg); }
-.turn-intermediates-title { min-width: 0; flex: 1; color: #d4d4da; }
+.turn-intermediates-title { min-width: 0; flex: 0 1 auto; color: inherit; font-size: 12px; }
 .turn-intermediates-hint { color: #858791; font-size: 10px; font-weight: 400; white-space: nowrap; }
-.turn-intermediate-content { display: grid; gap: 6px; padding: 6px 10px 10px; }
+.turn-intermediate-content { display: grid; gap: 14px; padding: 16px 0; }
+.turn-intermediates:not([open]) > .turn-intermediate-content { display: none; }
 .turn-intermediate-content > .message, .turn-intermediate-content > .activity-card { margin: 0; }
 .reasoning-group { padding: 10px 12px; }
 .reasoning-group-title { min-width: 0; color: #d4d4da; }
@@ -377,15 +384,18 @@ kbd { margin-left: auto; padding: 2px 5px; color: #898a94; font-size: 10px; bord
   .welcome-copy { max-width: 340px; font-size: 12px; }
   .prompt-suggestions { grid-template-columns: 1fr; gap: 8px; margin-top: 21px; }
   .suggestion { padding: 11px; }
-  .messages { width: calc(100% - 22px); gap: 17px; padding: 16px 0 13px; }
+  .messages { width: 100%; gap: 22px; padding: 20px 17px 24px; }
+  .messages > .message.assistant .message-body { font-size: 13px; }
+  .scroll-to-latest { right: 13px; bottom: 10px; }
   .message { gap: 8px; }
   .message-avatar { width: 25px; height: 25px; border-radius: 8px; }
   .message.user .message-body { padding: 10px 12px; border-radius: 13px 13px 4px 13px; }
   .message.assistant .message-body { font-size: 12px; line-height: 1.68; }
   .message-images img { max-width: min(190px, 48vw); max-height: 145px; }
   .activity-card { padding: 9px 10px; }
-  .turn-intermediates > summary { min-height: 42px; gap: 7px; padding: 0 9px; }
-  .turn-intermediates-title { font-size: 10px; line-height: 1.35; overflow-wrap: anywhere; }
+  .turn-intermediates { padding: 0; }
+  .turn-intermediates > summary { min-height: 36px; gap: 7px; padding: 5px 0 9px; }
+  .turn-intermediates-title { font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
   .turn-intermediates-hint { font-size: 9px; }
   .turn-intermediate-content { gap: 5px; padding: 5px 7px 8px; }
   .reasoning-group { padding: 9px 10px; }
