@@ -4,14 +4,18 @@ const state = {
   models: [], threads: [], projects: [], selectedProjectId: localStorage.getItem('codex-project') || '', selectedThreadId: null, selectedThread: null,
   cwd: localStorage.getItem('codex-cwd') || '', defaultCwd: '', projectsRoot: '', activeThreadProjectId: '', archivedView: false, loadingThreadId: null,
   modelId: localStorage.getItem('codex-model') || '', effort: localStorage.getItem('codex-effort') || '',
-  files: [], busy: false, sending: false, account: null, rateLimits: null, usage: null,
-  queueItems: [], turnStartedAtMs: null, turnTimer: null,
+  files: [], busy: false, sending: false, interrupting: false, account: null, rateLimits: null, usage: null,
+  queueItems: [], recoveredQueueItems: [], turnStartedAtMs: null, turnTimer: null,
   streamedMessages: new Map(), activityCards: new Map(), commandGroups: new Map(), reasoningGroups: new Map(), turnIntermediates: new Map(), userMessageIds: new Set(), pendingApprovals: new Map(),
   activeTurnId: null,
   followLatest: true,
   threadListRequest: 0,
 };
 const authUi = { mode: 'login', step: 'credentials', challengeId: '', setupRequired: false, countdown: null, started: false };
+let vpsHealthRequest = null;
+let voiceRecognition = null;
+let voiceBaseText = '';
+let voiceSubmitAfterStop = false;
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -41,6 +45,8 @@ const icons = {
   pin: '<path d="m15 3 6 6-4 1-4 5-4-4 5-4zM9 15l-6 6m4-12 8 8"/>',
   rename: '<path d="m15 4 5 5M4 20l5-1L20 8a2 2 0 0 0-5-5L4 14z"/>',
   trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
+  microphone: '<rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V22m-4 0h8"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
 };
 
 function installIcons() {
@@ -66,7 +72,33 @@ function markdown(text) {
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    .replace(/~~([^~]+)~~/g, '<del>$1</del>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/\\\|/g, '|');
+  const tableCells = (line) => {
+    let value = line.trim();
+    if (value.startsWith('|')) value = value.slice(1);
+    if (value.endsWith('|') && !value.endsWith('\\|')) value = value.slice(0, -1);
+    const cells = [];
+    let cell = '';
+    let inCode = false;
+    for (let index = 0; index < value.length; index += 1) {
+      const char = value[index];
+      if (char === '`' && value[index - 1] !== '\\') inCode = !inCode;
+      if (char === '|' && !inCode && value[index - 1] !== '\\') {
+        cells.push(cell.trim()); cell = '';
+      } else cell += char;
+    }
+    cells.push(cell.trim());
+    return cells;
+  };
+  const tableAlignment = (cell) => {
+    const value = cell.trim();
+    if (!/^:?-{3,}:?$/.test(value)) return null;
+    if (value.startsWith(':') && value.endsWith(':')) return 'center';
+    if (value.endsWith(':')) return 'right';
+    return 'left';
+  };
   const lines = safe.split('\n');
   const output = [];
   let paragraph = [];
@@ -75,19 +107,43 @@ function markdown(text) {
   let quote = [];
   const flushParagraph = () => { if (paragraph.length) { output.push(`<p>${paragraph.map(inline).join('<br>')}</p>`); paragraph = []; } };
   const flushList = () => { if (listItems.length) { output.push(`<${list}>${listItems.map((item) => `<li>${inline(item)}</li>`).join('')}</${list}>`); listItems = []; list = ''; } };
-  const flushQuote = () => { if (quote.length) { output.push(`<blockquote>${quote.map(inline).join('<br>')}</blockquote>`); quote = []; } };
-  for (const line of lines) {
+  const flushQuote = () => { if (quote.length) { output.push(`<blockquote><p>${quote.map(inline).join('<br>')}</p></blockquote>`); quote = []; } };
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const headerCells = tableCells(line);
+    const delimiterCells = lines[index + 1] ? tableCells(lines[index + 1]) : [];
+    const alignments = delimiterCells.map(tableAlignment);
+    const isTable = headerCells.length > 1 && alignments.length === headerCells.length && alignments.every(Boolean);
+    if (isTable) {
+      flushParagraph(); flushList(); flushQuote();
+      const renderCell = (cell, tag, column) => `<${tag}${alignments[column] ? ` style="text-align:${alignments[column]}"` : ''}>${inline(cell)}</${tag}>`;
+      const head = `<thead><tr>${headerCells.map((cell, column) => renderCell(cell, 'th', column)).join('')}</tr></thead>`;
+      const rows = [];
+      index += 2;
+      while (index < lines.length && lines[index].trim() && lines[index].includes('|')) {
+        const cells = tableCells(lines[index]);
+        if (cells.length === 1) break;
+        while (cells.length < headerCells.length) cells.push('');
+        rows.push(`<tr>${cells.slice(0, headerCells.length).map((cell, column) => renderCell(cell, 'td', column)).join('')}</tr>`);
+        index += 1;
+      }
+      output.push(`<div class="table-wrap"><table>${head}<tbody>${rows.join('')}</tbody></table></div>`);
+      index -= 1;
+      continue;
+    }
     const code = line.match(/^\u0000(\d+)\u0000$/);
     const heading = line.match(/^(#{1,3})\s+(.*)$/);
     const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
     const ordered = line.match(/^\s*\d+[.)]\s+(.*)$/);
-    const quoteLine = line.match(/^&gt;\s?(.*)$/);
-    if (!line.trim() || code || heading || bullet || ordered || quoteLine) {
+    const quoteLine = line.match(/^\s*&gt;\s?(.*)$/);
+    const rule = /^\s{0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(line);
+    if (!line.trim() || code || heading || bullet || ordered || quoteLine || rule) {
       flushParagraph();
       if (!bullet && !ordered) flushList();
       if (!quoteLine) flushQuote();
       if (!line.trim()) continue;
       if (code) { output.push(blocks[Number(code[1])] || ''); continue; }
+      if (rule) { output.push('<hr>'); continue; }
       if (heading) { const level = heading[1].length; output.push(`<h${level}>${inline(heading[2])}</h${level}>`); continue; }
       if (bullet || ordered) {
         const type = bullet ? 'ul' : 'ol';
@@ -114,6 +170,23 @@ function formatReset(timestamp) {
   return `reinicia ${new Intl.DateTimeFormat('pt-BR', { weekday: 'short', hour: '2-digit', minute: '2-digit' }).format(date)}`;
 }
 
+function formatCountdown(timestamp) {
+  const remaining = Math.ceil((Number(timestamp) * 1000 - Date.now()) / 1000);
+  if (!Number.isFinite(remaining)) return '';
+  if (remaining <= 0) return 'em breve';
+  if (remaining < 60) return 'em <1 min';
+  if (remaining < 3600) return `em ${Math.ceil(remaining / 60)} min`;
+  const hours = Math.floor(remaining / 3600);
+  const minutes = Math.ceil((remaining % 3600) / 60);
+  if (remaining < 86400) return minutes ? `em ${hours} h ${minutes} min` : `em ${hours} ${hours === 1 ? 'hora' : 'horas'}`;
+  const days = Math.floor(hours / 24);
+  return `em ${days} ${days === 1 ? 'dia' : 'dias'}${hours % 24 ? ` e ${hours % 24} h` : ''}`;
+}
+
+function updateResetCountdowns() {
+  $$('.meter-countdown').forEach((node) => { node.textContent = formatCountdown(node.dataset.resetAt); });
+}
+
 function effortLabel(value) {
   return ({ none: 'Desligado', minimal: 'Mínimo', low: 'Baixo', medium: 'Médio', high: 'Alto', xhigh: 'Extra alto', max: 'Máximo', ultra: 'Ultra' })[value] || value;
 }
@@ -123,7 +196,7 @@ async function api(path, options = {}) {
   if (options.body != null) headers.set('Content-Type', 'application/json');
   const response = await fetch(`${PREFIX}${path}`, { credentials: 'same-origin', cache: 'no-store', ...options, headers });
   const data = response.status === 204 ? {} : await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `Falha na solicitação (${response.status}).`);
+  if (!response.ok) { const error = new Error(data.error || `Falha na solicitação (${response.status}).`); error.data = data; throw error; }
   return data;
 }
 
@@ -283,6 +356,9 @@ function startApplication() {
   $('#appShell').hidden = false;
   if (authUi.started) return;
   authUi.started = true;
+  setInterval(updateResetCountdowns, 60_000);
+  refreshVpsHealth();
+  setInterval(() => { if (!document.hidden) refreshVpsHealth(); }, 60_000);
   bindEvents(); connectEvents(); bootstrap();
 }
 
@@ -322,6 +398,77 @@ function toast(message, kind = '') {
   node.textContent = message;
   $('#toastContainer').append(node);
   setTimeout(() => node.remove(), 4200);
+}
+
+function setVoiceListening(listening) {
+  const button = $('#voiceInput');
+  button.classList.toggle('listening', listening);
+  button.setAttribute('aria-pressed', String(listening));
+  button.title = listening ? 'Parar ditado por voz' : 'Ditar mensagem por voz';
+  button.setAttribute('aria-label', button.title);
+  $('#composerHint').textContent = listening
+    ? 'Ouvindo… toque no microfone para concluir'
+    : (state.busy ? 'Enter adiciona à fila · Shift+Enter cria uma linha' : 'Enter envia · Shift+Enter cria uma linha');
+}
+
+function startVoiceDictation() {
+  if (voiceRecognition) {
+    voiceRecognition.stop();
+    return;
+  }
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    $('#messageInput').focus();
+    toast('Ditado pelo navegador indisponível. No celular, use o microfone do teclado para ditar no campo.');
+    return;
+  }
+
+  const recognition = new SpeechRecognition();
+  voiceRecognition = recognition;
+  const textarea = $('#messageInput');
+  voiceBaseText = textarea.value.trimEnd();
+  let separator = voiceBaseText ? ' ' : '';
+  if (textarea.value && !voiceBaseText) separator = '';
+  recognition.lang = 'pt-BR';
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+  recognition.onstart = () => setVoiceListening(true);
+  recognition.onresult = (event) => {
+    const finalText = [];
+    const interimText = [];
+    for (let index = 0; index < event.results.length; index += 1) {
+      const result = event.results[index];
+      const transcript = result[0]?.transcript || '';
+      (result.isFinal ? finalText : interimText).push(transcript);
+    }
+    const recognized = `${finalText.join('')}${interimText.join('')}`;
+    textarea.value = `${voiceBaseText}${separator}${recognized}`;
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  recognition.onerror = (event) => {
+    const messages = {
+      'not-allowed': 'Permita o acesso ao microfone no navegador para usar o ditado.',
+      'service-not-allowed': 'O serviço de reconhecimento de voz não está disponível neste navegador.',
+      'audio-capture': 'Não encontrei um microfone disponível.',
+      network: 'O serviço de voz do navegador não está acessível.',
+      'language-not-supported': 'O navegador não oferece transcrição em português.',
+    };
+    if (event.error !== 'no-speech' && event.error !== 'aborted') toast(messages[event.error] || 'Não foi possível transcrever a fala.', 'error');
+  };
+  recognition.onend = () => {
+    if (voiceRecognition === recognition) voiceRecognition = null;
+    setVoiceListening(false);
+    if (voiceSubmitAfterStop) { voiceSubmitAfterStop = false; submitMessage(); }
+  };
+  try {
+    recognition.start();
+    toast('A fala será transcrita pelo navegador. Revise o texto antes de enviar.');
+  } catch {
+    voiceRecognition = null;
+    setVoiceListening(false);
+    toast('Não foi possível iniciar o ditado. Tente novamente.', 'error');
+  }
 }
 
 function getSelectedModel() { return state.models.find((model) => model.id === state.modelId) || state.models.find((model) => model.isDefault) || state.models[0] || null; }
@@ -671,16 +818,25 @@ function renderUsage() {
         const label = bucket.limitName || (index === 0 ? 'Codex' : bucket.limitId || 'Outro limite');
         const windowLabel = windowIndex === 0 ? 'janela curta' : 'janela longa';
         const reset = formatReset(window.resetsAt);
-        return `<div class="meter"><div class="meter-heading"><span>${escapeHtml(label)} · ${windowLabel}</span><span>${Math.round(used)}% usado</span></div><div class="meter-track"><div class="meter-fill ${used >= 90 ? 'critical' : used >= 75 ? 'high' : ''}" style="width:${used}%"></div></div><div class="meter-reset">${escapeHtml(reset)}</div></div>`;
+        const resetAt = Number(window.resetsAt);
+        const countdown = Number.isFinite(resetAt) && resetAt > 0 ? `<strong class="meter-countdown" data-reset-at="${Math.floor(resetAt)}">${formatCountdown(resetAt)}</strong>` : '';
+        return `<div class="meter"><div class="meter-heading"><span>${escapeHtml(label)} · ${windowLabel}</span><span>${Math.round(used)}% usado</span></div><div class="meter-track"><div class="meter-fill ${used >= 90 ? 'critical' : used >= 75 ? 'high' : ''}" style="width:${used}%"></div></div><div class="meter-reset-row"><span class="meter-reset">${escapeHtml(reset)}</span>${countdown}</div></div>`;
       }).join('');
     }).join('');
   }
   const summary = state.usage?.summary || {};
   const daily = state.usage?.dailyUsageBuckets;
   const recent = Array.isArray(daily) && daily.length ? daily[daily.length - 1].tokens : null;
-  $('#tokenSummary').innerHTML = `
-    <div class="token-stat"><strong>${formatNumber(summary.lifetimeTokens)}</strong><span>tokens de atividade</span></div>
-    <div class="token-stat"><strong>${formatNumber(recent)}</strong><span>último dia disponível</span></div>`;
+  const metrics = [
+    { label: 'Tokens acumulados', value: summary.lifetimeTokens, format: formatNumber },
+    { label: 'Último dia disponível', value: recent, format: formatNumber },
+    { label: 'Maior uso diário', value: summary.peakDailyTokens, format: formatNumber },
+    { label: 'Sequência atual', value: summary.currentStreakDays, format: (value) => `${formatNumber(value)} ${Number(value) === 1 ? 'dia' : 'dias'}` },
+    { label: 'Maior sequência', value: summary.longestStreakDays, format: (value) => `${formatNumber(value)} ${Number(value) === 1 ? 'dia' : 'dias'}` },
+    { label: 'Turno mais longo', value: summary.longestRunningTurnSec, format: (value) => formatDuration(Number(value) * 1000) },
+  ].filter((metric) => metric.value != null && Number.isFinite(Number(metric.value)));
+  $('#tokenSummary').innerHTML = metrics.map((metric) => `<div class="token-stat"><strong>${escapeHtml(metric.format(metric.value))}</strong><span>${escapeHtml(metric.label)}</span></div>`).join('');
+  updateResetCountdowns();
   const plan = state.account?.planType;
   if (plan && $('#planBadge')) $('#planBadge').textContent = String(plan).replace(/^./, (char) => char.toUpperCase());
 }
@@ -719,6 +875,73 @@ function formatDuration(milliseconds) {
   return seconds ? `${minutes} min ${seconds} s` : `${minutes} min`;
 }
 
+function formatBytes(bytes) {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value < 1024) return `${Math.round(value)} B`;
+  const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+  let scaled = value / 1024;
+  let unit = 0;
+  while (scaled >= 1024 && unit < units.length - 1) { scaled /= 1024; unit += 1; }
+  return `${new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 1 }).format(scaled)} ${units[unit]}`;
+}
+
+function renderVpsHealth(data) {
+  const hostMetrics = $('#vpsHostMetrics');
+  const projectList = $('#vpsProjectList');
+  const storageList = $('#vpsStorageList');
+  if (!data?.host) {
+    hostMetrics.innerHTML = '<p class="vps-health-error">Métricas indisponíveis.</p>';
+    projectList.innerHTML = data?.docker?.error ? `<p class="vps-health-error">${escapeHtml(data.docker.error)}</p>` : '';
+    return;
+  }
+
+  const { host, docker } = data;
+  const memoryPercent = host.memory.totalBytes ? Math.round((host.memory.usedBytes / host.memory.totalBytes) * 100) : 0;
+  const diskPercent = host.disk?.usedPercent ?? 0;
+  const percentClass = (value) => value >= 90 ? 'critical' : value >= 75 ? 'high' : '';
+  hostMetrics.innerHTML = `
+    <div class="vps-metric"><div class="vps-metric-heading"><span>CPU</span><strong>${Number(host.cpu.percent).toFixed(1)}%</strong></div><div class="vps-meter"><i class="${percentClass(host.cpu.percent)}" style="width:${Math.min(100, host.cpu.percent)}%"></i></div><small>${host.cpu.cores} vCPU · carga ${Number(host.load1m).toFixed(2)}</small></div>
+    <div class="vps-metric"><div class="vps-metric-heading"><span>Memória</span><strong>${escapeHtml(formatBytes(host.memory.availableBytes))} livres</strong></div><div class="vps-meter"><i class="${percentClass(memoryPercent)}" style="width:${memoryPercent}%"></i></div><small>${escapeHtml(formatBytes(host.memory.usedBytes))} / ${escapeHtml(formatBytes(host.memory.totalBytes))} · ${memoryPercent}% usado</small></div>
+    <div class="vps-metric"><div class="vps-metric-heading"><span>Disco raiz</span><strong>${escapeHtml(formatBytes(host.disk?.availableBytes))} livres</strong></div><div class="vps-meter"><i class="${percentClass(diskPercent)}" style="width:${diskPercent}%"></i></div><small>${escapeHtml(formatBytes(host.disk?.usedBytes))} / ${escapeHtml(formatBytes(host.disk?.totalBytes))} · ${diskPercent}% usado</small></div>
+    <div class="vps-metric vps-container-count"><div class="vps-metric-heading"><span>Containers</span><strong>${docker.runningCount} ativos</strong></div><small>${docker.stoppedCount} parados · amostra ao vivo</small></div>`;
+
+  if (!docker.available) {
+    projectList.innerHTML = `<p class="vps-health-error">${escapeHtml(docker.error || 'Docker indisponível.')}</p>`;
+  } else {
+    const projects = docker.projects || [];
+    const hostServices = (host.services || []).map((service) => `<div class="vps-project-row host-service-row"><span class="vps-state-dot healthy"></span><span class="vps-project-name"><strong>${escapeHtml(service.name)}</strong><small>${escapeHtml(service.status)} · CPU ${Number(service.cpuPercent).toFixed(1)}%</small></span><span class="vps-project-memory">${escapeHtml(formatBytes(service.memoryBytes))}</span></div>`).join('');
+    const projectRows = projects.map((project) => {
+      const stateClass = project.unhealthy ? 'unhealthy' : project.stopped ? 'partial' : 'healthy';
+      const stateText = project.unhealthy ? 'Com falha' : project.stopped ? `${project.running}/${project.containers} ativos` : 'Em execução';
+      const children = (docker.containers || []).filter((container) => container.project === project.name).map((container) => `<div class="vps-container-row"><span>${escapeHtml(container.name)}</span><span>${container.running ? `${Number(container.cpuPercent).toFixed(1)}% CPU · ${escapeHtml(formatBytes(container.memoryBytes))}` : escapeHtml(container.status)}</span></div>`).join('');
+      return `<details class="vps-project-details"><summary class="vps-project-row"><span class="vps-state-dot ${stateClass}"></span><span class="vps-project-name"><strong>${escapeHtml(project.name)}</strong><small>${project.containers} ${project.containers === 1 ? 'container' : 'containers'} · CPU ${Number(project.cpuPercent).toFixed(1)}% · ${escapeHtml(stateText)}</small></span><span class="vps-project-memory">${escapeHtml(formatBytes(project.memoryBytes))}</span></summary><div class="vps-container-list">${children}</div></details>`;
+    }).join('');
+    const stopped = (docker.containers || []).filter((container) => !container.running);
+    const stoppedDetails = stopped.length ? `<details class="vps-stopped-details"><summary>${stopped.length} ${stopped.length === 1 ? 'container parado' : 'containers parados'}</summary><div>${stopped.map((container) => `<p><strong>${escapeHtml(container.name)}</strong><small>${escapeHtml(container.status)}</small></p>`).join('')}</div></details>` : '';
+    projectList.innerHTML = `<div class="vps-project-heading"><span>INSTÂNCIA</span><span>MEMÓRIA</span></div>${hostServices}${projectRows || '<p class="vps-health-muted">Nenhum container em execução.</p>'}${stoppedDetails}`;
+  }
+
+  const storageLabels = { Images: 'Imagens', Containers: 'Containers', 'Local Volumes': 'Volumes', 'Build Cache': 'Cache de build' };
+  storageList.innerHTML = (data.dockerStorage || []).map((item) => `<div><span>${escapeHtml(storageLabels[item.type] || item.type)}</span><strong>${escapeHtml(item.size)}${item.reclaimable ? `<small>${escapeHtml(item.reclaimable)} reclamável</small>` : ''}</strong></div>`).join('') || '<small>Resumo Docker indisponível.</small>';
+  const checked = new Date(data.checkedAt);
+  $('#vpsHealthUpdated').textContent = `Atualizado ${checked.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} · atualiza a cada minuto`;
+}
+
+async function refreshVpsHealth(force = false) {
+  if (vpsHealthRequest) return vpsHealthRequest;
+  const button = $('#refreshVpsHealth');
+  button?.classList.add('spinning');
+  vpsHealthRequest = api(`/api/server-health${force ? '?refresh=true' : ''}`)
+    .then(renderVpsHealth)
+    .catch((error) => {
+      $('#vpsHostMetrics').innerHTML = '<p class="vps-health-error">Não foi possível ler as métricas.</p>';
+      $('#vpsProjectList').innerHTML = `<p class="vps-health-error">${escapeHtml(error.message)}</p>`;
+      $('#vpsHealthUpdated').textContent = 'Atualização indisponível';
+    })
+    .finally(() => { button?.classList.remove('spinning'); vpsHealthRequest = null; });
+  return vpsHealthRequest;
+}
+
 function updateRunningClock() {
   if (!state.busy) return;
   const elapsed = state.turnStartedAtMs ? Date.now() - state.turnStartedAtMs : 0;
@@ -745,7 +968,14 @@ function updateComposerControls() {
     $('#steerButton').classList.toggle('hidden', !state.busy || !state.selectedThreadId);
     $('#steerButton').disabled = state.sending || !hasDraft;
   }
-  if ($('#composerHint')) $('#composerHint').textContent = state.busy ? 'Enter adiciona à fila · Shift+Enter cria uma linha' : 'Enter envia · Shift+Enter cria uma linha';
+  if ($('#stopTurn')) {
+    $('#stopTurn').classList.toggle('hidden', !state.busy || !state.selectedThreadId);
+    $('#stopTurn').disabled = state.interrupting;
+    $('.stop-button-label', $('#stopTurn')).textContent = state.interrupting ? 'Parando…' : 'Parar';
+  }
+  if ($('#composerHint')) $('#composerHint').textContent = $('#voiceInput')?.classList.contains('listening')
+    ? 'Ouvindo… toque no microfone para concluir'
+    : (state.busy ? 'Enter adiciona à fila · Shift+Enter cria uma linha' : 'Enter envia · Shift+Enter cria uma linha');
 }
 
 function setBusy(busy, detail = '') {
@@ -761,7 +991,11 @@ function setBusy(busy, detail = '') {
     clearInterval(state.turnTimer);
     state.turnTimer = null;
   }
-  for (const group of state.turnIntermediates.values()) updateTurnIntermediateTitle(group);
+  for (const group of state.turnIntermediates.values()) {
+    const isActiveGroup = group.turnId === (state.activeTurnId || 'active');
+    group.card.open = state.busy && isActiveGroup;
+    updateTurnIntermediateTitle(group);
+  }
   for (const group of state.reasoningGroups.values()) updateReasoningGroup(group);
   updateComposerControls();
 }
@@ -830,8 +1064,12 @@ function isFinalAgentMessage(item) {
 }
 
 function updateTurnIntermediateTitle(group) {
-  const elapsed = group.durationMs ?? (state.busy && group.turnId === (state.activeTurnId || 'active') && state.turnStartedAtMs ? Date.now() - state.turnStartedAtMs : 0);
-  group.title.textContent = elapsed > 0 ? `Trabalhou por ${formatDuration(elapsed)}` : 'Atividades intermediárias';
+  const isLive = state.busy && group.turnId === (state.activeTurnId || 'active');
+  const elapsed = group.durationMs ?? (isLive && state.turnStartedAtMs ? Date.now() - state.turnStartedAtMs : 0);
+  group.card.classList.toggle('is-live', isLive);
+  group.title.textContent = isLive
+    ? (elapsed > 0 ? `Em andamento · ${formatDuration(elapsed)}` : 'Progresso em andamento')
+    : (elapsed > 0 ? `Trabalhou por ${formatDuration(elapsed)}` : 'Atividades intermediárias');
   group.hint.textContent = group.card.open ? 'Recolher' : 'Ver detalhes';
 }
 
@@ -843,6 +1081,7 @@ function ensureTurnIntermediates(turnId, append = true) {
 
   const card = document.createElement('details');
   card.className = 'activity-card turn-intermediates';
+  card.open = state.busy && normalizedTurnId === (state.activeTurnId || 'active');
   const heading = document.createElement('summary');
   heading.className = 'activity-heading';
   const icon = document.createElement('span'); icon.className = 'icon';
@@ -907,6 +1146,7 @@ function renderCommandActivity(item, append, turnId) {
   const statuses = [...group.items.values()];
   const running = statuses.some((status) => ['inProgress', 'running', 'pending'].includes(status));
   const failed = statuses.filter((status) => status === 'failed').length;
+  group.card.open = state.busy && turnGroup.turnId === (state.activeTurnId || 'active');
   group.title.textContent = `${running ? 'Comandos em execução' : 'Comandos executados'} · ${statuses.length}${failed ? ` · ${failed} falhou${failed > 1 ? 'ram' : ''}` : ''}`;
   if (append) scrollConversation();
   return entry;
@@ -1284,9 +1524,10 @@ function connectEvents() {
       if (event.data.threadId === state.selectedThreadId) {
         const turnId = event.data.turn?.id;
         const group = turnId ? state.turnIntermediates.get(`${event.data.threadId}:${turnId}`) : null;
-        if (group && Number(event.data.turn?.durationMs) > 0) group.durationMs = Number(event.data.turn.durationMs);
+        if (group) group.durationMs = Number(event.data.turn?.durationMs) || (state.turnStartedAtMs ? Date.now() - state.turnStartedAtMs : 0);
         setBusy(false);
-        if (group) updateTurnIntermediateTitle(group);
+        if (group) { group.card.open = false; updateTurnIntermediateTitle(group); }
+        state.activeTurnId = null;
         loadThreadHistory(state.selectedThreadId).catch(() => {});
       }
       refreshThreadList().catch(() => {});
@@ -1472,25 +1713,82 @@ function renderQueue() {
     const row = document.createElement('div'); row.className = 'queued-item';
     const position = document.createElement('span'); position.className = 'queued-position'; position.textContent = String(index + 1);
     const text = document.createElement('span'); text.className = 'queued-text'; text.textContent = queueItemLabel(item);
-    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'queue-remove'; remove.title = 'Remover mensagem da fila'; remove.setAttribute('aria-label', 'Remover mensagem da fila');
-    remove.innerHTML = '<span class="icon" data-icon="close"></span>';
-    remove.addEventListener('click', async () => {
-      remove.disabled = true;
+    const actions = document.createElement('div'); actions.className = 'queued-actions';
+    const steer = document.createElement('button'); steer.type = 'button'; steer.className = 'queue-action queue-steer'; steer.textContent = 'Orientar agora'; steer.title = 'Tirar da fila e enviar como orientação para a execução atual';
+    steer.hidden = Boolean(item.localOnly);
+    steer.addEventListener('click', async () => {
+      steer.disabled = true;
       try {
-        await api(`/api/threads/${encodeURIComponent(threadId)}/queue/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+        await api(`/api/threads/${encodeURIComponent(threadId)}/queue/${encodeURIComponent(item.id)}`, { method: 'POST' });
+        toast('Mensagem enviada como orientação.');
         await refreshQueue(threadId);
-      } catch (error) { remove.disabled = false; toast(error.message, 'error'); }
+      } catch (error) {
+        toast(error.message, 'error');
+        if (error.data?.recoverableItem) {
+          const recovered = { ...error.data.recoverableItem, id: `local-recovery-${Date.now()}`, localOnly: true, threadId };
+          state.recoveredQueueItems = [...state.recoveredQueueItems.filter((queued) => queued.id !== item.id), recovered];
+          state.queueItems = [recovered, ...state.queueItems.filter((queued) => queued.id !== item.id)];
+          renderQueue();
+        } else refreshQueue(threadId).catch(() => {});
+      }
+      finally { steer.disabled = false; }
     });
-    row.append(position, text, remove); list.append(row);
+    const restore = document.createElement('button'); restore.type = 'button'; restore.className = 'queue-action queue-restore'; restore.textContent = 'Voltar ao rascunho'; restore.title = 'Tirar da fila e devolver ao campo de mensagem';
+    restore.addEventListener('click', async () => {
+      restore.disabled = true;
+      try {
+        await restoreQueueItem(item, threadId);
+        toast('Mensagem devolvida ao rascunho.');
+      } catch (error) { toast(error.message, 'error'); }
+      finally { restore.disabled = false; }
+    });
+    actions.append(steer, restore);
+    row.append(position, text, actions); list.append(row);
   });
   installIcons();
+}
+
+async function restoreQueueItem(item, threadId) {
+  const input = Array.isArray(item.input) ? item.input : [];
+  const text = input.filter((part) => part.type === 'text').map((part) => String(part.text || '')).join('\n');
+  const imageParts = input.filter((part) => part.type === 'image' || part.type === 'localImage');
+  const localImageParts = imageParts.filter((part) => part.type === 'localImage' && typeof part.path === 'string');
+  if (imageParts.length !== localImageParts.length) throw new Error('Não consegui recuperar todas as imagens. A mensagem continua na fila.');
+  if (state.files.length + localImageParts.length > 4) throw new Error('Remova uma imagem do rascunho antes de devolver esta mensagem.');
+
+  const restoredFiles = [];
+  for (const part of localImageParts) {
+    const name = part.path.split(/[\\/]/).pop();
+    if (!/^[a-zA-Z0-9._-]{1,200}$/.test(name)) throw new Error('Uma imagem da fila tem um nome inválido. A mensagem continua na fila.');
+    const response = await fetch(`${PREFIX}/api/images/${encodeURIComponent(threadId)}/${encodeURIComponent(name)}`, { credentials: 'same-origin', cache: 'no-store' });
+    if (!response.ok) throw new Error('Não consegui recuperar uma imagem. A mensagem continua na fila.');
+    const blob = await response.blob();
+    const dataUrl = await new Promise((resolvePromise, rejectPromise) => {
+      const reader = new FileReader(); reader.onload = () => resolvePromise(reader.result); reader.onerror = () => rejectPromise(new Error('Não consegui recuperar uma imagem.')); reader.readAsDataURL(blob);
+    });
+    restoredFiles.push({ name, mime: blob.type || 'image/png', dataUrl, data: String(dataUrl).split(',')[1] });
+  }
+
+  if (!item.localOnly) await api(`/api/threads/${encodeURIComponent(threadId)}/queue/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+  const textarea = $('#messageInput');
+  const draft = textarea.value.trimEnd();
+  textarea.value = `${draft}${draft && text ? '\n\n' : ''}${text}`;
+  state.files.push(...restoredFiles);
+  renderAttachments();
+  textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  textarea.focus();
+  state.queueItems = state.queueItems.filter((queued) => queued.id !== item.id);
+  state.recoveredQueueItems = state.recoveredQueueItems.filter((queued) => queued.id !== item.id);
+  renderQueue();
+  if (!item.localOnly) await refreshQueue(threadId);
 }
 
 async function refreshQueue(threadId = state.selectedThreadId) {
   if (!threadId) { state.queueItems = []; renderQueue(); return; }
   const data = await api(`/api/threads/${encodeURIComponent(threadId)}/queue`);
   if (threadId !== state.selectedThreadId) return;
-  state.queueItems = data.items || [];
+  const recoverable = state.recoveredQueueItems.filter((item) => item.threadId === threadId);
+  state.queueItems = [...(data.items || []), ...recoverable];
   renderQueue();
 }
 
@@ -1512,6 +1810,11 @@ async function addFiles(files) {
 async function submitMessage(event) {
   event?.preventDefault();
   if (state.sending) return;
+  if (voiceRecognition) {
+    voiceSubmitAfterStop = true;
+    voiceRecognition.stop();
+    return;
+  }
   const textarea = $('#messageInput');
   const text = textarea.value.trim();
   if (!text && !state.files.length) return;
@@ -1591,6 +1894,7 @@ function bindEvents() {
     catch (error) { button.disabled = false; toast(error.message, 'error'); }
   });
   $('#composerForm').addEventListener('submit', submitMessage);
+  $('#voiceInput').addEventListener('click', startVoiceDictation);
   $('#messageInput').addEventListener('input', (event) => { event.target.style.height = 'auto'; event.target.style.height = `${Math.min(event.target.scrollHeight, 180)}px`; updateComposerControls(); });
   $('#messageInput').addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); submitMessage(event); }
@@ -1649,6 +1953,7 @@ function bindEvents() {
   window.addEventListener('resize', closeThreadMenus);
   $('#threadSearch').addEventListener('input', debounce(() => refreshThreadList($('#threadSearch').value.trim()).catch((error) => toast(error.message, 'error')), 250));
   $('#refreshUsage').addEventListener('click', () => refreshUsage(true).then(() => toast('Uso atualizado.')).catch((error) => toast(error.message, 'error')));
+  $('#refreshVpsHealth').addEventListener('click', () => refreshVpsHealth(true));
   $('#toggleUsage').addEventListener('click', () => showInspector(true));
   $('#closeUsage').addEventListener('click', () => showInspector(false));
   $('#openSidebar').addEventListener('click', openSidebar);
@@ -1666,7 +1971,16 @@ function bindEvents() {
     else if (!threadId && state.selectedThreadId) newChat();
   });
   $('#mobileScrim').addEventListener('click', () => { closeSidebar(); showInspector(false); });
-  $('#stopTurn').addEventListener('click', async () => { if (state.selectedThreadId) { try { await api(`/api/threads/${encodeURIComponent(state.selectedThreadId)}/interrupt`, { method: 'POST', body: '{}' }); } catch (error) { toast(error.message, 'error'); } } });
+  $('#stopTurn').addEventListener('click', async () => {
+    if (!state.selectedThreadId || state.interrupting) return;
+    const threadId = state.selectedThreadId;
+    state.interrupting = true; updateComposerControls();
+    try {
+      const result = await api(`/api/threads/${encodeURIComponent(threadId)}/interrupt`, { method: 'POST', body: '{}' });
+      if (!result.interrupted) toast('A execução já terminou.');
+    } catch (error) { toast(error.message, 'error'); }
+    finally { state.interrupting = false; updateComposerControls(); }
+  });
   $$('.suggestion').forEach((button) => button.addEventListener('click', () => { $('#messageInput').value = button.dataset.prompt; $('#messageInput').focus(); $('#messageInput').dispatchEvent(new Event('input')); }));
   document.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); newChat(); }

@@ -7,7 +7,7 @@
     <meta name="description" content="Converse com o Codex na sua VPS." />
     <title>Codex Web Harness</title>
     <link rel="manifest" href="/codex-agent/manifest.webmanifest" />
-    <link rel="stylesheet" href="/codex-agent/styles.css" />
+    <link rel="stylesheet" href="/codex-agent/styles.vps-health-20261024.css" />
   </head>
   <body>
     <main class="auth-screen" id="authScreen" aria-labelledby="authTitle">
@@ -164,7 +164,7 @@
           </div>
           <div class="messages" id="messages"></div>
           <button type="button" class="scroll-to-latest hidden" id="scrollToLatest" aria-label="Ir para a última mensagem" title="Ir para a última mensagem">↓</button>
-          <div class="running-indicator hidden" id="runningIndicator"><span class="loader"></span><span id="runningText">Codex está trabalhando…</span><button class="stop-turn" id="stopTurn">Parar</button></div>
+          <div class="running-indicator hidden" id="runningIndicator"><span class="loader"></span><span id="runningText">Codex está trabalhando…</span></div>
         </section>
 
         <section class="composer-wrap" aria-label="Escrever mensagem">
@@ -174,11 +174,12 @@
             <div class="queue-list" id="queueList"></div>
           </section>
           <form class="composer" id="composerForm">
-            <div class="composer-topline"><span id="composerHint">Enter envia · Shift+Enter cria uma linha</span><button type="button" class="steer-button hidden" id="steerButton"><span class="icon" data-icon="bolt"></span>Orientar agora</button></div>
+            <div class="composer-topline"><span id="composerHint">Enter envia · Shift+Enter cria uma linha</span><div class="composer-actions"><button type="button" class="steer-button hidden" id="steerButton"><span class="icon" data-icon="bolt"></span>Orientar agora</button><button type="button" class="stop-turn hidden" id="stopTurn"><span class="icon" data-icon="stop"></span><span class="stop-button-label">Parar</span></button></div></div>
             <textarea id="messageInput" rows="1" placeholder="Pergunte qualquer coisa" aria-label="Mensagem para o Codex"></textarea>
             <div class="composer-bottom">
               <div class="composer-tools">
                 <button type="button" class="composer-icon" id="attachImage" title="Anexar imagem" aria-label="Anexar imagem"><span class="icon" data-icon="paperclip"></span></button>
+                <button type="button" class="composer-icon voice-input" id="voiceInput" title="Ditar mensagem por voz" aria-label="Ditar mensagem por voz" aria-pressed="false"><span class="icon" data-icon="microphone"></span></button>
                 <input type="file" id="imageInput" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
                 <button type="button" class="cwd-control" id="cwdControl"><span class="icon" data-icon="folder"></span><span id="cwdLabel">/home/codex</span><span class="icon" data-icon="chevron"></span></button>
               </div>
@@ -189,7 +190,7 @@
               </div>
             </div>
           </form>
-          <p class="composer-footnote">Durante a execução, novas mensagens entram na fila e usam a configuração atual da conversa. Modelo e raciocínio por item na fila não estão disponíveis. Use Orientar agora para redirecionar a execução em curso.</p>
+          <p class="composer-footnote">Durante a execução, mensagens entram na fila; use Orientar agora para redirecionar. O ditado pode processar áudio pelo serviço de voz do navegador; só o texto enviado chega ao Codex.</p>
         </section>
       </main>
 
@@ -200,6 +201,13 @@
           <div id="rateLimitMeters" class="rate-limit-meters"><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
           <div class="token-summary" id="tokenSummary"></div>
           <p class="muted-note">Os limites são os informados pela conta ChatGPT. Tokens são atividade, não valor em dólares.</p>
+        </section>
+        <section class="inspector-card server-health-card" aria-label="Saúde da VPS">
+          <div class="card-title-row"><div><span class="card-icon" data-icon="server"></span><strong>Saúde da VPS</strong></div><button class="refresh-mini" id="refreshVpsHealth" aria-label="Atualizar saúde da VPS" title="Atualizar agora"><span class="icon" data-icon="refresh"></span></button></div>
+          <div class="vps-host-metrics" id="vpsHostMetrics"><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
+          <div class="vps-project-list" id="vpsProjectList"></div>
+          <details class="vps-storage-details" id="vpsStorageDetails"><summary>Armazenamento Docker</summary><div class="vps-storage-list" id="vpsStorageList"></div></details>
+          <p class="vps-health-updated" id="vpsHealthUpdated" aria-live="polite">Lendo métricas da VPS…</p>
         </section>
         <section class="inspector-card environment-card">
           <div class="card-title-row"><div><span class="card-icon" data-icon="server"></span><strong>Ambiente ativo</strong></div></div>
@@ -226,6 +234,6 @@
     </dialog>
 
     <div class="toast-container" id="toastContainer" aria-live="polite"></div>
-    <script src="/codex-agent/app.js" defer></script>
+    <script src="/codex-agent/app.vps-health-20261024.js" defer></script>
   </body>
 </html>

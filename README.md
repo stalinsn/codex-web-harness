@@ -8,12 +8,14 @@ Uma interface web responsiva para conversar com o Codex CLI instalado na sua pr�
 - Seletor de contexto para iniciar dúvidas gerais, continuar em um projeto existente ou criar um projeto com pasta própria dentro de `~/projects`.
 - Envio de imagens por arquivo ou colagem de prints, seleção de modelo e nível de raciocínio.
 - Fila de mensagens durante uma execução e ação para orientar a execução atual.
+- Ações por mensagem enfileirada para orientar a execução imediatamente ou devolver texto e imagens ao rascunho; o botão para interromper fica junto ao compositor.
 - Resposta final visível, com reasoning resumido e atividades intermediárias agrupados e recolhidos por turno.
 - Rolagem na borda da conversa, preservando a posição durante a leitura e com atalho para voltar à última mensagem.
 - Ações para renomear, fixar, arquivar, restaurar e excluir conversas.
 - Menu lateral com seção de fixadas, abas de conversas e arquivadas, e busca por título no projeto atual ou em todos os projetos.
 - Login privado com senha e código de uso único enviado por e-mail. Não há cadastro público.
 - Visão de uso e limites informados pela conta Codex.
+- Leitura protegida e atualizada automaticamente da saúde da VPS: CPU, RAM, disco, containers Docker e armazenamento.
 - Atividade de subagentes exibida no histórico quando o Codex delega tarefas em paralelo.
 
 ## Requisitos
@@ -83,6 +85,8 @@ npm start
 ```
 
 O processo precisa de uma configuração privada válida em `CODEX_HOME/web-auth.json` e de uma sessão Codex CLI autenticada para carregar o app-server. Não execute `npm run setup-auth` em uma instalação existente, pois o assistente se recusa a substituir a configuração.
+
+O painel de saúde lê `/proc`, o espaço de disco com `df` e métricas Docker com `docker stats`, `docker ps` e `docker system df`. Para exibir o resumo dos containers, o usuário Unix do serviço precisa ter o Docker CLI e acesso de leitura ao daemon. A rota é protegida pela mesma sessão autenticada do chat.
 
 ## Licença
 

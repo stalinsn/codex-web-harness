@@ -1,12 +1,14 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { lstat, mkdir, readFile, realpath, rename, rmdir, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
+import { cpus, freemem, totalmem } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 import readline from 'node:readline';
+import { promisify } from 'node:util';
 import { AuthError, AuthManager } from './auth.mjs';
 
 const HOME_DIR = process.env.HOME || homedir();
@@ -22,6 +24,7 @@ const PROJECTS_FILE = join(CODEX_HOME, 'web-projects.json');
 const MAX_BODY = 48 * 1024 * 1024;
 const MAX_IMAGE = 8 * 1024 * 1024;
 const MAX_IMAGES = 4;
+const execFileAsync = promisify(execFile);
 const AUTH_ORIGIN = process.env.CODEX_UI_ORIGIN ? new URL(process.env.CODEX_UI_ORIGIN).origin : null;
 const PINNED_THREAD_SECTION_ID = '01984de2-8f74-7c91-a3b2-5c5e937cf318';
 const sseClients = new Set();
@@ -41,6 +44,13 @@ let accountCache = null;
 let rateLimitsCache = null;
 let usageCache = null;
 let lastRefresh = 0;
+let vpsHealthCache = null;
+let vpsHealthCacheAt = 0;
+let vpsHealthInFlight = null;
+let dockerStorageCache = null;
+let dockerStorageCacheAt = 0;
+let previousCpuSample = null;
+let previousCodexServiceCpuSample = null;
 const auth = new AuthManager(join(CODEX_HOME, 'web-auth.json'));
 
 const MIME_TYPES = {
@@ -414,7 +424,171 @@ function getPublicPath(pathname) {
   return local.startsWith('/') ? local : `/${local}`;
 }
 
+function parseBytes(value) {
+  const match = String(value || '').trim().match(/^([\d.]+)\s*(B|kB|KB|KiB|MB|MiB|GB|GiB|TB|TiB)$/i);
+  if (!match) return 0;
+  const unit = match[2].toLowerCase();
+  const base = /iB$/.test(match[2]) || unit === 'b' ? 1024 : 1000;
+  const power = unit.startsWith('t') ? 4 : unit.startsWith('g') ? 3 : unit.startsWith('m') ? 2 : unit.startsWith('k') ? 1 : 0;
+  return Math.round(Number(match[1]) * base ** power);
+}
+
+function cpuSample() {
+  const cores = cpus();
+  const total = cores.reduce((sum, core) => sum + Object.values(core.times).reduce((a, b) => a + b, 0), 0);
+  const idle = cores.reduce((sum, core) => sum + core.times.idle, 0);
+  const current = { total, idle };
+  let percent = 0;
+  if (previousCpuSample) {
+    const totalDelta = total - previousCpuSample.total;
+    const idleDelta = idle - previousCpuSample.idle;
+    if (totalDelta > 0) percent = Math.max(0, Math.min(100, (1 - idleDelta / totalDelta) * 100));
+  }
+  previousCpuSample = current;
+  return { cores: cores.length, percent: Math.round(percent * 10) / 10 };
+}
+
+async function readHostHealth() {
+  const cgroupText = await readFile('/proc/self/cgroup', 'utf8').catch(() => '');
+  const cgroupRelative = cgroupText.match(/^0::\/(.+)$/m)?.[1];
+  const cgroupDir = cgroupRelative && !cgroupRelative.split('/').includes('..') && /^[A-Za-z0-9_.\/-]+$/.test(cgroupRelative)
+    ? join('/sys/fs/cgroup', cgroupRelative)
+    : null;
+  const [memInfo, diskResult, serviceMemory, serviceMemoryMax, serviceCpuStat] = await Promise.all([
+    readFile('/proc/meminfo', 'utf8'),
+    execFileAsync('df', ['-B1', '--output=size,used,avail,pcent', '/'], { timeout: 5000, maxBuffer: 16 * 1024 }),
+    cgroupDir ? readFile(join(cgroupDir, 'memory.current'), 'utf8').catch(() => '0') : '0',
+    cgroupDir ? readFile(join(cgroupDir, 'memory.max'), 'utf8').catch(() => 'max') : 'max',
+    cgroupDir ? readFile(join(cgroupDir, 'cpu.stat'), 'utf8').catch(() => '') : '',
+  ]);
+  const mem = Object.fromEntries(memInfo.split('\n').map((line) => {
+    const match = line.match(/^([A-Za-z_()]+):\s+(\d+)\s+kB$/);
+    return match ? [match[1], Number(match[2]) * 1024] : [];
+  }).filter((entry) => entry.length));
+  const diskLines = diskResult.stdout.trim().split('\n');
+  const disk = diskLines.length > 1 ? diskLines.at(-1).trim().split(/\s+/) : [];
+  const cpu = cpuSample();
+  const serviceCpuUsec = Number(serviceCpuStat.match(/^usage_usec\s+(\d+)$/m)?.[1]) || 0;
+  const now = Date.now();
+  const serviceCpuPercent = previousCodexServiceCpuSample && serviceCpuUsec >= previousCodexServiceCpuSample.usec
+    ? Math.max(0, Math.min(100, ((serviceCpuUsec - previousCodexServiceCpuSample.usec) / 1000 / (now - previousCodexServiceCpuSample.at)) / Math.max(1, cpus().length) * 100))
+    : 0;
+  previousCodexServiceCpuSample = { usec: serviceCpuUsec, at: now };
+  const memoryTotal = mem.MemTotal || totalmem();
+  const memoryAvailable = mem.MemAvailable || freemem();
+  return {
+    cpu,
+    load1m: Number((await readFile('/proc/loadavg', 'utf8')).split(' ')[0]) || 0,
+    memory: { totalBytes: memoryTotal, usedBytes: Math.max(0, memoryTotal - memoryAvailable), availableBytes: memoryAvailable },
+    services: [{ name: 'Interface Codex', status: 'Em execução · systemd', cpuPercent: Math.round(serviceCpuPercent * 10) / 10, memoryBytes: Number(serviceMemory) || 0, memoryLimitBytes: serviceMemoryMax.trim() === 'max' ? null : Number(serviceMemoryMax) || null }],
+    disk: disk.length >= 4 ? {
+      totalBytes: Number(disk[0]) || 0,
+      usedBytes: Number(disk[1]) || 0,
+      availableBytes: Number(disk[2]) || 0,
+      usedPercent: Number(String(disk[3]).replace('%', '')) || 0,
+    } : null,
+  };
+}
+
+function projectLabel(name, composeProject) {
+  if (/buildkit/i.test(name)) return 'BuildKit de homologação';
+  const known = {
+    'contador-habitos': 'Contador de hábitos',
+    'hp-cards': 'HP Cards',
+    'live-rooms': 'Live Rooms',
+    'live-rooms-homolog': 'Live Rooms · homologação',
+    'artmeta-media': 'Artmeta Media',
+    'codex-agent': 'Proxy do Codex Agent',
+  };
+  if (known[composeProject]) return known[composeProject];
+  if (name.startsWith('live-rooms-')) return 'Live Rooms';
+  return composeProject || name.replace(/-[a-z0-9]{6,}$/, '').replace(/[-_]+/g, ' ') || 'Outros';
+}
+
+async function readDockerHealth() {
+  try {
+    const [statsResult, containersResult] = await Promise.all([
+      execFileAsync('docker', ['stats', '--no-stream', '--format', '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}'], { timeout: 25000, maxBuffer: 1024 * 1024 }),
+      execFileAsync('docker', ['ps', '-a', '--format', '{{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Label "com.docker.compose.project"}}'], { timeout: 10000, maxBuffer: 1024 * 1024 }),
+    ]);
+    const stats = new Map(statsResult.stdout.trim().split('\n').filter(Boolean).map((line) => {
+      const [name, cpu, memory, percent] = line.split('\t');
+      const [used, limit] = String(memory || '').split('/').map((part) => parseBytes(part));
+      return [name, { cpuPercent: Number(String(cpu).replace('%', '')) || 0, memoryBytes: used, memoryLimitBytes: limit, memoryPercent: Number(String(percent).replace('%', '')) || 0 }];
+    }));
+    const containers = containersResult.stdout.trim().split('\n').filter(Boolean).map((line) => {
+      const [name, status, image, composeProject] = line.split('\t');
+      const metric = stats.get(name) || {};
+      return {
+        name,
+        project: projectLabel(name, composeProject),
+        image,
+        status,
+        running: /^Up\b/.test(status),
+        health: /\(healthy\)/i.test(status) ? 'healthy' : /\(unhealthy\)/i.test(status) ? 'unhealthy' : /\(health: starting\)/i.test(status) ? 'starting' : null,
+        cpuPercent: metric.cpuPercent || 0,
+        memoryBytes: metric.memoryBytes || 0,
+        memoryLimitBytes: metric.memoryLimitBytes || 0,
+        memoryPercent: metric.memoryPercent || 0,
+      };
+    });
+    const groups = new Map();
+    for (const container of containers) {
+      if (!groups.has(container.project)) groups.set(container.project, { name: container.project, containers: 0, running: 0, stopped: 0, cpuPercent: 0, memoryBytes: 0, memoryLimitBytes: 0, unhealthy: false });
+      const group = groups.get(container.project);
+      group.containers += 1;
+      if (container.running) group.running += 1; else group.stopped += 1;
+      group.cpuPercent += container.cpuPercent;
+      group.memoryBytes += container.memoryBytes;
+      group.memoryLimitBytes += container.memoryLimitBytes;
+      group.unhealthy ||= container.health === 'unhealthy';
+    }
+    return {
+      available: true,
+      runningCount: containers.filter((item) => item.running).length,
+      stoppedCount: containers.filter((item) => !item.running).length,
+      projects: [...groups.values()].sort((a, b) => b.memoryBytes - a.memoryBytes),
+      containers: containers.sort((a, b) => a.project.localeCompare(b.project) || a.name.localeCompare(b.name)),
+    };
+  } catch {
+    return { available: false, runningCount: 0, stoppedCount: 0, projects: [], containers: [], error: 'Não foi possível consultar o Docker.' };
+  }
+}
+
+async function readDockerStorage(force = false) {
+  if (!force && dockerStorageCache && Date.now() - dockerStorageCacheAt < 5 * 60 * 1000) return dockerStorageCache;
+  try {
+    const { stdout } = await execFileAsync('docker', ['system', 'df', '--format', '{{.Type}}\t{{.TotalCount}}\t{{.Active}}\t{{.Size}}\t{{.Reclaimable}}'], { timeout: 30000, maxBuffer: 64 * 1024 });
+    dockerStorageCache = stdout.trim().split('\n').filter(Boolean).map((line) => {
+      const [type, total, active, size, reclaimable] = line.split('\t');
+      return { type, total: Number(total) || 0, active: Number(active) || 0, size, reclaimable };
+    });
+    dockerStorageCacheAt = Date.now();
+    return dockerStorageCache;
+  } catch {
+    return dockerStorageCache || [];
+  }
+}
+
+async function getVpsHealth(force = false) {
+  if (!force && vpsHealthCache && Date.now() - vpsHealthCacheAt < 20_000) return vpsHealthCache;
+  if (vpsHealthInFlight) return vpsHealthInFlight;
+  vpsHealthInFlight = (async () => {
+    const [host, docker, dockerStorage] = await Promise.all([readHostHealth(), readDockerHealth(), readDockerStorage(force)]);
+    const data = { checkedAt: new Date().toISOString(), host, docker, dockerStorage };
+    vpsHealthCache = data;
+    vpsHealthCacheAt = Date.now();
+    return data;
+  })();
+  try { return await vpsHealthInFlight; }
+  finally { vpsHealthInFlight = null; }
+}
+
 async function handleApi(req, res, pathName, url) {
+  if (req.method === 'GET' && pathName === '/api/server-health') {
+    return json(res, 200, await getVpsHealth(url.searchParams.get('refresh') === 'true'));
+  }
+
   if (!appReady) return fail(res, 503, 'O Codex está iniciando. Aguarde alguns segundos e tente novamente.');
 
   if (req.method === 'GET' && pathName === '/api/health') {
@@ -501,6 +675,33 @@ async function handleApi(req, res, pathName, url) {
     }
     const result = await rpc('thread/queue/list', { threadId, limit: 100 });
     return json(res, 200, { items: result.data || [] });
+  }
+  if (queueRoute && req.method === 'POST' && queueRoute[2]) {
+    const threadId = queueRoute[1];
+    const queuedSubmissionId = queueRoute[2];
+    const queue = await rpc('thread/queue/list', { threadId, limit: 100 });
+    const queuedItem = (queue.data || []).find((item) => item.id === queuedSubmissionId);
+    if (!queuedItem) return fail(res, 404, 'A mensagem não está mais na fila.');
+    const input = Array.isArray(queuedItem.input) ? queuedItem.input.filter((part) => part && ['text', 'localImage'].includes(part.type)) : [];
+    if (!input.length) return fail(res, 400, 'Não consegui ler o conteúdo desta mensagem da fila.');
+    const expectedTurnId = await activeTurnIdFor(threadId);
+    if (!expectedTurnId) return fail(res, 409, 'Não há uma execução ativa para receber a orientação; a mensagem continua na fila.');
+
+    await rpc('thread/queue/delete', { threadId, queuedSubmissionId });
+    try {
+      await rpc('turn/steer', { threadId, expectedTurnId, clientUserMessageId: randomUUID(), input });
+      emit('thread-queue-changed', { threadId });
+      return json(res, 200, { ok: true, steered: true });
+    } catch {
+      try {
+        await rpc('thread/queue/add', { threadId, clientUserMessageId: randomUUID(), input });
+        emit('thread-queue-changed', { threadId });
+        return fail(res, 409, 'Não consegui enviar como orientação; a mensagem voltou para o fim da fila.');
+      } catch {
+        emit('thread-queue-changed', { threadId });
+        return json(res, 503, { error: 'Não consegui enviar ou recolocar a mensagem na fila. Ela continua disponível aqui para voltar ao rascunho.', recoverableItem: queuedItem });
+      }
+    }
   }
   if (queueRoute && req.method === 'DELETE' && queueRoute[2]) {
     await rpc('thread/queue/delete', { threadId: queueRoute[1], queuedSubmissionId: queueRoute[2] });
