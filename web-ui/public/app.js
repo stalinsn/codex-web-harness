@@ -6,7 +6,7 @@ const state = {
   modelId: localStorage.getItem('codex-model') || '', effort: localStorage.getItem('codex-effort') || '',
   files: [], busy: false, sending: false, account: null, rateLimits: null, usage: null,
   queueItems: [], turnStartedAtMs: null, turnTimer: null,
-  streamedMessages: new Map(), activityCards: new Map(), commandGroups: new Map(), reasoningGroups: new Map(), userMessageIds: new Set(), pendingApprovals: new Map(),
+  streamedMessages: new Map(), activityCards: new Map(), commandGroups: new Map(), reasoningGroups: new Map(), turnIntermediates: new Map(), userMessageIds: new Set(), pendingApprovals: new Map(),
   activeTurnId: null,
 };
 const authUi = { mode: 'login', step: 'credentials', challengeId: '', setupRequired: false, countdown: null, started: false };
@@ -620,6 +620,9 @@ function updateRunningClock() {
   if (!state.busy) return;
   const elapsed = state.turnStartedAtMs ? Date.now() - state.turnStartedAtMs : 0;
   $('#runningText').textContent = elapsed > 0 ? `Codex trabalhando há ${formatDuration(elapsed)}` : 'Codex está trabalhando…';
+  for (const group of state.turnIntermediates.values()) {
+    if (group.turnId === (state.activeTurnId || 'active') && group.durationMs == null) updateTurnIntermediateTitle(group);
+  }
 }
 
 function updateComposerControls() {
@@ -655,6 +658,7 @@ function setBusy(busy, detail = '') {
     clearInterval(state.turnTimer);
     state.turnTimer = null;
   }
+  for (const group of state.turnIntermediates.values()) updateTurnIntermediateTitle(group);
   for (const group of state.reasoningGroups.values()) updateReasoningGroup(group);
   updateComposerControls();
 }
@@ -663,12 +667,16 @@ function makeAvatar() {
   return '<div class="message-avatar" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M16 3.2 27.1 9.6v12.8L16 28.8 4.9 22.4V9.6L16 3.2Z"/><path d="m11.2 11.2 4.8 4.8-4.8 4.8M20.8 11.2 16 16l4.8 4.8"/></svg></div>';
 }
 
-function makeMessage(role, { text = '', images = [], time = null, id = '', turnId = '' } = {}) {
+function makeMessage(role, { text = '', images = [], time = null, id = '', turnId = '', phase = '', finalAnswer = true, parent = null } = {}) {
   $('#welcome').classList.add('hidden');
   const row = document.createElement('article');
   row.className = `message ${role}`;
   if (id) row.dataset.itemId = id;
   if (turnId) row.dataset.turnId = turnId;
+  if (role === 'assistant') {
+    row.dataset.finalAnswer = finalAnswer ? 'true' : 'false';
+    if (phase) row.dataset.phase = phase;
+  }
   if (role === 'assistant') row.innerHTML = `${makeAvatar()}<div class="message-body"><div class="assistant-label">Codex</div><div class="message-content"></div><div class="message-meta"></div></div>`;
   else row.innerHTML = '<div class="message-body"><div class="message-content"></div><div class="message-images"></div><div class="message-meta"></div></div>';
   if (role === 'assistant') $('.message-content', row).innerHTML = markdown(text);
@@ -684,7 +692,7 @@ function makeMessage(role, { text = '', images = [], time = null, id = '', turnI
   }
   if (imageBox && !imageBox.children.length) imageBox.remove();
   if (time) $('.message-meta', row).textContent = time;
-  $('#messages').append(row);
+  (parent || $('#messages')).append(row);
   scrollConversation();
   return row;
 }
@@ -706,9 +714,55 @@ function imageFromContent(content, threadId) {
   return images;
 }
 
+function isFinalAgentMessage(item) {
+  const phase = String(item?.phase || '').toLowerCase().replace(/[\s-]/g, '_');
+  return !phase || phase === 'final_answer' || phase === 'finalanswer' || phase === 'final';
+}
+
+function updateTurnIntermediateTitle(group) {
+  const elapsed = group.durationMs ?? (state.busy && group.turnId === (state.activeTurnId || 'active') && state.turnStartedAtMs ? Date.now() - state.turnStartedAtMs : 0);
+  group.title.textContent = elapsed > 0 ? `Trabalhou por ${formatDuration(elapsed)}` : 'Atividades intermediárias';
+  group.hint.textContent = group.card.open ? 'Recolher' : 'Ver detalhes';
+}
+
+function ensureTurnIntermediates(turnId, append = true) {
+  const normalizedTurnId = turnId || state.activeTurnId || 'active';
+  const groupKey = `${state.selectedThreadId}:${normalizedTurnId}`;
+  let group = state.turnIntermediates.get(groupKey);
+  if (group) return group;
+
+  const card = document.createElement('details');
+  card.className = 'activity-card turn-intermediates';
+  const heading = document.createElement('summary');
+  heading.className = 'activity-heading';
+  const icon = document.createElement('span'); icon.className = 'icon';
+  icon.innerHTML = `<svg viewBox="0 0 24 24">${icons.bolt}</svg>`;
+  const title = document.createElement('span'); title.className = 'turn-intermediates-title';
+  const hint = document.createElement('span'); hint.className = 'turn-intermediates-hint';
+  const content = document.createElement('div'); content.className = 'turn-intermediate-content';
+  heading.append(icon, title, hint); card.append(heading, content);
+  card.addEventListener('toggle', () => updateTurnIntermediateTitle(group));
+  group = { card, title, hint, content, items: new Set(), turnId: normalizedTurnId, durationMs: null };
+  state.turnIntermediates.set(groupKey, group);
+
+  const finalAnswer = normalizedTurnId === 'active' ? null : $$('.message.assistant', $('#messages')).find((message) => message.dataset.turnId === normalizedTurnId && message.dataset.finalAnswer === 'true');
+  if (finalAnswer) $('#messages').insertBefore(card, finalAnswer);
+  else if (append) $('#messages').append(card);
+  updateTurnIntermediateTitle(group);
+  return group;
+}
+
+function registerIntermediate(turnId, itemId, append = true) {
+  const group = ensureTurnIntermediates(turnId, append);
+  group.items.add(String(itemId || `item-${group.items.size + 1}`));
+  updateTurnIntermediateTitle(group);
+  return group;
+}
+
 function renderCommandActivity(item, append, turnId) {
   const key = `${state.selectedThreadId}:${item.id}`;
-  const groupKey = `${state.selectedThreadId}:${turnId || 'active'}`;
+  const turnGroup = registerIntermediate(turnId, `command:${item.id}`, append);
+  const groupKey = `${state.selectedThreadId}:${turnGroup.turnId}`;
   let group = state.commandGroups.get(groupKey);
   if (!group) {
     const card = document.createElement('details');
@@ -724,7 +778,7 @@ function renderCommandActivity(item, append, turnId) {
     card.addEventListener('toggle', () => { hint.textContent = card.open ? 'Recolher' : 'Ver detalhes'; });
     group = { card, title, content, items: new Map() };
     state.commandGroups.set(groupKey, group);
-    if (append) $('#messages').append(card);
+    if (append) turnGroup.content.append(card);
   }
   let entry = state.activityCards.get(key);
   if (!entry) {
@@ -748,29 +802,25 @@ function renderCommandActivity(item, append, turnId) {
   return entry;
 }
 
-function ensureReasoningGroup(turnId, append = true) {
-  const normalizedTurnId = turnId || state.activeTurnId || 'active';
+function ensureReasoningGroup(turnId, append = true, itemId = '') {
+  const turnGroup = registerIntermediate(turnId, `reasoning:${itemId || 'summary'}`, append);
+  const normalizedTurnId = turnGroup.turnId;
   const groupKey = `${state.selectedThreadId}:${normalizedTurnId}`;
   let group = state.reasoningGroups.get(groupKey);
   if (group) return group;
 
-  const card = document.createElement('details');
+  const card = document.createElement('div');
   card.className = 'activity-card reasoning-group';
-  const heading = document.createElement('summary');
+  const heading = document.createElement('div');
   heading.className = 'activity-heading';
   const icon = document.createElement('span'); icon.className = 'icon';
   icon.innerHTML = `<svg viewBox="0 0 24 24">${icons.bolt}</svg>`;
   const title = document.createElement('span'); title.className = 'reasoning-group-title';
-  const hint = document.createElement('span'); hint.className = 'reasoning-group-hint'; hint.textContent = 'Ver resumo';
   const content = document.createElement('div'); content.className = 'reasoning-steps';
-  heading.append(icon, title, hint); card.append(heading, content);
-  card.addEventListener('toggle', () => { hint.textContent = card.open ? 'Recolher' : 'Ver resumo'; });
-  group = { card, title, content, hint, parts: new Map(), turnId: normalizedTurnId };
+  heading.append(icon, title); card.append(heading, content);
+  group = { card, title, content, parts: new Map(), turnId: normalizedTurnId };
   state.reasoningGroups.set(groupKey, group);
-
-  const assistantForTurn = normalizedTurnId === 'active' ? null : $$('.message.assistant', $('#messages')).find((message) => message.dataset.turnId === normalizedTurnId);
-  if (assistantForTurn) $('#messages').insertBefore(card, assistantForTurn);
-  else if (append) $('#messages').append(card);
+  if (append) turnGroup.content.append(card);
   updateReasoningGroup(group);
   return group;
 }
@@ -786,11 +836,11 @@ function updateReasoningGroup(group) {
     if (!part.text.trim()) part.row.hidden = true;
   }
   group.card.hidden = visibleParts.length === 0;
-  group.title.textContent = `${state.busy ? 'Resumo do trabalho em andamento' : 'Resumo do trabalho'} · ${visibleParts.length} ${visibleParts.length === 1 ? 'etapa' : 'etapas'}`;
+  group.title.textContent = `Resumo do raciocínio · ${visibleParts.length} ${visibleParts.length === 1 ? 'etapa' : 'etapas'}`;
 }
 
 function setReasoningPart({ itemId, summaryIndex = 0, turnId = '', text = '', delta = false, append = true }) {
-  const group = ensureReasoningGroup(turnId, append);
+  const group = ensureReasoningGroup(turnId, append, itemId);
   const partKey = `${itemId || 'reasoning'}:${Number(summaryIndex) || 0}`;
   let part = group.parts.get(partKey);
   if (!part) {
@@ -821,6 +871,7 @@ function renderReasoningSummary(item, turnId = '', append = true) {
 function renderActivity(item, append = false, turnId = '') {
   if (item.type === 'commandExecution') return renderCommandActivity(item, append, turnId);
   const key = `${state.selectedThreadId}:${item.id}`;
+  const turnGroup = registerIntermediate(turnId, `activity:${item.id || item.type}`, append);
   let card = state.activityCards.get(key);
   if (!card) {
     card = document.createElement('div');
@@ -832,7 +883,7 @@ function renderActivity(item, append = false, turnId = '') {
     const output = document.createElement('pre'); output.className = 'activity-output hidden';
     heading.append(icon, title); card.append(heading, output);
     state.activityCards.set(key, card);
-    if (append) $('#messages').append(card);
+    if (append) turnGroup.content.append(card);
   }
   const headingIcon = $('.icon', card);
   const headingText = $('.activity-heading span:last-child', card);
@@ -864,13 +915,23 @@ function renderTurnHistory(turns, threadId) {
   state.activityCards.clear();
   state.commandGroups.clear();
   state.reasoningGroups.clear();
+  state.turnIntermediates.clear();
   state.userMessageIds.clear();
   state.activeTurnId = null;
   $('#messages').replaceChildren();
   let count = 0;
   for (const turn of turns || []) {
+    const items = turn.items || [];
+    let lastFinalIndex = -1;
+    let lastAgentIndex = -1;
+    items.forEach((item, index) => {
+      if (item.type !== 'agentMessage') return;
+      lastAgentIndex = index;
+      if (isFinalAgentMessage(item)) lastFinalIndex = index;
+    });
+    const visibleAnswerIndex = lastFinalIndex >= 0 ? lastFinalIndex : lastAgentIndex;
     let lastAssistant = null;
-    for (const item of turn.items || []) {
+    items.forEach((item, index) => {
       if (item.type === 'userMessage') {
         const text = (item.content || []).filter((part) => part.type === 'text').map((part) => part.text).join('\n');
         const images = imageFromContent(item.content, threadId);
@@ -879,29 +940,54 @@ function renderTurnHistory(turns, threadId) {
           makeMessage('user', { text, images, id: item.id }); count++;
         }
       } else if (item.type === 'agentMessage') {
-        if (item.text) { lastAssistant = makeMessage('assistant', { text: item.text, id: item.id, turnId: turn.id }); count++; }
+        if (item.text) {
+          const finalAnswer = index === visibleAnswerIndex;
+          if (finalAnswer) {
+            lastAssistant = makeMessage('assistant', { text: item.text, id: item.id, turnId: turn.id, phase: item.phase, finalAnswer: true });
+          } else {
+            const group = registerIntermediate(turn.id, `message:${item.id || index}`, true);
+            makeMessage('assistant', { text: item.text, id: item.id, turnId: turn.id, phase: item.phase, finalAnswer: false, parent: group.content });
+          }
+          count++;
+        }
       } else if (item.type === 'reasoning') {
         if (renderReasoningSummary(item, turn.id, true)) count++;
       } else if (['commandExecution', 'fileChange', 'webSearch', 'mcpToolCall', 'collabToolCall', 'plan'].includes(item.type)) {
         renderActivity(item, true, turn.id); count++;
       }
-    }
+    });
     const durationMs = Number(turn.durationMs) || (turn.startedAt && turn.completedAt ? (Number(turn.completedAt) - Number(turn.startedAt)) * 1000 : 0);
-    if (lastAssistant && durationMs > 0) $('.message-meta', lastAssistant).textContent = `Trabalhou por ${formatDuration(durationMs)}`;
+    const group = state.turnIntermediates.get(`${threadId}:${turn.id}`);
+    if (group && durationMs > 0) { group.durationMs = durationMs; updateTurnIntermediateTitle(group); }
+    else if (lastAssistant && durationMs > 0) $('.message-meta', lastAssistant).textContent = `Trabalhou por ${formatDuration(durationMs)}`;
   }
   $('#welcome').classList.toggle('hidden', count > 0);
   scrollConversation();
 }
 
-function getOrCreateStreamMessage(itemId, turnId = '') {
+function getOrCreateStreamMessage(itemId, turnId = '', phase = '') {
   const key = `${state.selectedThreadId}:${itemId}`;
   let message = state.streamedMessages.get(key);
   if (!message) {
-    const row = makeMessage('assistant', { id: itemId, turnId: turnId || state.activeTurnId || '' });
-    message = { row, text: '' };
+    const normalizedTurnId = turnId || state.activeTurnId || '';
+    const finalAnswer = isFinalAgentMessage({ phase });
+    const group = finalAnswer ? null : registerIntermediate(normalizedTurnId, `message:${itemId}`, true);
+    const row = makeMessage('assistant', { id: itemId, turnId: normalizedTurnId, phase, finalAnswer, parent: group?.content || null });
+    message = { row, text: '', phase, turnId: normalizedTurnId, finalAnswer };
     state.streamedMessages.set(key, message);
   }
   return message;
+}
+
+function placeStreamMessage(stream, phase) {
+  if (phase) stream.phase = phase;
+  const finalAnswer = isFinalAgentMessage({ phase: stream.phase });
+  const target = finalAnswer ? $('#messages') : registerIntermediate(stream.turnId, `message:${stream.row.dataset.itemId}`, true).content;
+  if (stream.row.parentElement !== target) target.append(stream.row);
+  stream.finalAnswer = finalAnswer;
+  stream.row.dataset.finalAnswer = finalAnswer ? 'true' : 'false';
+  if (stream.phase) stream.row.dataset.phase = stream.phase;
+  return stream;
 }
 
 function addApproval(request) {
@@ -961,7 +1047,7 @@ function handleCodexNotification(message) {
   if (message.method === 'item/agentMessage/delta') {
     const itemId = params.itemId || params.item?.id;
     if (!itemId) return;
-    const stream = getOrCreateStreamMessage(itemId, params.turnId);
+    const stream = getOrCreateStreamMessage(itemId, params.turnId, params.phase || params.item?.phase || '');
     stream.text += params.delta || '';
     $('.message-content', stream.row).innerHTML = markdown(stream.text);
     scrollConversation();
@@ -985,6 +1071,8 @@ function handleCodexNotification(message) {
       const key = `${state.selectedThreadId}:${item.id}`;
       let stream = state.streamedMessages.get(key);
       if (!stream) stream = getOrCreateStreamMessage(item.id, params.turnId);
+      stream.turnId = params.turnId || stream.turnId;
+      placeStreamMessage(stream, item.phase);
       if (item.text) stream.text = item.text;
       $('.message-content', stream.row).innerHTML = markdown(stream.text);
     } else if (item.type === 'reasoning') {
@@ -1048,7 +1136,11 @@ function connectEvents() {
     else if (event.type === 'thread-created') { state.selectedThreadId = event.data.thread.id; }
     else if (event.type === 'turn-completed') {
       if (event.data.threadId === state.selectedThreadId) {
+        const turnId = event.data.turn?.id;
+        const group = turnId ? state.turnIntermediates.get(`${event.data.threadId}:${turnId}`) : null;
+        if (group && Number(event.data.turn?.durationMs) > 0) group.durationMs = Number(event.data.turn.durationMs);
         setBusy(false);
+        if (group) updateTurnIntermediateTitle(group);
         loadThreadHistory(state.selectedThreadId).catch(() => {});
       }
       refreshThreadList().catch(() => {});
@@ -1175,7 +1267,7 @@ function newChat() {
   state.selectedThreadId = null;
   state.selectedThread = null;
   state.loadingThreadId = null;
-  state.streamedMessages.clear(); state.activityCards.clear(); state.commandGroups.clear(); state.reasoningGroups.clear(); state.userMessageIds.clear();
+  state.streamedMessages.clear(); state.activityCards.clear(); state.commandGroups.clear(); state.reasoningGroups.clear(); state.turnIntermediates.clear(); state.userMessageIds.clear();
   state.activeTurnId = null;
   state.queueItems = []; renderQueue();
   $('#messages').replaceChildren(); $('#welcome').classList.remove('hidden');
