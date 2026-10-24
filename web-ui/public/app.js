@@ -2,7 +2,7 @@ const PREFIX = '/codex-agent';
 const PINNED_THREAD_SECTION_ID = '01984de2-8f74-7c91-a3b2-5c5e937cf318';
 const state = {
   models: [], threads: [], projects: [], selectedProjectId: localStorage.getItem('codex-project') || '', selectedThreadId: null, selectedThread: null,
-  cwd: localStorage.getItem('codex-cwd') || '', archivedView: false, loadingThreadId: null,
+  cwd: localStorage.getItem('codex-cwd') || '', defaultCwd: '', projectsRoot: '', activeThreadProjectId: '', archivedView: false, loadingThreadId: null,
   modelId: localStorage.getItem('codex-model') || '', effort: localStorage.getItem('codex-effort') || '',
   files: [], busy: false, sending: false, account: null, rateLimits: null, usage: null,
   queueItems: [], turnStartedAtMs: null, turnTimer: null,
@@ -390,6 +390,31 @@ function updateWorkingDirectory(path) {
   localStorage.setItem('codex-cwd', path);
   $('#cwdLabel').textContent = path;
   $('#inspectorCwd').textContent = path;
+  renderConversationContext();
+}
+
+function renderConversationContext() {
+  const badge = $('#conversationContext');
+  const activeProjectId = state.selectedThreadId ? state.activeThreadProjectId : state.selectedProjectId;
+  const project = state.projects.find((item) => item.id === activeProjectId) || null;
+  if (badge) {
+    badge.textContent = project ? `Projeto · ${project.name}` : 'Geral · sem projeto';
+    badge.title = project ? `Esta conversa usa o projeto ${project.name} (${project.cwd})` : 'Esta conversa não está vinculada a um projeto.';
+  }
+  const select = $('#chatContextSelect');
+  if (!select) return;
+  const current = state.selectedProjectId;
+  select.replaceChildren(new Option('Dúvida geral · sem projeto', ''));
+  state.projects.forEach((item) => select.add(new Option(`Desenvolver em · ${item.name}`, item.id)));
+  select.value = state.projects.some((item) => item.id === current) ? current : '';
+}
+
+function associateThreadWithSelectedProject(threadId) {
+  const project = state.projects.find((item) => item.id === state.selectedProjectId);
+  if (!project || !threadId) return;
+  if (!Array.isArray(project.threadIds)) project.threadIds = [];
+  if (!project.threadIds.includes(threadId)) project.threadIds.push(threadId);
+  renderProjects();
 }
 
 function renderProjects() {
@@ -425,27 +450,61 @@ function renderProjects() {
     list.append(button);
   });
   installIcons();
+  renderConversationContext();
 }
 
-function selectProject(id, updateFolder = true) {
+function selectProject(id, { folderPath = null, updateActiveThread = false } = {}) {
   const project = state.projects.find((item) => item.id === id) || null;
   state.selectedProjectId = project?.id || '';
   if (state.selectedProjectId) localStorage.setItem('codex-project', state.selectedProjectId);
   else localStorage.removeItem('codex-project');
-  if (project && updateFolder) updateWorkingDirectory(project.cwd);
+  if (folderPath) updateWorkingDirectory(folderPath);
+  else if (!state.selectedThreadId) updateWorkingDirectory(project?.cwd || state.defaultCwd || state.cwd);
+  if (updateActiveThread && state.selectedThreadId) state.activeThreadProjectId = project?.id || '';
+  renderConversationContext();
   renderThreads(state.threads, $('#threadSearch').value.trim());
+}
+
+function projectSlug(value) {
+  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63) || 'novo-projeto';
+}
+
+function updateProjectDirectoryField() {
+  const createDirectory = $('#projectCreateDirectory').checked;
+  const path = $('#projectPath');
+  path.readOnly = createDirectory;
+  $('#projectDialogCopy').textContent = createDirectory
+    ? 'A pasta será criada dentro da área de projetos da VPS. O Codex começará uma conversa já vinculada a ela.'
+    : 'Converse com o Codex dentro de uma pasta existente. As conversas iniciadas nela aparecem agrupadas no projeto.';
+  $('#projectsRootLabel').textContent = state.projectsRoot || `${state.defaultCwd}/projects`;
+  if (createDirectory) {
+    const name = $('#projectName').value.trim();
+    path.value = `${state.projectsRoot || `${state.defaultCwd}/projects`}/${projectSlug(name)}`;
+  }
+}
+
+function openProjectDialog(createDirectory = false) {
+  $('#projectForm').reset();
+  $('#projectName').value = '';
+  $('#projectCreateDirectory').checked = createDirectory;
+  $('#projectPath').value = createDirectory ? '' : state.cwd;
+  updateProjectDirectoryField();
+  $('#projectDialog').showModal();
+  $('#projectName').focus();
 }
 
 async function createProject(event) {
   event.preventDefault();
   const name = $('#projectName').value.trim();
   const cwd = $('#projectPath').value.trim();
+  const createDirectory = $('#projectCreateDirectory').checked;
   try {
-    const data = await api('/api/projects', { method: 'POST', body: JSON.stringify({ name, cwd }) });
+    const data = await api('/api/projects', { method: 'POST', body: JSON.stringify({ name, cwd, createDirectory }) });
     state.projects = data.projects || [];
     $('#projectDialog').close();
     $('#projectForm').reset();
     selectProject(data.project.id);
+    if (createDirectory) newChat();
     toast('Projeto criado.');
   } catch (error) {
     toast(error.message, 'error');
@@ -648,6 +707,7 @@ function updateThreadHeader(thread) {
     $('#threadMeta').replaceChildren();
     history.replaceState(null, '', location.pathname);
   }
+  renderConversationContext();
   renderThreads(state.threads);
 }
 
@@ -949,7 +1009,32 @@ function renderActivity(item, append = false, turnId = '') {
     headingText.textContent = `Busca na web${item.query ? ` · ${item.query}` : ''}`;
   } else if (item.type === 'collabToolCall') {
     headingIcon.innerHTML = `<svg viewBox="0 0 24 24">${icons.bolt}</svg>`;
-    headingText.textContent = item.status === 'completed' ? 'Agente auxiliar concluiu' : 'Agente auxiliar trabalhando';
+    const normalize = (value) => String(value || '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').toLowerCase();
+    const tool = normalize(item.tool);
+    const status = normalize(item.status);
+    const states = item.agentsStates && typeof item.agentsStates === 'object' ? item.agentsStates : {};
+    const agentRefs = Array.isArray(item.receiverAgents) ? item.receiverAgents : [];
+    const agentIds = [...new Set([...agentRefs.map((agent) => agent.threadId), ...Object.keys(states), ...(item.receiverThreadIds || [])].filter(Boolean))];
+    const hasRunningAgent = Object.values(states).some((agent) => ['running', 'pending init'].includes(normalize(agent?.status)));
+    const isFailed = status === 'failed' || Object.values(states).some((agent) => ['errored', 'not found'].includes(normalize(agent?.status)));
+    const action = tool === 'spawn agent' ? 'delegou uma tarefa' : tool === 'wait' ? 'aguardou o trabalho' : tool === 'send input' ? 'enviou uma orientação' : tool === 'resume agent' ? 'retomou um agente' : tool === 'close agent' ? 'encerrou um agente' : tool === 'interrupt agent' ? 'interrompeu um agente' : tool === 'list agents' ? 'consultou os agentes' : 'coordenou agentes';
+    const result = isFailed ? 'com falha' : status === 'interrupted' ? 'interrompido' : (status === 'in progress' || hasRunningAgent) ? 'em andamento' : 'concluído';
+    const agentStatusLabels = { 'pending init': 'iniciando', running: 'trabalhando', interrupted: 'interrompido', completed: 'concluiu', errored: 'falhou', shutdown: 'encerrado', 'not found': 'indisponível' };
+    const countLabel = agentIds.length ? ` · ${agentIds.length} agente${agentIds.length === 1 ? '' : 's'}` : '';
+    headingText.textContent = `Agentes auxiliares · ${action}${countLabel} · ${result}`;
+    const details = [];
+    const prompt = typeof item.prompt === 'string' ? item.prompt.trim() : '';
+    if (prompt) details.push(`Tarefa: ${prompt.slice(0, 500)}${prompt.length > 500 ? '…' : ''}`);
+    for (const agentId of agentIds) {
+      const ref = agentRefs.find((agent) => agent.threadId === agentId);
+      const identity = [ref?.agentNickname, ref?.agentRole].filter(Boolean).join(' · ') || `Agente ${String(agentId).slice(0, 8)}`;
+      const agentState = states[agentId];
+      const agentStatus = normalize(agentState?.status);
+      const stateLabel = agentStatus ? ` — ${agentStatusLabels[agentStatus] || agentStatus}` : '';
+      const message = typeof agentState?.message === 'string' ? `: ${agentState.message.slice(0, 180)}` : '';
+      details.push(`${identity}${stateLabel}${message}`);
+    }
+    if (details.length) output.textContent = details.join('\n');
   } else {
     headingIcon.innerHTML = `<svg viewBox="0 0 24 24">${icons.bolt}</svg>`;
     headingText.textContent = item.type === 'mcpToolCall' ? `Ferramenta · ${item.tool || 'MCP'}` : item.type === 'plan' ? 'Plano de trabalho' : item.type || 'Atividade';
@@ -1185,10 +1270,16 @@ function connectEvents() {
     else if (event.type === 'turn-accepted') {
       const isNew = !state.selectedThreadId;
       state.selectedThreadId = event.data.threadId;
+      if (isNew) state.activeThreadProjectId = state.selectedProjectId;
       setBusy(true);
       if (isNew) updateThreadHeader({ id: event.data.threadId, name: 'Nova conversa', model: event.data.model, status: { type: 'active' } });
     }
-    else if (event.type === 'thread-created') { state.selectedThreadId = event.data.thread.id; }
+    else if (event.type === 'thread-created') {
+      state.selectedThreadId = event.data.thread.id;
+      state.activeThreadProjectId = state.selectedProjectId;
+      associateThreadWithSelectedProject(event.data.thread.id);
+      renderConversationContext();
+    }
     else if (event.type === 'turn-completed') {
       if (event.data.threadId === state.selectedThreadId) {
         const turnId = event.data.turn?.id;
@@ -1231,8 +1322,12 @@ async function bootstrap() {
     state.usage = data.usage;
     state.threads = data.threads || [];
     state.projects = data.projects || [];
-    if (!state.cwd) updateWorkingDirectory(data.defaultCwd || '/');
+    state.defaultCwd = data.defaultCwd || '/';
+    state.projectsRoot = data.projectsRoot || `${state.defaultCwd}/projects`;
     if (!state.projects.some((project) => project.id === state.selectedProjectId)) state.selectedProjectId = '';
+    const startupProject = state.projects.find((project) => project.id === state.selectedProjectId);
+    if (startupProject) updateWorkingDirectory(startupProject.cwd);
+    else if (!state.cwd) updateWorkingDirectory(state.defaultCwd);
     (data.pending || []).forEach((request) => state.pendingApprovals.set(String(request.id), request));
     populateModels(); renderUsage(); renderProjects(); renderThreads(); setConnection(true, 'Codex conectado');
     if ($('#planBadge') && data.account?.planType) $('#planBadge').textContent = String(data.account.planType).replace(/^./, (char) => char.toUpperCase());
@@ -1297,9 +1392,10 @@ async function openThread(threadId) {
   if (!threadId || state.loadingThreadId === threadId) return;
   state.selectedThreadId = threadId;
   state.loadingThreadId = threadId;
+  const summary = state.threads.find((item) => item.id === threadId);
+  state.activeThreadProjectId = projectForThread(summary)?.id || '';
   state.queueItems = [];
   renderQueue();
-  const summary = state.threads.find((item) => item.id === threadId);
   updateThreadHeader(summary || { id: threadId });
   renderThreads(state.threads, $('#threadSearch').value.trim());
   setBusy(false);
@@ -1307,8 +1403,11 @@ async function openThread(threadId) {
   try {
     await loadThreadHistory(threadId);
     if (state.selectedThreadId !== threadId) return;
-    const project = projectForThread(state.selectedThread || state.threads.find((item) => item.id === threadId));
-    selectProject(project?.id || '', Boolean(project));
+    const thread = state.selectedThread || state.threads.find((item) => item.id === threadId);
+    const project = projectForThread(thread);
+    state.activeThreadProjectId = project?.id || '';
+    const cwd = project?.cwd || thread?.cwd || thread?.workingDirectory || thread?.workspace?.cwd || state.defaultCwd;
+    selectProject(project?.id || '', { folderPath: cwd, updateActiveThread: true });
   } catch (error) {
     if (state.selectedThreadId === threadId) {
       setBusy(false);
@@ -1324,10 +1423,13 @@ function newChat() {
   state.followLatest = true;
   state.selectedThreadId = null;
   state.selectedThread = null;
+  state.activeThreadProjectId = '';
   state.loadingThreadId = null;
   state.streamedMessages.clear(); state.activityCards.clear(); state.commandGroups.clear(); state.reasoningGroups.clear(); state.turnIntermediates.clear(); state.userMessageIds.clear();
   state.activeTurnId = null;
   state.queueItems = []; renderQueue();
+  const project = state.projects.find((item) => item.id === state.selectedProjectId);
+  updateWorkingDirectory(project?.cwd || state.defaultCwd || state.cwd || '/');
   $('#messages').replaceChildren(); $('#welcome').classList.remove('hidden');
   setBusy(false); updateThreadHeader(null);
   if (window.innerWidth <= 680) closeSidebar();
@@ -1422,6 +1524,10 @@ async function submitMessage(event) {
       body: JSON.stringify({ threadId: currentThread, text, model: state.modelId, effort: state.effort, cwd: state.cwd, images: files.map(({ name, mime, data }) => ({ name, mime, data })) }),
     });
     state.selectedThreadId = result.threadId;
+    if (!currentThread) {
+      state.activeThreadProjectId = state.selectedProjectId;
+      associateThreadWithSelectedProject(result.threadId);
+    }
     if (!currentThread && !result.queued) updateThreadHeader({ id: result.threadId, name: 'Nova conversa', model: getSelectedModel()?.displayName || state.modelId, status: { type: 'active' } });
     if (result.queued) {
       setBusy(true);
@@ -1515,7 +1621,7 @@ function bindEvents() {
     if (!next.startsWith('/')) return toast('Informe um caminho absoluto da VPS.', 'error');
     updateWorkingDirectory(next);
     const project = state.projects.find((item) => pathIsWithin(next, item.cwd));
-    selectProject(project?.id || '', false);
+    selectProject(project?.id || '', { folderPath: next, updateActiveThread: true });
     $('#pathDialog').close();
   });
   $$('.quick-paths button').forEach((button) => button.addEventListener('click', () => { $('#cwdInput').value = button.dataset.path; }));
@@ -1547,7 +1653,11 @@ function bindEvents() {
   $('#closeUsage').addEventListener('click', () => showInspector(false));
   $('#openSidebar').addEventListener('click', openSidebar);
   $('#closeSidebar').addEventListener('click', closeSidebar);
-  $('#addProject').addEventListener('click', () => { $('#projectName').value = ''; $('#projectPath').value = state.cwd; $('#projectDialog').showModal(); });
+  $('#addProject').addEventListener('click', () => openProjectDialog(false));
+  $('#newProjectChat').addEventListener('click', () => openProjectDialog(true));
+  $('#chatContextSelect').addEventListener('change', () => selectProject($('#chatContextSelect').value));
+  $('#projectName').addEventListener('input', updateProjectDirectoryField);
+  $('#projectCreateDirectory').addEventListener('change', updateProjectDirectoryField);
   $('#cancelProject').addEventListener('click', () => $('#projectDialog').close());
   $('#projectForm').addEventListener('submit', createProject);
   window.addEventListener('hashchange', () => {

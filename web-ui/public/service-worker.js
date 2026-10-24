@@ -1,4 +1,4 @@
-const CACHE = 'codex-web-harness-shell-v9';
+const CACHE = 'codex-web-harness-shell-v10';
 const SHELL = [
   '/codex-agent/',
   '/codex-agent/styles.css',

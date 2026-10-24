@@ -119,13 +119,14 @@
           <div class="dialog-heading">
             <div><p class="eyebrow">ORGANIZAÇÃO</p><h2 id="projectDialogTitle">Novo projeto</h2></div>
           </div>
-          <p>Converse com o Codex dentro da pasta do projeto. As conversas iniciadas nessa pasta aparecem agrupadas aqui.</p>
+          <p id="projectDialogCopy">Converse com o Codex dentro de uma pasta existente. As conversas iniciadas nela aparecem agrupadas no projeto.</p>
           <label class="project-field">Nome do projeto
             <input id="projectName" name="name" type="text" maxlength="80" autocomplete="off" required placeholder="Ex.: Live Rooms" />
           </label>
           <label class="project-field">Pasta na VPS
             <input id="projectPath" name="cwd" type="text" autocomplete="off" required placeholder="/home/codex/projects/my-project" />
           </label>
+          <label class="project-create-folder"><input id="projectCreateDirectory" type="checkbox" /> <span>Criar uma pasta nova em <code id="projectsRootLabel">~/projects</code> e iniciar uma conversa de projeto</span></label>
           <div class="dialog-actions">
             <button class="secondary-button" id="cancelProject" type="button">Cancelar</button>
             <button class="primary-button" type="submit">Criar projeto</button>
@@ -137,7 +138,7 @@
         <header class="topbar">
           <div class="topbar-left">
             <button class="icon-button menu-button" id="openSidebar" aria-label="Abrir menu"></button>
-            <div class="breadcrumb"><span>Codex</span><span class="breadcrumb-separator">/</span><strong id="activeTitle">Novo chat</strong></div>
+            <div class="breadcrumb"><span>Codex</span><span class="breadcrumb-separator">/</span><strong id="activeTitle">Novo chat</strong><span class="conversation-context" id="conversationContext">Geral · sem projeto</span></div>
           </div>
           <div class="topbar-actions">
             <button class="icon-button usage-toggle" id="toggleUsage" aria-label="Abrir painel de uso" title="Uso e ambiente"><span class="icon" data-icon="chart"></span></button>
@@ -150,6 +151,12 @@
             <p class="eyebrow">SEU AMBIENTE</p>
             <h1>O que vamos resolver?</h1>
             <p class="welcome-copy">Converse com o Codex. Ele está executando na VPS e pode trabalhar nos diretórios que você escolher.</p>
+            <div class="welcome-context">
+              <label for="chatContextSelect">Começar conversa em</label>
+              <select id="chatContextSelect" aria-label="Contexto da nova conversa"><option value="">Dúvida geral · sem projeto</option></select>
+              <button type="button" class="new-project-action" id="newProjectChat"><span class="icon" data-icon="plus"></span><span>Começar um projeto novo</span></button>
+              <p class="context-note">Quando ajudar, o Codex pode delegar tarefas independentes a agentes auxiliares; a atividade aparece junto às etapas do turno.</p>
+            </div>
             <div class="prompt-suggestions">
               <button class="suggestion" data-prompt="Faça um panorama do uso atual de CPU, memória e armazenamento desta VPS."><span class="suggestion-icon" data-icon="chart"></span><span><strong>Verificar recursos</strong><small>CPU, memória e disco</small></span><span class="icon suggestion-arrow" data-icon="arrow"></span></button>
               <button class="suggestion" data-prompt="Faça um diagnóstico somente de leitura dos serviços Docker em execução e mostre seus nomes, imagens, portas e saúde."><span class="suggestion-icon" data-icon="containers"></span><span><strong>Mapear containers</strong><small>Serviços e estado atual</small></span><span class="icon suggestion-arrow" data-icon="arrow"></span></button>

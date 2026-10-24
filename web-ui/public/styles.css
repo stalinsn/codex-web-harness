@@ -108,6 +108,10 @@ kbd { margin-left: auto; padding: 2px 5px; color: #898a94; font-size: 10px; bord
 .project-field { display: grid; gap: 7px; margin-top: 13px; color: #d6d7df; font-size: 11px; font-weight: 600; }
 .project-field input { width: 100%; height: 42px; padding: 0 11px; color: #e2e3e9; font-family: 'IBM Plex Mono', monospace; font-size: 11px; border: 1px solid #44464e; border-radius: 8px; outline: 0; background: #17181b; }
 .project-field input:focus { border-color: #858ff0; box-shadow: 0 0 0 3px #8e9cff20; }
+.project-field input[readonly] { color: #aeb1c2; background: #1d1e23; }
+.project-create-folder { display: flex; align-items: flex-start; gap: 8px; margin-top: 13px; color: #b5b6c0; font-size: 11px; line-height: 1.5; cursor: pointer; }
+.project-create-folder input { width: 15px; height: 15px; flex: none; margin: 1px 0 0; accent-color: #8f9cff; }
+.project-create-folder code { color: #c5ccff; font-family: 'IBM Plex Mono', monospace; font-size: 10px; }
 .sidebar-bottom { flex-direction: column; align-items: stretch; gap: 4px; padding-top: 10px; border-top: 1px solid #292a2e; }
 .connection-status { display: flex; align-items: center; gap: 8px; min-height: 27px; padding: 0 8px; color: #999aa2; font-size: 11px; }
 .status-dot, .environment-indicator { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--orange); box-shadow: 0 0 10px #efa76355; }
@@ -129,6 +133,7 @@ kbd { margin-left: auto; padding: 2px 5px; color: #898a94; font-size: 10px; bord
 .breadcrumb { display: flex; align-items: center; min-width: 0; gap: 10px; color: #90919a; font-size: 12px; }
 .breadcrumb strong { overflow: hidden; color: #e2e2e7; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .breadcrumb-separator { color: #5f6068; }
+.conversation-context { min-width: 0; max-width: 180px; overflow: hidden; padding: 5px 8px; color: #c8ceff; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; border: 1px solid #393e59; border-radius: 7px; background: #232634; }
 .topbar-actions { gap: 5px; }
 .topbar-actions .icon { width: 16px; height: 16px; }
 .conversation { position: relative; display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
@@ -139,6 +144,15 @@ kbd { margin-left: auto; padding: 2px 5px; color: #898a94; font-size: 10px; bord
 .eyebrow { margin: 0; color: #8f91a0; font-size: 10px; font-weight: 700; letter-spacing: .14em; }
 .welcome h1 { margin: 12px 0 9px; color: #f1f1f3; font-size: clamp(25px, 3.2vw, 33px); font-weight: 600; letter-spacing: -.04em; }
 .welcome-copy { max-width: 470px; margin: 0 auto; color: #a1a2aa; font-size: 13px; line-height: 1.7; }
+.welcome-context { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; margin: 21px auto 0; padding: 10px; text-align: left; border: 1px solid #33343a; border-radius: 11px; background: #1c1d20; }
+.welcome-context label { color: #9c9ea8; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.welcome-context select { min-width: 0; height: 36px; padding: 0 10px; color: #e2e3e9; font-size: 11px; border: 1px solid #3b3d45; border-radius: 7px; outline: 0; background: #232428; }
+.welcome-context select:focus { border-color: #858ff0; }
+.welcome-context option { color: #ececf0; background: #24252a; }
+.new-project-action { display: inline-flex; min-height: 36px; align-items: center; gap: 6px; padding: 0 10px; color: #d5d9ff; font-size: 10px; font-weight: 600; white-space: nowrap; border: 1px solid #41465f; border-radius: 7px; background: #292c3a; cursor: pointer; }
+.new-project-action:hover { border-color: #727da9; background: #34384a; }
+.new-project-action .icon { width: 13px; height: 13px; }
+.context-note { grid-column: 1 / -1; margin: 1px 2px 0; color: #858792; font-size: 9px; line-height: 1.5; }
 .prompt-suggestions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 27px auto 0; text-align: left; }
 .suggestion { display: flex; min-width: 0; align-items: center; gap: 11px; padding: 14px 12px; color: #bfc0c7; text-align: left; border: 1px solid #33343a; border-radius: 11px; background: #202125; cursor: pointer; transition: .15s ease; }
 .suggestion:hover { border-color: #555862; background: #25262b; transform: translateY(-1px); }
@@ -396,6 +410,9 @@ kbd { margin-left: auto; padding: 2px 5px; color: #898a94; font-size: 10px; bord
   .brand-mark.large { width: 42px; height: 42px; }
   .welcome h1 { margin-top: 10px; font-size: 25px; }
   .welcome-copy { max-width: 340px; font-size: 12px; }
+  .conversation-context { max-width: 94px; padding: 4px 6px; font-size: 8px; }
+  .welcome-context { grid-template-columns: 1fr; gap: 7px; margin-top: 15px; padding: 9px; }
+  .welcome-context select, .new-project-action { width: 100%; min-height: 38px; }
   .prompt-suggestions { grid-template-columns: 1fr; gap: 8px; margin-top: 21px; }
   .suggestion { padding: 11px; }
   .messages { width: 100%; gap: 22px; padding: 20px 17px 24px; }

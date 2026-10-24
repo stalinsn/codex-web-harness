@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { lstat, mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, rename, rmdir, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { extname, join, resolve, sep } from 'node:path';
+import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
@@ -305,6 +305,38 @@ async function validateCwd(value) {
   return canonical;
 }
 
+async function createProjectDirectory(value) {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.includes('\0')) {
+    throw Object.assign(new Error('Informe a pasta nova dentro da pasta de projetos da VPS.'), { statusCode: 400 });
+  }
+  const home = await realpath(HOME_DIR);
+  const projectsRoot = join(home, 'projects');
+  await mkdir(projectsRoot, { recursive: true, mode: 0o750 });
+  const actualRoot = await realpath(projectsRoot);
+  if (actualRoot !== projectsRoot) {
+    throw Object.assign(new Error('A pasta ~/projects precisa ser um diretório local, não um link para outro caminho.'), { statusCode: 400 });
+  }
+  const target = resolve(value);
+  const slug = basename(target);
+  if (dirname(target) !== projectsRoot || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(slug)) {
+    throw Object.assign(new Error(`Projetos novos precisam ser pastas diretas de ${projectsRoot}, com nome simples em letras minúsculas, números e hífens.`), { statusCode: 400 });
+  }
+  try {
+    await mkdir(target, { mode: 0o750 });
+  } catch (error) {
+    if (error.code === 'EEXIST') throw Object.assign(new Error('Essa pasta já existe. Selecione “Usar uma pasta existente” para associá-la.'), { statusCode: 409 });
+    throw error;
+  }
+  try {
+    const canonical = await realpath(target);
+    if (dirname(canonical) !== projectsRoot) throw new Error('O caminho criado saiu da pasta de projetos permitida.');
+    return canonical;
+  } catch (error) {
+    await rmdir(target).catch(() => {});
+    throw error;
+  }
+}
+
 async function getProjects() {
   try {
     const config = JSON.parse(await readFile(PROJECTS_FILE, 'utf8'));
@@ -401,6 +433,7 @@ async function handleApi(req, res, pathName, url) {
       usage: usageCache,
       pending: [...pendingRequests.values()],
       defaultCwd: DEFAULT_CWD,
+      projectsRoot: join(await realpath(HOME_DIR), 'projects'),
       server: { online: true, version: '1.0.0' },
     });
   }
@@ -413,13 +446,22 @@ async function handleApi(req, res, pathName, url) {
     const body = await readBody(req);
     const name = typeof body.name === 'string' ? body.name.trim() : '';
     if (!name || name.length > 80) return fail(res, 400, 'Informe um nome de projeto com até 80 caracteres.');
-    const cwd = await validateCwd(body.cwd);
     const projects = await getProjects();
     if (projects.length >= 100) return fail(res, 400, 'O limite de projetos foi atingido.');
-    if (projects.some((project) => project.cwd === cwd)) return fail(res, 409, 'Já existe um projeto para essa pasta.');
+    const createDirectory = body.createDirectory === true;
+    const requestedPath = typeof body.cwd === 'string' ? resolve(body.cwd) : '';
+    if (projects.some((project) => resolve(project.cwd) === requestedPath)) return fail(res, 409, 'Já existe um projeto para essa pasta.');
+    let cwd;
+    if (createDirectory) cwd = await createProjectDirectory(body.cwd);
+    else cwd = await validateCwd(body.cwd);
+    if (projects.some((project) => resolve(project.cwd) === resolve(cwd))) {
+      if (createDirectory) await rmdir(cwd).catch(() => {});
+      return fail(res, 409, 'Já existe um projeto para essa pasta.');
+    }
     const project = { id: randomUUID(), name, cwd, threadIds: [] };
     const updated = [...projects, project];
-    await saveProjects(updated);
+    try { await saveProjects(updated); }
+    catch (error) { if (createDirectory) await rmdir(cwd).catch(() => {}); throw error; }
     return json(res, 201, { project, projects: updated });
   }
 
