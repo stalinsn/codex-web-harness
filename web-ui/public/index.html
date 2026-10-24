@@ -95,16 +95,18 @@
         </button>
         <label class="search-box">
           <span class="icon" data-icon="search"></span>
-          <input id="threadSearch" type="search" placeholder="Buscar conversas" autocomplete="off" />
-          <kbd>⌘ F</kbd>
+          <input id="threadSearch" type="search" placeholder="Buscar conversas…" aria-label="Buscar conversas pelo título" autocomplete="off" />
+          <button type="button" class="search-clear hidden" id="clearThreadSearch" aria-label="Limpar busca">×</button>
         </label>
+        <div class="sidebar-search-tools"><select id="threadSearchScope" aria-label="Onde buscar conversas"><option value="all">Todos os projetos</option><option value="project">Projeto selecionado</option></select><span id="threadSearchHint" aria-live="polite"></span></div>
 
         <div class="sidebar-section-heading project-heading">
           <span>Projetos</span>
           <button class="text-icon-button" id="addProject" type="button" aria-label="Criar projeto" title="Criar projeto"><span class="icon" data-icon="plus"></span></button>
         </div>
         <nav class="project-list" id="projectList" aria-label="Projetos"></nav>
-        <div class="sidebar-section-heading thread-heading"><span id="threadListTitle">Recentes</span><div class="thread-heading-actions"><button class="text-icon-button archive-toggle" id="toggleArchived" type="button">Arquivadas</button><button class="text-icon-button" id="refreshThreads" aria-label="Atualizar histórico" title="Atualizar histórico"><span class="icon" data-icon="refresh"></span></button></div></div>
+        <div class="thread-view-tabs" role="group" aria-label="Visualizar conversas"><button id="showRecentThreads" type="button" aria-pressed="true">Conversas</button><button id="toggleArchived" type="button" aria-pressed="false"><span class="icon" data-icon="archive"></span>Arquivadas</button></div>
+        <div class="sidebar-section-heading thread-heading"><span id="threadListTitle">Recentes</span><button class="text-icon-button" id="refreshThreads" aria-label="Atualizar histórico" title="Atualizar histórico"><span class="icon" data-icon="refresh"></span></button></div>
         <nav class="thread-list" id="threadList" aria-label="Conversas recentes"></nav>
         <div class="sidebar-bottom">
           <div class="connection-status"><span class="status-dot" id="connectionDot"></span><span id="connectionText">Conectando ao Codex…</span></div>

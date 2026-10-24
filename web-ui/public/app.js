@@ -9,6 +9,7 @@ const state = {
   streamedMessages: new Map(), activityCards: new Map(), commandGroups: new Map(), reasoningGroups: new Map(), turnIntermediates: new Map(), userMessageIds: new Set(), pendingApprovals: new Map(),
   activeTurnId: null,
   followLatest: true,
+  threadListRequest: 0,
 };
 const authUi = { mode: 'login', step: 'credentials', challengeId: '', setupRequired: false, countdown: null, started: false };
 
@@ -37,6 +38,9 @@ const icons = {
   bolt: '<path d="m13 2-9 12h7l-1 8 10-13h-7z"/>',
   user: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
   key: '<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9m-4 4 3 3m-6-1 3 3"/>',
+  pin: '<path d="m15 3 6 6-4 1-4 5-4-4 5-4zM9 15l-6 6m4-12 8 8"/>',
+  rename: '<path d="m15 4 5 5M4 20l5-1L20 8a2 2 0 0 0-5-5L4 14z"/>',
+  trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
 };
 
 function installIcons() {
@@ -448,22 +452,34 @@ async function createProject(event) {
   }
 }
 
-function renderThreads(threads = state.threads, query = '') {
+function closeThreadMenus() {
+  $$('.thread-actions-popover').forEach((menu) => {
+    if (menu.matches(':popover-open')) menu.hidePopover();
+  });
+}
+
+function renderThreads(threads = state.threads, query = $('#threadSearch')?.value.trim() || '') {
   state.threads = threads;
   renderProjects();
   const list = $('#threadList');
   const heading = $('#threadListTitle');
-  if (heading) heading.textContent = state.archivedView ? 'Arquivadas' : 'Recentes';
+  if (heading) heading.textContent = query ? 'Resultados da busca' : state.archivedView ? 'Arquivadas' : 'Conversas';
   const archivedToggle = $('#toggleArchived');
   if (archivedToggle) {
-    archivedToggle.textContent = state.archivedView ? 'Recentes' : 'Arquivadas';
     archivedToggle.setAttribute('aria-pressed', String(state.archivedView));
-    archivedToggle.setAttribute('aria-label', state.archivedView ? 'Mostrar conversas recentes' : 'Mostrar conversas arquivadas');
+    archivedToggle.setAttribute('aria-label', 'Mostrar conversas arquivadas');
   }
+  $('#showRecentThreads')?.setAttribute('aria-pressed', String(!state.archivedView));
+  closeThreadMenus();
+  $$('.thread-actions-popover').forEach((menu) => menu.remove());
   list.replaceChildren();
   const project = state.projects.find((item) => item.id === state.selectedProjectId);
-  const visibleThreads = [...(project ? threads.filter((thread) => threadBelongsToProject(thread, project)) : threads)]
+  const allProjects = Boolean(query && $('#threadSearchScope')?.value === 'all');
+  const visibleThreads = [...(project && !allProjects ? threads.filter((thread) => threadBelongsToProject(thread, project)) : threads)]
     .sort((left, right) => Number(right.section?.id === PINNED_THREAD_SECTION_ID) - Number(left.section?.id === PINNED_THREAD_SECTION_ID));
+  $('#clearThreadSearch')?.classList.toggle('hidden', !query);
+  if ($('#threadSearchHint')) $('#threadSearchHint').textContent = query ? `${visibleThreads.length} resultado${visibleThreads.length === 1 ? '' : 's'}` : '';
+  list.setAttribute('aria-label', state.archivedView ? 'Conversas arquivadas' : 'Conversas recentes e fixadas');
   if (!visibleThreads.length) {
     const empty = document.createElement('div');
     empty.className = 'thread-empty';
@@ -471,9 +487,16 @@ function renderThreads(threads = state.threads, query = '') {
     list.append(empty);
     return;
   }
+  let previousGroup = '';
   visibleThreads.forEach((thread) => {
+    const pinned = thread.section?.id === PINNED_THREAD_SECTION_ID;
+    const groupName = state.archivedView || query ? '' : pinned ? 'Fixadas' : 'Recentes';
+    if (groupName && groupName !== previousGroup) {
+      const groupHeading = document.createElement('div'); groupHeading.className = 'thread-group-heading'; groupHeading.textContent = groupName;
+      list.append(groupHeading); previousGroup = groupName;
+    }
     const row = document.createElement('div');
-    row.className = 'thread-row';
+    row.className = `thread-row${pinned ? ' pinned' : ''}`;
     const button = document.createElement('button');
     button.className = `thread-item ${thread.id === state.selectedThreadId ? 'active' : ''}`;
     button.type = 'button';
@@ -481,37 +504,56 @@ function renderThreads(threads = state.threads, query = '') {
     button.innerHTML = `<span class="icon" data-icon="chat"></span><span class="thread-item-title"></span>${thread.section?.id === PINNED_THREAD_SECTION_ID ? '<span class="thread-pin-badge">Fixada</span>' : ''}`;
     $('.thread-item-title', button).textContent = threadDisplayTitle(thread);
     button.addEventListener('click', () => openThread(thread.id));
-    const menu = document.createElement('details');
+    const menu = document.createElement('div');
     menu.className = 'thread-actions';
-    const trigger = document.createElement('summary');
+    const trigger = document.createElement('button');
+    trigger.type = 'button'; trigger.className = 'thread-actions-trigger';
     trigger.textContent = '⋯';
     trigger.title = 'Ações da conversa';
     trigger.setAttribute('aria-label', `Ações: ${threadDisplayTitle(thread)}`);
+    trigger.setAttribute('aria-haspopup', 'menu'); trigger.setAttribute('aria-expanded', 'false');
     menu.append(trigger);
     const popover = document.createElement('div');
     popover.className = 'thread-actions-popover';
-    const action = (label, handler, { danger = false, disabled = false } = {}) => {
+    popover.id = `thread-menu-${thread.id}`; popover.setAttribute('popover', 'auto'); popover.setAttribute('role', 'menu');
+    popover.setAttribute('aria-label', `Ações: ${threadDisplayTitle(thread)}`); trigger.setAttribute('aria-controls', popover.id);
+    const action = (label, handler, { danger = false, disabled = false, icon = 'chat' } = {}) => {
       const item = document.createElement('button');
       item.type = 'button';
       item.className = danger ? 'thread-action danger' : 'thread-action';
-      item.textContent = label;
+      item.setAttribute('role', 'menuitem');
+      item.innerHTML = `<span class="icon" data-icon="${icon}"></span><span>${escapeHtml(label)}</span>`;
       item.disabled = disabled;
+      if (disabled) item.title = 'Disponível quando a execução terminar.';
       item.addEventListener('click', (event) => {
         event.stopPropagation();
-        menu.open = false;
+        popover.hidePopover();
         handler();
       });
       popover.append(item);
     };
     const running = thread.status?.type === 'active';
-    action('Renomear', () => performThreadAction(thread, 'rename'));
-    action(thread.section?.id === PINNED_THREAD_SECTION_ID ? 'Desafixar' : 'Fixar no topo', () => performThreadAction(thread, 'pin'));
-    action(state.archivedView ? 'Restaurar' : 'Arquivar', () => performThreadAction(thread, state.archivedView ? 'unarchive' : 'archive'), { disabled: running });
-    action('Excluir conversa', () => performThreadAction(thread, 'delete'), { danger: true, disabled: running });
-    menu.append(popover);
-    menu.addEventListener('toggle', () => {
-      if (!menu.open) return;
-      $$('.thread-actions[open]').forEach((other) => { if (other !== menu) other.open = false; });
+    action('Renomear', () => performThreadAction(thread, 'rename'), { icon: 'rename' });
+    if (!state.archivedView) action(pinned ? 'Desafixar' : 'Fixar no topo', () => performThreadAction(thread, 'pin'), { icon: 'pin' });
+    action(state.archivedView ? 'Restaurar conversa' : 'Arquivar conversa', () => performThreadAction(thread, state.archivedView ? 'unarchive' : 'archive'), { disabled: running, icon: 'archive' });
+    action('Excluir conversa', () => performThreadAction(thread, 'delete'), { danger: true, disabled: running, icon: 'trash' });
+    document.body.append(popover);
+    trigger.addEventListener('click', () => {
+      if (popover.matches(':popover-open')) return popover.hidePopover();
+      closeThreadMenus(); popover.showPopover();
+      const rect = trigger.getBoundingClientRect();
+      const height = popover.getBoundingClientRect().height;
+      popover.style.left = `${Math.max(8, Math.min(innerWidth - 212, rect.right - 204))}px`;
+      popover.style.top = `${Math.max(8, Math.min(innerHeight - height - 8, rect.bottom + 5))}px`;
+    });
+    popover.addEventListener('toggle', () => trigger.setAttribute('aria-expanded', String(popover.matches(':popover-open'))));
+    trigger.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown') { event.preventDefault(); if (!popover.matches(':popover-open')) trigger.click(); $('button:not(:disabled)', popover)?.focus(); }
+    });
+    popover.addEventListener('keydown', (event) => {
+      const buttons = $$('button:not(:disabled)', popover); const index = buttons.indexOf(document.activeElement);
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); popover.hidePopover(); trigger.focus(); }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); buttons[(index + (event.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length]?.focus(); }
     });
     row.append(button, menu);
     list.append(row);
@@ -1162,11 +1204,13 @@ function connectEvents() {
   };
 }
 
-async function refreshThreadList(query = '') {
+async function refreshThreadList(query = $('#threadSearch')?.value.trim() || '') {
+  const requestId = ++state.threadListRequest;
   const params = new URLSearchParams();
   if (query) params.set('search', query);
   if (state.archivedView) params.set('archived', 'true');
   const data = await api(`/api/threads${params.size ? `?${params}` : ''}`);
+  if (requestId !== state.threadListRequest) return;
   renderThreads(data.threads || [], query);
 }
 
@@ -1479,10 +1523,24 @@ function bindEvents() {
   $('#imageInput').addEventListener('change', async (event) => { await addFiles(event.target.files); event.target.value = ''; });
   $('#refreshThreads').addEventListener('click', () => refreshThreadList($('#threadSearch').value.trim()).catch((error) => toast(error.message, 'error')));
   $('#toggleArchived').addEventListener('click', async () => {
-    state.archivedView = !state.archivedView;
+    if (state.archivedView) return;
+    state.archivedView = true;
     try { await refreshThreadList($('#threadSearch').value.trim()); }
-    catch (error) { state.archivedView = !state.archivedView; renderThreads(state.threads); toast(error.message, 'error'); }
+    catch (error) { state.archivedView = false; renderThreads(state.threads); toast(error.message, 'error'); }
   });
+  $('#showRecentThreads').addEventListener('click', async () => {
+    if (!state.archivedView) return;
+    state.archivedView = false;
+    try { await refreshThreadList(); }
+    catch (error) { state.archivedView = true; renderThreads(state.threads); toast(error.message, 'error'); }
+  });
+  $('#clearThreadSearch').addEventListener('click', () => {
+    $('#threadSearch').value = ''; $('#threadSearch').focus();
+    refreshThreadList('').catch((error) => toast(error.message, 'error'));
+  });
+  $('#threadSearchScope').addEventListener('change', () => renderThreads());
+  $('#threadList').addEventListener('scroll', closeThreadMenus, { passive: true });
+  window.addEventListener('resize', closeThreadMenus);
   $('#threadSearch').addEventListener('input', debounce(() => refreshThreadList($('#threadSearch').value.trim()).catch((error) => toast(error.message, 'error')), 250));
   $('#refreshUsage').addEventListener('click', () => refreshUsage(true).then(() => toast('Uso atualizado.')).catch((error) => toast(error.message, 'error')));
   $('#toggleUsage').addEventListener('click', () => showInspector(true));
