@@ -17,9 +17,16 @@ function loadProjectColors() {
   } catch { return {}; }
 }
 
+function loadThreadColors() {
+  try {
+    const value = JSON.parse(localStorage.getItem('codex-thread-colors') || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch { return {}; }
+}
+
 const state = {
   models: [], threads: [], projects: [], selectedProjectId: localStorage.getItem('codex-project') || '', selectedThreadId: null, selectedThread: null,
-  expandedProjectId: localStorage.getItem('codex-expanded-project') || '', projectColors: loadProjectColors(), agentThreads: new Map(),
+  expandedProjectId: localStorage.getItem('codex-expanded-project') || '', projectColors: loadProjectColors(), threadColors: loadThreadColors(), unassignedExpanded: localStorage.getItem('codex-unassigned-expanded') !== 'false', agentThreads: new Map(),
   cwd: localStorage.getItem('codex-cwd') || '', defaultCwd: '', projectsRoot: '', activeThreadProjectId: '', archivedView: false, loadingThreadId: null,
   historyThreadId: '', historyTurns: [], historyNextCursor: null, historyLoadedOlder: false, historyLoadingOlder: false,
   modelId: localStorage.getItem('codex-model') || '', effort: localStorage.getItem('codex-effort') || '',
@@ -102,6 +109,7 @@ const icons = {
   user: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
   key: '<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9m-4 4 3 3m-6-1 3 3"/>',
   pin: '<path d="m15 3 6 6-4 1-4 5-4-4 5-4zM9 15l-6 6m4-12 8 8"/>',
+  tag: '<path d="M20 13 11 22 2 13V4h9z"/><circle cx="7.5" cy="8.5" r="1.2"/>',
   rename: '<path d="m15 4 5 5M4 20l5-1L20 8a2 2 0 0 0-5-5L4 14z"/>',
   trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
   microphone: '<rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V22m-4 0h8"/>',
@@ -845,6 +853,11 @@ function projectColor(project) {
   return PROJECT_COLOR_OPTIONS.some((option) => option.color === color) ? color : '';
 }
 
+function threadColor(thread) {
+  const color = state.threadColors[thread?.id];
+  return PROJECT_COLOR_OPTIONS.some((option) => option.color === color) ? color : '';
+}
+
 function closeProjectColorMenus() {
   $$('.project-color-popover').forEach((popover) => {
     if (popover.matches(':popover-open')) popover.hidePopover();
@@ -856,6 +869,13 @@ function setProjectColor(projectId, color) {
   if (color) state.projectColors[projectId] = color;
   else delete state.projectColors[projectId];
   localStorage.setItem('codex-project-colors', JSON.stringify(state.projectColors));
+  renderThreads(state.threads, $('#threadSearch').value.trim());
+}
+
+function setThreadColor(threadId, color) {
+  if (color) state.threadColors[threadId] = color;
+  else delete state.threadColors[threadId];
+  localStorage.setItem('codex-thread-colors', JSON.stringify(state.threadColors));
   renderThreads(state.threads, $('#threadSearch').value.trim());
 }
 
@@ -894,6 +914,42 @@ function openProjectColorMenu(project, trigger) {
   popover.querySelector('button')?.focus();
 }
 
+function openThreadColorMenu(thread, trigger) {
+  closeProjectColorMenus();
+  const color = threadColor(thread);
+  const popover = document.createElement('div');
+  popover.className = 'project-color-popover thread-color-popover';
+  popover.setAttribute('popover', 'auto');
+  popover.setAttribute('role', 'menu');
+  popover.setAttribute('aria-label', `Cor da conversa ${threadDisplayTitle(thread)}`);
+  const title = document.createElement('strong');
+  title.textContent = 'Cor da conversa';
+  popover.append(title);
+  const choices = [{ color: '', label: 'Cor padrão' }, ...PROJECT_COLOR_OPTIONS];
+  choices.forEach((option) => {
+    const choice = document.createElement('button');
+    choice.type = 'button';
+    choice.className = 'project-color-choice';
+    choice.setAttribute('role', 'menuitemradio');
+    choice.setAttribute('aria-checked', String(color === option.color));
+    const swatch = document.createElement('span');
+    swatch.className = `project-color-swatch${option.color ? '' : ' default'}`;
+    if (option.color) swatch.style.setProperty('--project-color', option.color);
+    const label = document.createElement('span');
+    label.textContent = option.label;
+    choice.append(swatch, label);
+    choice.addEventListener('click', () => { popover.hidePopover(); setThreadColor(thread.id, option.color); });
+    popover.append(choice);
+  });
+  document.body.append(popover);
+  popover.showPopover();
+  const rect = trigger.getBoundingClientRect();
+  const height = popover.getBoundingClientRect().height;
+  popover.style.left = `${Math.max(8, Math.min(innerWidth - 208, rect.right - 204))}px`;
+  popover.style.top = `${Math.max(8, Math.min(innerHeight - height - 8, rect.bottom + 5))}px`;
+  popover.querySelector('button')?.focus();
+}
+
 function renderProjects() {
   const list = $('#projectList');
   if (!list) return;
@@ -913,6 +969,61 @@ function renderProjects() {
   list.append(all);
 
   const query = $('#threadSearch')?.value.trim() || '';
+  if (!state.archivedView) {
+    const unassignedThreads = state.threads.filter((thread) => !projectForThread(thread));
+    const unassignedNode = document.createElement('div');
+    unassignedNode.className = 'project-tree-node unassigned-tree-node';
+    const unassignedRow = document.createElement('div');
+    unassignedRow.className = 'project-tree-row';
+    const unassignedToggle = document.createElement('button');
+    unassignedToggle.type = 'button';
+    unassignedToggle.className = 'project-tree-toggle';
+    const isUnassignedExpanded = state.unassignedExpanded && !query;
+    unassignedToggle.setAttribute('aria-expanded', String(isUnassignedExpanded));
+    unassignedToggle.setAttribute('aria-label', `${isUnassignedExpanded ? 'Recolher' : 'Expandir'} conversas sem projeto`);
+    unassignedToggle.innerHTML = '<span class="icon" data-icon="chevron"></span>';
+    unassignedToggle.addEventListener('click', () => {
+      state.unassignedExpanded = !state.unassignedExpanded;
+      localStorage.setItem('codex-unassigned-expanded', String(state.unassignedExpanded));
+      renderThreads(state.threads, $('#threadSearch').value.trim());
+    });
+    const unassignedButton = document.createElement('button');
+    unassignedButton.type = 'button';
+    unassignedButton.className = 'project-item';
+    unassignedButton.title = 'Conversas que não pertencem a nenhum projeto';
+    unassignedButton.innerHTML = '<span class="icon" data-icon="folder"></span>';
+    const unassignedLabel = document.createElement('span');
+    unassignedLabel.className = 'project-item-label';
+    unassignedLabel.textContent = 'Sem projeto';
+    const unassignedCount = document.createElement('span');
+    unassignedCount.className = 'project-count';
+    unassignedCount.textContent = String(unassignedThreads.length);
+    unassignedButton.append(unassignedLabel, unassignedCount);
+    unassignedButton.addEventListener('click', () => {
+      state.unassignedExpanded = true;
+      localStorage.setItem('codex-unassigned-expanded', 'true');
+      selectProject('');
+    });
+    unassignedRow.append(unassignedToggle, unassignedButton);
+    unassignedNode.append(unassignedRow);
+    const unassignedChildren = document.createElement('div');
+    unassignedChildren.className = 'project-tree-children';
+    unassignedChildren.hidden = !isUnassignedExpanded;
+    if (isUnassignedExpanded) {
+      const rows = unassignedThreads.filter((thread) => thread.section?.id !== PINNED_THREAD_SECTION_ID);
+      if (!rows.length) {
+        const empty = document.createElement('div');
+        empty.className = 'project-tree-empty';
+        empty.textContent = unassignedThreads.length ? 'As conversas fixadas aparecem na lista abaixo.' : 'Nenhuma conversa sem projeto.';
+        unassignedChildren.append(empty);
+      } else {
+        rows.forEach((thread) => unassignedChildren.append(createThreadRow(thread, { nested: true, showUnassigned: true })));
+      }
+    }
+    unassignedNode.append(unassignedChildren);
+    list.append(unassignedNode);
+  }
+
   state.projects.forEach((project) => {
     const node = document.createElement('div');
     node.className = 'project-tree-node';
@@ -921,7 +1032,7 @@ function renderProjects() {
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'project-tree-toggle';
-    const isExpanded = project.id === state.selectedProjectId && project.id === state.expandedProjectId && !query;
+    const isExpanded = project.id === state.selectedProjectId && project.id === state.expandedProjectId && !query && !state.archivedView;
     toggle.setAttribute('aria-expanded', String(isExpanded));
     toggle.setAttribute('aria-label', `${isExpanded ? 'Recolher' : 'Expandir'} conversas de ${project.name}`);
     toggle.innerHTML = '<span class="icon" data-icon="chevron"></span>';
@@ -963,24 +1074,19 @@ function renderProjects() {
     children.className = 'project-tree-children';
     children.hidden = !isExpanded;
     if (isExpanded) {
-      const projectThreads = state.threads.filter((thread) => threadBelongsToProject(thread, project))
-        .sort((left, right) => Number(right.section?.id === PINNED_THREAD_SECTION_ID) - Number(left.section?.id === PINNED_THREAD_SECTION_ID));
+      const allProjectThreads = state.threads.filter((thread) => threadBelongsToProject(thread, project));
+      const projectThreads = allProjectThreads.filter((thread) => thread.section?.id !== PINNED_THREAD_SECTION_ID);
       if (!projectThreads.length) {
         const empty = document.createElement('div');
         empty.className = 'project-tree-empty';
-        empty.textContent = state.archivedView ? 'Nenhuma conversa arquivada.' : 'Este projeto ainda não tem conversas.';
+        empty.textContent = allProjectThreads.length ? 'As conversas fixadas aparecem na lista abaixo.' : 'Este projeto ainda não tem conversas.';
         children.append(empty);
       } else {
-        let previousGroup = '';
+        const groupHeading = document.createElement('div');
+        groupHeading.className = 'thread-group-heading project-tree-group-heading';
+        groupHeading.textContent = 'Recentes';
+        children.append(groupHeading);
         projectThreads.forEach((thread) => {
-          const groupName = state.archivedView ? '' : thread.section?.id === PINNED_THREAD_SECTION_ID ? 'Fixadas' : 'Recentes';
-          if (groupName && groupName !== previousGroup) {
-            const groupHeading = document.createElement('div');
-            groupHeading.className = 'thread-group-heading project-tree-group-heading';
-            groupHeading.textContent = groupName;
-            children.append(groupHeading);
-            previousGroup = groupName;
-          }
           children.append(createThreadRow(thread, { nested: true }));
         });
       }
@@ -1066,8 +1172,11 @@ function closeThreadMenus() {
 
 function createThreadRow(thread, { nested = false, showUnassigned = false } = {}) {
   const pinned = thread.section?.id === PINNED_THREAD_SECTION_ID;
+  const project = projectForThread(thread);
+  const color = project ? '' : threadColor(thread);
   const row = document.createElement('div');
-  row.className = `thread-row${pinned ? ' pinned' : ''}${nested ? ' project-thread-row' : ''}`;
+  row.className = `thread-row${pinned ? ' pinned' : ''}${nested ? ' project-thread-row' : ''}${color ? ' has-thread-color' : ''}`;
+  if (color) row.style.setProperty('--thread-color', color);
   const button = document.createElement('button');
   const isRunning = thread.id === state.selectedThreadId ? state.busy : state.activeThreadIds.has(thread.id) || thread.status?.type === 'active';
   button.className = `thread-item ${thread.id === state.selectedThreadId ? 'active' : ''}${isRunning ? ' running' : ''}`;
@@ -1075,17 +1184,17 @@ function createThreadRow(thread, { nested = false, showUnassigned = false } = {}
   button.title = threadDisplayTitle(thread);
   button.innerHTML = '<span class="icon" data-icon="chat"></span><span class="thread-item-title"></span>';
   $('.thread-item-title', button).textContent = threadDisplayTitle(thread);
-  const project = projectForThread(thread);
-  const color = projectColor(project);
+  const projectTagColor = projectColor(project);
   if (!nested && project) {
     const badge = document.createElement('span');
     badge.className = 'thread-project-tag';
-    badge.style.setProperty('--project-color', color || '#9ca7dc');
+    badge.style.setProperty('--project-color', projectTagColor || '#9ca7dc');
     badge.textContent = project.name;
     button.append(badge);
-  } else if (!nested && showUnassigned) {
+  } else if (!project && showUnassigned) {
     const badge = document.createElement('span');
-    badge.className = 'thread-project-tag thread-unassigned-tag';
+    badge.className = `thread-project-tag thread-unassigned-tag${color ? ' has-thread-color' : ''}`;
+    if (color) badge.style.setProperty('--thread-color', color);
     badge.textContent = 'Sem projeto';
     button.append(badge);
   }
@@ -1136,6 +1245,7 @@ function createThreadRow(thread, { nested = false, showUnassigned = false } = {}
   };
   const running = isRunning;
   action('Renomear', () => performThreadAction(thread, 'rename'), { icon: 'rename' });
+  if (!project) action(color ? 'Alterar cor da conversa' : 'Colorir conversa', () => openThreadColorMenu(thread, trigger), { icon: 'tag' });
   if (!state.archivedView) action(pinned ? 'Desafixar' : 'Fixar no topo', () => performThreadAction(thread, 'pin'), { icon: 'pin' });
   action(state.archivedView ? 'Restaurar conversa' : 'Arquivar conversa', () => performThreadAction(thread, state.archivedView ? 'unarchive' : 'archive'), { disabled: running, icon: 'archive' });
   action('Excluir conversa', () => performThreadAction(thread, 'delete'), { danger: true, disabled: running, icon: 'trash' });
@@ -1168,7 +1278,7 @@ function renderThreads(threads = state.threads, query = $('#threadSearch')?.valu
   renderProjects();
   const list = $('#threadList');
   const heading = $('#threadListTitle');
-  if (heading) heading.textContent = query ? 'Resultados da busca' : state.archivedView ? 'Arquivadas' : 'Conversas';
+  if (heading) heading.textContent = query ? 'Resultados da busca' : state.archivedView ? 'Arquivadas' : 'Fixadas';
   const archivedToggle = $('#toggleArchived');
   if (archivedToggle) {
     archivedToggle.setAttribute('aria-pressed', String(state.archivedView));
@@ -1177,12 +1287,23 @@ function renderThreads(threads = state.threads, query = $('#threadSearch')?.valu
   $('#showRecentThreads')?.setAttribute('aria-pressed', String(!state.archivedView));
   list.replaceChildren();
   const project = state.projects.find((item) => item.id === state.selectedProjectId);
-  const treeMode = Boolean(project && state.expandedProjectId === project.id && !query);
   $('#clearThreadSearch')?.classList.toggle('hidden', !query);
   if ($('#threadSearchHint') && !query) $('#threadSearchHint').textContent = '';
-  list.classList.toggle('hidden', treeMode);
-  heading?.classList.toggle('hidden', treeMode);
-  if (treeMode) return;
+  list.classList.remove('hidden');
+  heading?.classList.remove('hidden');
+  if (!query && !state.archivedView) {
+    const pinnedThreads = threads.filter((thread) => thread.section?.id === PINNED_THREAD_SECTION_ID);
+    list.setAttribute('aria-label', 'Conversas fixadas');
+    if (pinnedThreads.length) pinnedThreads.forEach((thread) => list.append(createThreadRow(thread, { showUnassigned: true })));
+    else {
+      const empty = document.createElement('div');
+      empty.className = 'thread-empty';
+      empty.textContent = 'Nenhuma conversa fixada.';
+      list.append(empty);
+    }
+    installIcons();
+    return;
+  }
   const allProjects = Boolean(query && $('#threadSearchScope')?.value === 'all');
   const visibleThreads = [...(project && !allProjects ? threads.filter((thread) => threadBelongsToProject(thread, project)) : threads)]
     .sort((left, right) => Number(right.section?.id === PINNED_THREAD_SECTION_ID) - Number(left.section?.id === PINNED_THREAD_SECTION_ID));
@@ -1206,28 +1327,7 @@ function renderThreads(threads = state.threads, query = $('#threadSearch')?.valu
     rows.forEach((thread) => list.append(createThreadRow(thread, { showUnassigned: !project || allProjects })));
   };
 
-  if (!query && !project) {
-    const pinnedThreads = visibleThreads.filter((thread) => thread.section?.id === PINNED_THREAD_SECTION_ID);
-    const recentThreads = visibleThreads.filter((thread) => thread.section?.id !== PINNED_THREAD_SECTION_ID);
-    appendGroup('Fixadas', pinnedThreads);
-    state.projects.forEach((item) => {
-      appendGroup(item.name, recentThreads.filter((thread) => threadBelongsToProject(thread, item)), 'thread-project-group-heading', item);
-    });
-    appendGroup('Sem projeto', recentThreads.filter((thread) => !projectForThread(thread)), 'thread-unassigned-heading');
-  } else {
-    let previousGroup = '';
-    visibleThreads.forEach((thread) => {
-      const groupName = state.archivedView || query ? '' : thread.section?.id === PINNED_THREAD_SECTION_ID ? 'Fixadas' : 'Recentes';
-      if (groupName && groupName !== previousGroup) {
-        const groupHeading = document.createElement('div');
-        groupHeading.className = 'thread-group-heading';
-        groupHeading.textContent = groupName;
-        list.append(groupHeading);
-        previousGroup = groupName;
-      }
-      list.append(createThreadRow(thread, { showUnassigned: !project || allProjects }));
-    });
-  }
+  visibleThreads.forEach((thread) => list.append(createThreadRow(thread, { showUnassigned: !project || allProjects })));
   installIcons();
 }
 
