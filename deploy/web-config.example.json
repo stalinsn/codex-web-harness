@@ -1,0 +1,17 @@
+{
+  "health": {
+    "buildkitLabel": "BuildKit",
+    "dockerProjectLabels": {
+      "my-app": "My App",
+      "my-app-staging": "My App · staging",
+      "my-app-*": "My App"
+    },
+    "storagePaths": [
+      { "name": "Repositórios de projetos", "path": "~/projects" },
+      { "name": "Builds", "path": "~/builds" },
+      { "name": "Dados e cache do Codex", "path": "~/.codex" },
+      { "name": "Cache do usuário", "path": "~/.cache" },
+      { "name": "Cache npm", "path": "~/.npm" }
+    ]
+  }
+}

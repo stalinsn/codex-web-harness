@@ -1,12 +1,9 @@
 // Docker containers, volumes and disk usage, grouped by compose project.
 import { execFile } from 'node:child_process';
-import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { config } from '../config.mjs';
+import { hostConfig } from '../host-config.mjs';
 
 const execFileAsync = promisify(execFile);
-const HOME_DIR = config.homeDir;
-const CODEX_HOME = config.codexHome;
 const STORAGE_CACHE_MS = 5 * 60 * 1000;
 let dockerStorageCache = null;
 let dockerStorageCacheAt = 0;
@@ -20,19 +17,17 @@ export function parseBytes(value) {
   return Math.round(Number(match[1]) * base ** power);
 }
 
+function parseLabels(value) {
+  return Object.fromEntries(String(value || '').split(',').map((label) => {
+    const separator = label.indexOf('=');
+    return separator < 0 ? [label, ''] : [label.slice(0, separator), label.slice(separator + 1)];
+  }).filter(([key]) => key));
+}
+
 function projectLabel(name, composeProject) {
-  if (/buildkit/i.test(name)) return 'BuildKit de homologação';
-  const known = {
-    'contador-habitos': 'Contador de hábitos',
-    'hp-cards': 'HP Cards',
-    'live-rooms': 'Live Rooms',
-    'live-rooms-homolog': 'Live Rooms · homologação',
-    'artmeta-media': 'Artmeta Media',
-    'codex-agent': 'Proxy do Codex Agent',
-  };
-  if (known[composeProject]) return known[composeProject];
-  if (name.startsWith('live-rooms-')) return 'Live Rooms';
-  return composeProject || name.replace(/-[a-z0-9]{6,}$/, '').replace(/[-_]+/g, ' ') || 'Outros';
+  if (/buildkit/i.test(name)) return hostConfig.buildkitLabel;
+  return hostConfig.dockerLabel(composeProject, name)
+    || composeProject || name.replace(/-[a-z0-9]{6,}$/, '').replace(/[-_]+/g, ' ') || 'Outros';
 }
 
 export async function readDockerHealth() {
@@ -104,10 +99,7 @@ export async function readDockerStorage(force = false) {
     const volumeProjects = new Map();
     const projectPaths = new Map();
     for (const container of detail.Containers || []) {
-      const labels = Object.fromEntries(String(container.Labels || '').split(',').map((label) => {
-        const separator = label.indexOf('=');
-        return separator < 0 ? [label, ''] : [label.slice(0, separator), label.slice(separator + 1)];
-      }).filter(([key]) => key));
+      const labels = parseLabels(container.Labels);
       const owner = projectLabel(container.Names || '', labels['com.docker.compose.project']);
       const workingDir = labels['com.docker.compose.project.working_dir'];
       if (workingDir && workingDir.startsWith('/') && !workingDir.includes('..') && !projectPaths.has(owner)) projectPaths.set(owner, workingDir);
@@ -116,26 +108,14 @@ export async function readDockerStorage(force = false) {
       }
     }
     const volumes = (detail.Volumes || []).map((volume) => {
-      const labels = Object.fromEntries(String(volume.Labels || '').split(',').map((label) => {
-        const separator = label.indexOf('=');
-        return separator < 0 ? [label, ''] : [label.slice(0, separator), label.slice(separator + 1)];
-      }).filter(([key]) => key));
+      const labels = parseLabels(volume.Labels);
       const composeProject = labels['com.docker.compose.project'];
-      const project = composeProject ? projectLabel(volume.Name, composeProject) : volumeProjects.get(volume.Name) || (volume.Name.startsWith('buildx_buildkit_') ? 'BuildKit de homologação' : null);
+      const project = composeProject ? projectLabel(volume.Name, composeProject) : volumeProjects.get(volume.Name) || (volume.Name.startsWith('buildx_buildkit_') ? hostConfig.buildkitLabel : null);
       return { name: volume.Name, size: volume.Size, storageBytes: parseBytes(volume.Size), project, links: Number(volume.Links) || 0 };
     }).sort((a, b) => b.storageBytes - a.storageBytes);
     const projectVolumes = new Map();
     for (const volume of volumes) if (volume.project) projectVolumes.set(volume.project, (projectVolumes.get(volume.project) || 0) + volume.storageBytes);
-    const storagePaths = [
-      ['Repositórios de projetos', join(HOME_DIR, 'projects')],
-      ['Builds', join(HOME_DIR, 'builds')],
-      ['Dados e cache do Codex', CODEX_HOME],
-      ['Workspaces Live Rooms', join(HOME_DIR, 'live-rooms-workspaces')],
-      ['Assets LPC', join(HOME_DIR, 'lpc_assets')],
-      ['Cache do usuário', join(HOME_DIR, '.cache')],
-      ['Cache npm', join(HOME_DIR, '.npm')],
-    ];
-    const storageLocations = await Promise.all(storagePaths.map(async ([name, path]) => {
+    const storageLocations = await Promise.all(hostConfig.storagePaths.map(async ({ name, path }) => {
       try {
         const { stdout } = await execFileAsync('du', ['-x', '-B1', '-s', '--', path], { timeout: 15000, maxBuffer: 16 * 1024 });
         const bytes = Number(stdout.trim().split(/\s+/)[0]) || 0;

@@ -69,6 +69,8 @@ Variáveis de ambiente opcionais:
 
 Se a CLI estiver instalada fora de `~/.local/bin/codex`, defina `CODEX_BIN` com o caminho retornado por `command -v codex` no usuário do serviço.
 
+Ajustes específicos da instalação ficam em `CODEX_HOME/web-config.json` (opcional, fora do Git): nomes amigáveis para projetos Docker no painel de saúde (`dockerProjectLabels`, aceita padrões `prefixo-*`) e as pastas medidas em armazenamento (`storagePaths`, aceita `~/`). Veja `deploy/web-config.example.json`. Reinicie o serviço após alterar.
+
 Os dados da aplicação, incluindo `web-auth.json`, `web-projects.json` e imagens anexadas, ficam dentro de `CODEX_HOME`. Faça backup desse diretório segundo sua política. Não adicione esses dados ao Git.
 
 ## Proteção de acesso
