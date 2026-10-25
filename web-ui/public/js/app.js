@@ -7,6 +7,7 @@ import { PREFIX } from './config.js';
 import { newChat, openThread } from './conversation.js';
 import { loadDeferredQueue, maybeDrainDeferredQueue } from './deferred-queue.js';
 import { $, $$, debounce, randomKey, toast } from './dom.js';
+import { bindInspectorLayout } from './inspector-layout.js';
 import { refreshUsage, refreshVpsHealth, renderUsage } from './inspector.js';
 import { closeSidebar, openSidebar, setConnection, setupComposerViewport, setupInspectorResize, showInspector } from './layout.js';
 import { scrollConversation } from './messages.js';
@@ -17,8 +18,8 @@ import { prepareCompletionSound } from './sound.js';
 import { state, voice } from './state.js';
 import { bindTaskEvents, refreshTasks } from './tasks.js';
 import { closeThreadMenus, refreshThreadList, renderThreads } from './thread-list.js';
-import { bindWizardEvents } from './wizard.js';
 import { clearRecordedAudio, prepareVoicePreview, renderVoice, startVoiceRecording, touchComposer, transcribeRecordedAudio, voiceTime } from './voice.js';
+import { bindWizardEvents } from './wizard.js';
 
 export async function bootstrap() {
   try {
@@ -61,6 +62,7 @@ export function bindEvents() {
   bindAccountEvents();
   bindTaskEvents();
   bindWizardEvents();
+  bindInspectorLayout();
   setupInspectorResize();
   setupComposerViewport();
   $('#closeImagePreview').addEventListener('click', () => $('#imagePreviewDialog').close());

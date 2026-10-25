@@ -1236,3 +1236,34 @@ body.resizing-inspector { cursor: col-resize; user-select: none; }
   .wizard-steps li { padding: 6px 2px; font-size: 9px; }
   .wizard-terminal { max-height: 300px; }
 }
+
+/* ==========================================================================
+   Inspector: summary strip and collapsible cards
+   ========================================================================== */
+
+.inspector-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.summary-tile { display: grid; min-width: 0; gap: 3px; padding: 9px 9px 8px; color: inherit; font: inherit; text-align: left; border: 1px solid #303137; border-radius: 10px; background: #1e1f23; cursor: pointer; }
+.summary-tile:hover, .summary-tile:focus-visible { border-color: #4a4c56; outline: 0; background: #23242a; }
+.summary-tile > span { color: #8f909a; font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.summary-tile strong { color: #eceef4; font: 600 17px 'IBM Plex Mono', ui-monospace, monospace; }
+.summary-tile small { overflow: hidden; color: #9a9ca6; font-size: 9px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.summary-tile .meter-track { height: 4px; }
+.summary-tile.alert { border-color: #6b4a1e; }
+.summary-tile.alert strong { color: #f0c08a; }
+
+.inspector-card[data-card] .card-title-row { cursor: pointer; user-select: none; }
+.card-title-row > div { display: flex; min-width: 0; flex: 1; align-items: center; }
+.card-title-row > div > strong { flex: none; white-space: nowrap; }
+.card-title-row > div > .card-summary { flex: 1; min-width: 0; text-align: right; }
+.card-summary { overflow: hidden; margin-left: 2px; color: #8f909a; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.inspector-card:not(.collapsed) .card-summary { display: none; }
+.card-toggle { display: grid; width: 25px; height: 25px; flex: none; place-items: center; padding: 0; color: #92939c; border: 0; border-radius: 6px; background: transparent; cursor: pointer; }
+.card-toggle:hover { color: var(--text); background: #303137; }
+.card-toggle svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transform: rotate(180deg); transition: transform .16s ease; }
+.inspector-card.collapsed .card-toggle svg { transform: none; }
+.inspector-card.collapsed { padding-bottom: 11px; padding-top: 11px; }
+.inspector-card.collapsed > :not(.card-title-row) { display: none !important; }
+.inspector-card.collapsed .card-title-row .refresh-mini { display: none; }
+.card-title-row { display: flex; align-items: center; }
+.card-title-row > .card-toggle { margin-left: 2px; }
+.card-title-row > .refresh-mini { margin-left: auto; }

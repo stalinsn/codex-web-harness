@@ -3,6 +3,7 @@ import { api } from './api.js';
 import { maybeDrainDeferredQueue } from './deferred-queue.js';
 import { $, escapeHtml } from './dom.js';
 import { formatBytes, formatCountdown, formatDuration, formatNumber, formatReset } from './format.js';
+import { renderInspectorSummary, setCardSummary } from './inspector-layout.js';
 import { renderConversationContext, threadDisplayTitle } from './projects.js';
 import { renderQueue } from './queue.js';
 import { clearResolvedRateLimitFailure, getEffectiveRateLimitBlock, renderRateLimitNotice, updateResetCountdowns } from './rate-limit.js';
@@ -10,6 +11,7 @@ import { runtime, state } from './state.js';
 import { renderThreads } from './thread-list.js';
 
 export function renderUsage() {
+  renderInspectorSummary();
   const meters = $('#rateLimitMeters');
   const data = state.rateLimits;
   const buckets = data ? (Array.isArray(data) ? data : Object.values(data)) : [];
@@ -55,6 +57,7 @@ export function updateThreadHeader(thread) {
   if (thread?.id) {
     const updated = thread.updatedAt ? new Date(Number(thread.updatedAt) * (Number(thread.updatedAt) < 1e12 ? 1000 : 1)) : null;
     const status = thread.status?.type === 'active' ? 'Em execução' : 'Pronta para continuar';
+    setCardSummary('thread', status);
     $('#threadMeta').innerHTML = `<div class="thread-meta-row"><span>Estado</span><strong id="threadExecutionState">${escapeHtml(status)}</strong></div><div class="thread-meta-row"><span>Modelo</span><strong>${escapeHtml(thread.model || thread.modelProvider || 'Codex')}</strong></div><div class="thread-meta-row"><span>Atualizada</span><strong>${updated && !Number.isNaN(updated.getTime()) ? escapeHtml(new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(updated)) : '—'}</strong></div>`;
     location.hash = `thread=${encodeURIComponent(thread.id)}`;
     renderContextUsage(state.contextUsage);
@@ -69,6 +72,7 @@ export function updateThreadHeader(thread) {
 }
 
 export function renderContextUsage(snapshot) {
+  renderInspectorSummary();
   const root = $('#contextUsageMeter');
   if (!root) return;
   const usage = snapshot?.tokenUsage || snapshot || null;
@@ -115,6 +119,7 @@ function renderVpsHealth(data) {
   const { host, docker } = data;
   const memoryPercent = host.memory.totalBytes ? Math.round((host.memory.usedBytes / host.memory.totalBytes) * 100) : 0;
   const diskPercent = host.disk?.usedPercent ?? 0;
+  setCardSummary('health', `CPU ${Math.round(Number(host.cpu.percent) || 0)}% · RAM ${memoryPercent}% · Disco ${diskPercent}%`);
   const percentClass = (value) => value >= 90 ? 'critical' : value >= 75 ? 'high' : '';
   hostMetrics.innerHTML = `
     <div class="vps-metric"><div class="vps-metric-heading"><span>CPU</span><strong>${Number(host.cpu.percent).toFixed(1)}%</strong></div><div class="vps-meter"><i class="${percentClass(host.cpu.percent)}" style="width:${Math.min(100, host.cpu.percent)}%"></i></div><small>${host.cpu.cores} vCPU · carga ${Number(host.load1m).toFixed(2)}</small></div>

@@ -3,6 +3,7 @@ import { api } from './api.js';
 import { PINNED_THREAD_SECTION_ID, PROJECT_COLOR_OPTIONS } from './config.js';
 import { newChat } from './conversation.js';
 import { $, $$, installIcons, toast } from './dom.js';
+import { setCardSummary } from './inspector-layout.js';
 import { state } from './state.js';
 import { createThreadRow, renderThreads } from './thread-list.js';
 
@@ -38,6 +39,7 @@ export function updateWorkingDirectory(path) {
   localStorage.setItem('codex-cwd', path);
   $('#cwdLabel').textContent = path;
   $('#inspectorCwd').textContent = path;
+  setCardSummary('environment', path.split('/').filter(Boolean).pop() || '/');
   renderConversationContext();
 }
 

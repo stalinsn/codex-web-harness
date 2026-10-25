@@ -213,13 +213,18 @@
       <aside class="inspector" id="inspector" aria-label="Uso e ambiente">
         <div class="inspector-resize-handle" id="inspectorResizeHandle" role="separator" aria-orientation="vertical" aria-label="Redimensionar painel lateral" aria-valuemin="260" aria-valuemax="560" tabindex="0" title="Arraste para redimensionar"></div>
         <div class="inspector-header"><div><p class="eyebrow">VISÃO GERAL</p><h2>Uso e ambiente</h2></div><button class="icon-button inspector-close" id="closeUsage" aria-label="Fechar painel"><span class="icon" data-icon="close"></span></button></div>
-        <section class="inspector-card">
+        <div class="inspector-summary" id="inspectorSummary" aria-label="Resumo">
+          <button type="button" class="summary-tile" data-open-card="usage"><span>Codex</span><strong id="summaryUsage">—</strong><div class="meter-track"><div class="meter-fill" id="summaryUsageFill" style="width:0%"></div></div><small id="summaryUsageDetail">uso da conta</small></button>
+          <button type="button" class="summary-tile" data-open-card="accounts"><span>Contas</span><strong id="summaryAccounts">—</strong><small id="summaryAccountsDetail">disponibilidade</small></button>
+          <button type="button" class="summary-tile" data-open-card="context"><span>Contexto</span><strong id="summaryContext">—</strong><div class="meter-track"><div class="meter-fill" id="summaryContextFill" style="width:0%"></div></div><small id="summaryContextDetail">abra uma conversa</small></button>
+        </div>
+        <section class="inspector-card" data-card="usage">
           <div class="card-title-row"><div><span class="card-icon" data-icon="gauge"></span><strong>Uso do Codex</strong></div><button class="refresh-mini" id="refreshUsage" aria-label="Atualizar uso"><span class="icon" data-icon="refresh"></span></button></div>
           <div id="rateLimitMeters" class="rate-limit-meters"><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
           <div class="token-summary" id="tokenSummary"></div>
           <p class="muted-note">Os limites são os informados pela conta ChatGPT. Tokens são atividade, não valor em dólares.</p>
         </section>
-        <section class="inspector-card accounts-card" aria-label="Contas e fila">
+        <section class="inspector-card accounts-card" data-card="accounts" aria-label="Contas e fila">
           <div class="card-title-row"><div><span class="card-icon" data-icon="user"></span><strong>Contas e fila</strong></div><button class="refresh-mini" id="refreshAccounts" aria-label="Verificar login das contas" title="Verificar login das contas"><span class="icon" data-icon="refresh"></span></button></div>
           <ol class="account-list" id="accountList" aria-label="Contas em ordem de uso"><li><div class="skeleton-line"></div></li></ol>
           <details class="rotation-settings">
@@ -231,28 +236,28 @@
           </details>
           <button class="secondary-button wide-button" id="addAccount" type="button"><span class="icon" data-icon="plus"></span> Conectar nova conta</button>
         </section>
-        <section class="inspector-card tasks-card" aria-label="Execuções contínuas">
+        <section class="inspector-card tasks-card" data-card="tasks" aria-label="Execuções contínuas">
           <div class="card-title-row"><div><span class="card-icon" data-icon="bolt"></span><strong>Execuções contínuas</strong></div><button class="refresh-mini" id="newTask" aria-label="Nova execução contínua" title="Nova execução contínua"><span class="icon" data-icon="plus"></span></button></div>
           <div class="task-list" id="taskList"><p class="muted-note">Uma execução contínua passa de conta em conta quando o limite de uso acaba, usando o registro de retomada em <code>.harness/HANDOFF.md</code>.</p></div>
         </section>
-        <section class="inspector-card context-usage-card" aria-label="Contexto da conversa">
+        <section class="inspector-card context-usage-card" data-card="context" aria-label="Contexto da conversa">
           <div class="card-title-row"><div><span class="card-icon" data-icon="chat"></span><strong>Contexto da conversa</strong></div></div>
           <div id="contextUsageMeter" class="context-usage-meter"><p class="muted-note">Abra uma conversa para ver o contexto usado e o limite do modelo.</p></div>
         </section>
-        <section class="inspector-card server-health-card" aria-label="Saúde da VPS">
+        <section class="inspector-card server-health-card" data-card="health" aria-label="Saúde da VPS">
           <div class="card-title-row"><div><span class="card-icon" data-icon="server"></span><strong>Saúde da VPS</strong></div><button class="refresh-mini" id="refreshVpsHealth" aria-label="Atualizar saúde da VPS" title="Atualizar agora"><span class="icon" data-icon="refresh"></span></button></div>
           <div class="vps-host-metrics" id="vpsHostMetrics"><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
           <div class="vps-project-list" id="vpsProjectList"></div>
           <details class="vps-storage-details" id="vpsStorageDetails"><summary>Armazenamento e locais no disco</summary><div class="vps-storage-list" id="vpsStorageList"></div><div class="vps-storage-section"><strong>Volumes Docker</strong><div id="vpsVolumeStorage"></div></div><div class="vps-storage-section"><strong>Pastas principais</strong><div id="vpsStorageLocations"></div></div><p class="vps-storage-note">Por instância: código da pasta do projeto + camada gravável dos containers + volumes identificados. Imagens Docker são compartilhadas e aparecem no total geral. Pastas listadas podem se sobrepor; não some esses valores. Detalhes do disco atualizam a cada 5 min; use atualizar para ler agora.</p></details>
           <p class="vps-health-updated" id="vpsHealthUpdated" aria-live="polite">Lendo métricas da VPS…</p>
         </section>
-        <section class="inspector-card environment-card">
+        <section class="inspector-card environment-card" data-card="environment">
           <div class="card-title-row"><div><span class="card-icon" data-icon="server"></span><strong>Ambiente ativo</strong></div></div>
               <div class="environment-row"><span class="environment-indicator"></span><span><strong>VPS</strong><small>Codex CLI · sessão persistente</small></span></div>
           <div class="environment-path"><span class="icon" data-icon="folder"></span><code id="inspectorCwd">/home/codex</code></div>
           <div class="access-pill"><span class="icon" data-icon="shield"></span>Acesso completo autorizado</div>
         </section>
-        <section class="inspector-card thread-card hidden" id="threadInfo">
+        <section class="inspector-card thread-card hidden" data-card="thread" id="threadInfo">
           <div class="card-title-row"><div><span class="card-icon" data-icon="chat"></span><strong>Conversa</strong></div></div>
           <div class="thread-meta" id="threadMeta"></div>
         </section>

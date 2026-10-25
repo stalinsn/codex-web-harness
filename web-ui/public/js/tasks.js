@@ -3,6 +3,7 @@ import { hasAlternativeAccount } from './accounts.js';
 import { api } from './api.js';
 import { $, debounce, escapeHtml, installIcons, toast } from './dom.js';
 import { formatCountdown } from './format.js';
+import { renderInspectorSummary } from './inspector-layout.js';
 import { state } from './state.js';
 
 const STATUS = {
@@ -27,6 +28,7 @@ function taskLine(task) {
 }
 
 export function renderTasks() {
+  renderInspectorSummary();
   const list = $('#taskList');
   if (!list) return;
   if (!state.tasks.length) {
