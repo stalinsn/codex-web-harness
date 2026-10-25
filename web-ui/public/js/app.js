@@ -1,4 +1,5 @@
 // Entry point: bootstraps data, binds UI events and starts authentication.
+import { bindAccountEvents, refreshAccounts } from './accounts.js';
 import { api } from './api.js';
 import { initializeAuthentication } from './auth.js';
 import { addFiles, steerMessage, submitMessage, updateComposerControls } from './composer.js';
@@ -14,6 +15,7 @@ import { createProject, openProjectDialog, pathIsWithin, renderProjects, selectP
 import { clearResolvedRateLimitFailure } from './rate-limit.js';
 import { prepareCompletionSound } from './sound.js';
 import { state, voice } from './state.js';
+import { bindTaskEvents, refreshTasks } from './tasks.js';
 import { closeThreadMenus, refreshThreadList, renderThreads } from './thread-list.js';
 import { clearRecordedAudio, prepareVoicePreview, renderVoice, startVoiceRecording, touchComposer, transcribeRecordedAudio, voiceTime } from './voice.js';
 
@@ -42,6 +44,8 @@ export async function bootstrap() {
     (data.pending || []).forEach((request) => state.pendingApprovals.set(String(request.id), request));
     await loadDeferredQueue().catch((error) => toast(error.message, 'error'));
     populateModels(); renderUsage(); renderProjects(); renderThreads(); setConnection(true, 'Codex conectado');
+    refreshAccounts().catch(() => {});
+    refreshTasks().catch(() => {});
     if ($('#planBadge') && data.account?.planType) $('#planBadge').textContent = String(data.account.planType).replace(/^./, (char) => char.toUpperCase());
     const threadId = new URLSearchParams(location.hash.slice(1)).get('thread');
     if (threadId) await openThread(threadId);
@@ -53,6 +57,8 @@ export async function bootstrap() {
 }
 
 export function bindEvents() {
+  bindAccountEvents();
+  bindTaskEvents();
   setupInspectorResize();
   setupComposerViewport();
   $('#closeImagePreview').addEventListener('click', () => $('#imagePreviewDialog').close());

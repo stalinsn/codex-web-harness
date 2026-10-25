@@ -1,4 +1,5 @@
 // Server-sent events from the harness and Codex app-server notifications.
+import { refreshAccountsSoon } from './accounts.js';
 import { rememberAgentThread, renderActivity, renderReasoningSummary, setReasoningPart, startProgressSegment, updateTurnIntermediateTitle } from './activity.js';
 import { PREFIX } from './config.js';
 import { loadThreadHistory, rememberCompletedTurn, setBusy, syncExecutionState, turnStatus } from './conversation.js';
@@ -14,6 +15,7 @@ import { refreshQueue, renderQueue } from './queue.js';
 import { clearResolvedRateLimitFailure, getEffectiveRateLimitBlock, isRateLimitError, recordRateLimitFailure } from './rate-limit.js';
 import { playCompletionSound } from './sound.js';
 import { state } from './state.js';
+import { onTaskEvent, onTaskUpdated, refreshTasks } from './tasks.js';
 import { refreshThreadList, renderThreads } from './thread-list.js';
 
 function handleCodexNotification(message) {
@@ -164,6 +166,14 @@ export function connectEvents() {
     else if (event.type === 'server-request') addApproval(event.data);
     else if (event.type === 'request-resolved') state.pendingApprovals.delete(event.data.requestId);
     else if (event.type === 'account-data') applyAccountData(event.data);
+    else if (event.type === 'accounts-changed') refreshAccountsSoon();
+    else if (event.type === 'task-updated') onTaskUpdated(event.data);
+    else if (event.type === 'task-event') onTaskEvent(event.data);
+    else if (event.type === 'handoff-steered') toast(`Conta perto do limite (${Math.round(event.data.percent)}%): pedi ao Codex para salvar o registro de retomada.`);
+    else if (event.type === 'handoff-started') {
+      toast(`Limite do Codex: “${event.data.title}” continua em outra conta.`);
+      refreshTasks().catch(() => {});
+    }
     else if (event.type === 'thread-usage') {
       const usage = event.data.tokenUsage || event.data;
       const tokenText = usage.total?.totalTokens ?? usage.totalTokens ?? usage.total?.inputTokens;

@@ -170,7 +170,7 @@
           <div class="messages" id="messages"></div>
           <section class="rate-limit-notice hidden" id="rateLimitNotice" role="status" aria-live="polite">
             <span class="rate-limit-notice-icon" aria-hidden="true">!</span>
-            <div><strong id="rateLimitNoticeTitle">Limite de uso atingido</strong><p id="rateLimitNoticeDetail"></p></div>
+            <div><strong id="rateLimitNoticeTitle">Limite de uso atingido</strong><p id="rateLimitNoticeDetail"></p><button class="rate-limit-continue hidden" id="continueElsewhere" type="button">Continuar em outra conta</button></div>
           </section>
           <button type="button" class="scroll-to-latest hidden" id="scrollToLatest" aria-label="Ir para a última mensagem" title="Ir para a última mensagem">↓</button>
           <div class="running-indicator hidden" id="runningIndicator"><span class="loader"></span><span id="runningText">Codex está trabalhando…</span></div>
@@ -219,6 +219,22 @@
           <div class="token-summary" id="tokenSummary"></div>
           <p class="muted-note">Os limites são os informados pela conta ChatGPT. Tokens são atividade, não valor em dólares.</p>
         </section>
+        <section class="inspector-card accounts-card" aria-label="Contas e fila">
+          <div class="card-title-row"><div><span class="card-icon" data-icon="user"></span><strong>Contas e fila</strong></div><button class="refresh-mini" id="refreshAccounts" aria-label="Verificar login das contas" title="Verificar login das contas"><span class="icon" data-icon="refresh"></span></button></div>
+          <ol class="account-list" id="accountList" aria-label="Contas em ordem de uso"><li><div class="skeleton-line"></div></li></ol>
+          <details class="rotation-settings">
+            <summary>Regras de troca</summary>
+            <label class="rotation-field">Trocar de conta ao chegar em <input id="switchAtPercent" type="number" min="50" max="100" step="1" inputmode="numeric" /> % de uso</label>
+            <label class="rotation-check"><input id="proactiveHandoff" type="checkbox" /> <span>Perto do limite, pedir ao agente que salve o registro de retomada e pare em um ponto seguro</span></label>
+            <label class="rotation-check"><input id="autoContinue" type="checkbox" /> <span>Continuar automaticamente na próxima conta da fila quando o chat atingir o limite</span></label>
+            <p class="muted-note">O uso em % só é informado pelo Codex e pelo Claude Code; nas demais contas a troca acontece quando a CLI avisa que o limite acabou.</p>
+          </details>
+          <button class="secondary-button wide-button" id="addAccount" type="button"><span class="icon" data-icon="plus"></span> Adicionar conta</button>
+        </section>
+        <section class="inspector-card tasks-card" aria-label="Execuções contínuas">
+          <div class="card-title-row"><div><span class="card-icon" data-icon="bolt"></span><strong>Execuções contínuas</strong></div><button class="refresh-mini" id="newTask" aria-label="Nova execução contínua" title="Nova execução contínua"><span class="icon" data-icon="plus"></span></button></div>
+          <div class="task-list" id="taskList"><p class="muted-note">Uma execução contínua passa de conta em conta quando o limite de uso acaba, usando o registro de retomada em <code>.harness/HANDOFF.md</code>.</p></div>
+        </section>
         <section class="inspector-card context-usage-card" aria-label="Contexto da conversa">
           <div class="card-title-row"><div><span class="card-icon" data-icon="chat"></span><strong>Contexto da conversa</strong></div></div>
           <div id="contextUsageMeter" class="context-usage-meter"><p class="muted-note">Abra uma conversa para ver o contexto usado e o limite do modelo.</p></div>
@@ -243,6 +259,74 @@
         <div class="inspector-bottom"><span class="secure-icon" data-icon="lock"></span><span>Conexão HTTPS · sessão privada</span></div>
       </aside>
     </div>
+
+    <dialog class="path-dialog account-dialog" id="accountDialog" aria-labelledby="accountDialogTitle">
+      <form id="accountForm" novalidate>
+        <div class="dialog-heading"><div><p class="eyebrow">CONTAS</p><h2 id="accountDialogTitle">Adicionar conta</h2></div></div>
+        <p>Cada conta ganha uma pasta própria na VPS para guardar o login dela. Depois de adicionar, rode o comando de login mostrado aqui no terminal da VPS.</p>
+        <label class="project-field">Provedor
+          <select id="accountProvider" name="provider"></select>
+        </label>
+        <label class="project-field">Identificador
+          <input id="accountId" name="id" type="text" maxlength="40" autocomplete="off" required placeholder="claude-1" pattern="[a-z0-9][a-z0-9-]*" />
+        </label>
+        <label class="project-field">Nome exibido
+          <input id="accountLabel" name="label" type="text" maxlength="60" autocomplete="off" placeholder="Claude · conta pessoal" />
+        </label>
+        <div class="account-dialog-row">
+          <label class="project-field">Modelo <small>(opcional)</small>
+            <input id="accountModel" name="model" type="text" maxlength="100" autocomplete="off" placeholder="padrão da CLI" />
+          </label>
+          <label class="project-field">Esforço <small>(opcional)</small>
+            <input id="accountEffort" name="effort" type="text" maxlength="30" autocomplete="off" placeholder="high" />
+          </label>
+        </div>
+        <div class="account-login-box" id="accountLoginBox" hidden>
+          <strong>Agora faça o login desta conta na VPS:</strong>
+          <code id="accountLoginCommand"></code>
+          <button class="secondary-button" id="copyLoginCommand" type="button">Copiar comando</button>
+        </div>
+        <div class="dialog-actions">
+          <button class="secondary-button" id="cancelAccount" type="button">Fechar</button>
+          <button class="primary-button" id="submitAccount" type="submit">Adicionar</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="path-dialog task-dialog" id="taskDialog" aria-labelledby="taskDialogTitle">
+      <form id="taskForm" novalidate>
+        <div class="dialog-heading"><div><p class="eyebrow">EXECUÇÃO CONTÍNUA</p><h2 id="taskDialogTitle">Nova execução</h2></div></div>
+        <p>O trabalho começa na primeira conta disponível da fila. Se ela atingir o limite, a próxima continua a partir do registro de retomada.</p>
+        <label class="project-field">Objetivo
+          <textarea id="taskGoal" name="goal" rows="6" maxlength="50000" required placeholder="Ex.: Termine a migração do checkout, rode os testes e deixe pronto para revisão."></textarea>
+        </label>
+        <label class="project-field">Pasta na VPS
+          <input id="taskCwd" name="cwd" type="text" autocomplete="off" required />
+        </label>
+        <div class="dialog-actions">
+          <button class="secondary-button" id="cancelTask" type="button">Cancelar</button>
+          <button class="primary-button" id="submitTask" type="submit">Iniciar</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="path-dialog task-detail-dialog" id="taskDetailDialog" aria-labelledby="taskDetailTitle">
+      <div class="dialog-heading task-detail-heading">
+        <div><p class="eyebrow" id="taskDetailStatus">EXECUÇÃO CONTÍNUA</p><h2 id="taskDetailTitle"></h2><small id="taskDetailCwd"></small></div>
+        <button class="icon-button" id="closeTaskDetail" type="button" aria-label="Fechar"><span class="icon" data-icon="close"></span></button>
+      </div>
+      <p class="task-detail-note" id="taskDetailNote"></p>
+      <ol class="task-segments" id="taskSegments"></ol>
+      <details class="task-section" open><summary>Atividade</summary><ol class="task-log" id="taskLog"></ol></details>
+      <details class="task-section"><summary>Registro de retomada (.harness/HANDOFF.md)</summary><pre class="task-handoff" id="taskHandoff"></pre></details>
+      <label class="project-field task-note-field" id="taskNoteField">Orientação para retomar <small>(opcional)</small>
+        <textarea id="taskResumeNote" rows="3" maxlength="10000" placeholder="Ex.: Pode aplicar a migração no ambiente de homologação."></textarea>
+      </label>
+      <div class="dialog-actions">
+        <button class="secondary-button" id="stopTask" type="button">Parar</button>
+        <button class="primary-button" id="resumeTask" type="button">Retomar</button>
+      </div>
+    </dialog>
 
     <dialog class="path-dialog" id="pathDialog">
       <form method="dialog" id="pathForm">

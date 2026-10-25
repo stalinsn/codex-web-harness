@@ -28,6 +28,7 @@ export const state = {
   activeThreadIds: new Set(),
   followLatest: true,
   threadListRequest: 0,
+  accounts: [], rotation: null, providers: [], tasks: [], openTaskId: '',
 };
 
 export const authUi = { mode: 'login', step: 'credentials', challengeId: '', setupRequired: false, countdown: null, started: false };

@@ -112,6 +112,32 @@ A lista lateral mostra um indicador animado nas conversas com turno ativo. A ati
 
 Imagens anexadas no rascunho, nas mensagens e na fila podem ser abertas em uma prévia ampliada. No desktop, a coluna de visão geral pode ser redimensionada pela borda e a largura escolhida fica salva neste navegador. O painel de saúde inclui camada gravável dos containers, volumes Docker por projeto, diretórios dos projetos e pastas principais no host; imagens e subpastas podem ser compartilhadas ou sobrepostas aos totais.
 
+## Várias contas e execuções contínuas
+
+Além da conta principal do Codex (a do chat), o harness pode usar outras contas de agentes de linha de comando e passar o trabalho de uma para outra quando o limite de uso acaba. Presets incluídos: **Codex** (contas extras), **Claude Code**, **Antigravity CLI** (`agy`), **Gemini CLI** e **CLI personalizada**.
+
+**Adicionar uma conta:** no painel *Uso e ambiente → Contas e fila → Adicionar conta*. Cada conta recebe uma pasta isolada em `CODEX_HOME/web-accounts/<id>` e o painel mostra o comando de login exato, por exemplo:
+
+```bash
+CLAUDE_CONFIG_DIR=~/.codex/web-accounts/claude-1 claude      # depois /login
+HOME=~/.codex/web-accounts/google-1 agy                       # abre o link de autorização
+CODEX_HOME=~/.codex/web-accounts/codex-2 codex login --device-auth
+```
+
+Rode o comando no terminal da VPS com o mesmo usuário do serviço e use *Verificar login*. A CLI precisa estar instalada e no `PATH` do serviço (ou informe o caminho no campo `bin` de `web-accounts.json`). *Remover* tira a conta da fila e, se você confirmar, apaga a pasta de login dela.
+
+**Fila de uso:** as contas são usadas na ordem da lista (setas ↑ ↓). Uma conta sai da vez quando está desativada, sem login, executando outra tarefa, em espera após atingir o limite (até o horário de liberação informado, ou `defaultCooldownMinutes`) ou acima do percentual de troca (padrão 95%). Codex e Claude Code informam o uso; nas demais CLIs a troca acontece quando elas avisam que o limite acabou.
+
+**Execuções contínuas:** uma tarefa com objetivo e pasta roda na primeira conta disponível. Cada agente mantém `.harness/HANDOFF.md` na pasta de trabalho (objetivo, estado, feito, próximos passos, decisões, validação; a pasta entra em `.git/info/exclude`). Se a conta atingir o limite, a próxima continua a partir desse registro. A tarefa termina quando o agente responde `HARNESS_STATUS: DONE`, ou para em *Precisa de você* com `HARNESS_STATUS: BLOCKED`. O estado e o log ficam em `CODEX_HOME/web-tasks/<id>/` e as tarefas continuam após reiniciar o serviço.
+
+**Chat do Codex perto do limite:** com *Regras de troca* ativadas, ao chegar no percentual de troca o harness orienta o turno em andamento a salvar o registro de retomada e parar. Quando o turno termina (ou falha por limite), uma execução contínua assume a conversa na próxima conta. O aviso de limite no chat também tem o botão *Continuar em outra conta*.
+
+**Mesma política em todas as contas:** o Codex continua usando `CODEX_HOME/AGENTS.md` e `config.toml`. Para as outras CLIs, o harness inclui `CODEX_HOME/AGENTS.md` e o `AGENTS.md` do projeto no início de cada etapa. Como não há ninguém para aprovar comandos durante a execução, o agente é instruído a parar com `HARNESS_STATUS: BLOCKED` sempre que essas diretrizes exigirem pedido explícito. O modo de permissão de cada CLI vem do preset (Claude Code: `acceptEdits`; Gemini CLI: `auto_edit`) e pode ser alterado por conta em `web-accounts.json` (`permissionMode`, `args`).
+
+**CLI personalizada:** edite `CODEX_HOME/web-accounts.json` e informe `bin`, `args` (com `{prompt}`, `{model}`, `{effort}`, `{cwd}`; listas internas são opcionais) e `parser` (`claude`, `generic` para JSONL ou `text`). Reinicie o serviço após editar o arquivo à mão.
+
+Antes de usar várias contas do mesmo provedor, confira os termos de uso de cada serviço.
+
 ## Licença
 
 MIT. Consulte [LICENSE](LICENSE).

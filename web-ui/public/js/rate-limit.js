@@ -5,6 +5,7 @@ import { formatCountdown, formatReset } from './format.js';
 import { refreshUsage } from './inspector.js';
 import { renderQueue } from './queue.js';
 import { runtime, state } from './state.js';
+import { updateContinueElsewhere } from './tasks.js';
 
 export function updateResetCountdowns() {
   $$('.meter-countdown').forEach((node) => { node.textContent = formatCountdown(node.dataset.resetAt); });
@@ -87,6 +88,7 @@ export function renderRateLimitNotice() {
   const block = getEffectiveRateLimitBlock();
   const failure = state.rateLimitFailure;
   notice.classList.toggle('hidden', !block && !failure);
+  updateContinueElsewhere(Boolean(block || failure));
   if (!block && !failure) { scheduleQuotaRefresh(); updateComposerControls(); return; }
   const title = $('#rateLimitNoticeTitle');
   const detail = $('#rateLimitNoticeDetail');
