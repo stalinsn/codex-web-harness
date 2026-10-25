@@ -90,6 +90,8 @@ O painel de saúde lê `/proc`, o espaço de disco com `df` e métricas Docker c
 
 O painel lateral também mostra o uso recente de contexto da conversa e o limite informado pelo app-server para o modelo selecionado. O percentual usa os tokens do último turno em relação à janela do modelo; não representa a soma acumulada de todos os turnos. A leitura é atualizada quando o app-server emite `thread/tokenUsage/updated` e é recuperada ao reabrir conversas existentes.
 
+A lista lateral mostra um indicador animado nas conversas com turno ativo. A atividade é atualizada pelos eventos do app-server e pelos estados das conversas ao carregar a lista.
+
 ## Licença
 
 MIT. Consulte [LICENSE](LICENSE).

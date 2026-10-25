@@ -8,6 +8,7 @@ const state = {
   queueItems: [], recoveredQueueItems: [], turnStartedAtMs: null, turnTimer: null,
   streamedMessages: new Map(), activityCards: new Map(), commandGroups: new Map(), reasoningGroups: new Map(), turnIntermediates: new Map(), userMessageIds: new Set(), pendingApprovals: new Map(),
   activeTurnId: null,
+  activeThreadIds: new Set(),
   followLatest: true,
   threadListRequest: 0,
 };
@@ -704,10 +705,11 @@ function renderThreads(threads = state.threads, query = $('#threadSearch')?.valu
     const row = document.createElement('div');
     row.className = `thread-row${pinned ? ' pinned' : ''}`;
     const button = document.createElement('button');
-    button.className = `thread-item ${thread.id === state.selectedThreadId ? 'active' : ''}`;
+    const isRunning = state.activeThreadIds.has(thread.id) || thread.status?.type === 'active';
+    button.className = `thread-item ${thread.id === state.selectedThreadId ? 'active' : ''}${isRunning ? ' running' : ''}`;
     button.type = 'button';
     button.title = threadDisplayTitle(thread);
-    button.innerHTML = `<span class="icon" data-icon="chat"></span><span class="thread-item-title"></span>${thread.section?.id === PINNED_THREAD_SECTION_ID ? '<span class="thread-pin-badge">Fixada</span>' : ''}`;
+    button.innerHTML = `<span class="icon" data-icon="chat"></span><span class="thread-item-title"></span>${isRunning ? '<span class="thread-running-indicator" role="status" aria-label="Codex trabalhando" title="Codex trabalhando"></span>' : ''}${thread.section?.id === PINNED_THREAD_SECTION_ID ? '<span class="thread-pin-badge">Fixada</span>' : ''}`;
     $('.thread-item-title', button).textContent = threadDisplayTitle(thread);
     button.addEventListener('click', () => openThread(thread.id));
     const menu = document.createElement('div');
@@ -1436,6 +1438,14 @@ function addApproval(request) {
 function handleCodexNotification(message) {
   const params = message.params || {};
   const eventThreadId = params.threadId || params.turn?.threadId;
+  if (eventThreadId && message.method === 'turn/started') {
+    state.activeThreadIds.add(eventThreadId);
+    renderThreads(state.threads, $('#threadSearch').value.trim());
+  } else if (eventThreadId && message.method === 'thread/status/changed') {
+    if (params.status?.type === 'active') state.activeThreadIds.add(eventThreadId);
+    else state.activeThreadIds.delete(eventThreadId);
+    renderThreads(state.threads, $('#threadSearch').value.trim());
+  }
   if (message.method === 'item/commandExecution/requestApproval' || message.method === 'item/fileChange/requestApproval') {
     addApproval({ id: params.requestId ?? params.itemId ?? randomKey(), method: message.method, params, serverRequestId: params.requestId });
     return;
@@ -1551,6 +1561,7 @@ function connectEvents() {
     else if (event.type === 'turn-accepted') {
       const isNew = !state.selectedThreadId;
       state.selectedThreadId = event.data.threadId;
+      state.activeThreadIds.add(event.data.threadId);
       if (isNew) state.activeThreadProjectId = state.selectedProjectId;
       setBusy(true);
       if (isNew) updateThreadHeader({ id: event.data.threadId, name: 'Nova conversa', model: event.data.model, status: { type: 'active' } });
@@ -1562,6 +1573,10 @@ function connectEvents() {
       renderConversationContext();
     }
     else if (event.type === 'turn-completed') {
+      if (event.data.threadId) {
+        state.activeThreadIds.delete(event.data.threadId);
+        renderThreads(state.threads, $('#threadSearch').value.trim());
+      }
       if (event.data.threadId === state.selectedThreadId) {
         const turnId = event.data.turn?.id;
         const group = turnId ? state.turnIntermediates.get(`${event.data.threadId}:${turnId}`) : null;
@@ -1603,6 +1618,7 @@ async function bootstrap() {
     state.rateLimits = data.rateLimits;
     state.usage = data.usage;
     state.threads = data.threads || [];
+    state.activeThreadIds = new Set(state.threads.filter((thread) => thread.status?.type === 'active').map((thread) => thread.id));
     state.projects = data.projects || [];
     state.defaultCwd = data.defaultCwd || '/';
     state.projectsRoot = data.projectsRoot || `${state.defaultCwd}/projects`;
@@ -1632,6 +1648,9 @@ async function loadThreadHistory(threadId) {
   await loadContextUsage(threadId);
   renderTurnHistory(data.turns || [], threadId);
   const active = data.thread?.status?.type === 'active';
+  if (active) state.activeThreadIds.add(threadId);
+  else state.activeThreadIds.delete(threadId);
+  renderThreads(state.threads, $('#threadSearch').value.trim());
   const activeTurn = [...(data.turns || [])].reverse().find((turn) => {
     const status = typeof turn.status === 'string' ? turn.status : turn.status?.type;
     return status === 'inProgress' || status === 'active';
