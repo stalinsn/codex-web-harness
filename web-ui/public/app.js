@@ -1,7 +1,25 @@
 const PREFIX = '/codex-agent';
 const PINNED_THREAD_SECTION_ID = '01984de2-8f74-7c91-a3b2-5c5e937cf318';
+const PROJECT_COLOR_OPTIONS = [
+  { color: '#70b7ff', label: 'Azul' },
+  { color: '#b398ff', label: 'Violeta' },
+  { color: '#59d2b1', label: 'Turquesa' },
+  { color: '#ffbf69', label: 'Âmbar' },
+  { color: '#ff8fa7', label: 'Rosa' },
+  { color: '#9bd58c', label: 'Verde' },
+];
+const AGENT_COLORS = ['#83b9ff', '#b59aff', '#63d3b2', '#ffbe6b', '#ff91a6', '#a8d98e'];
+
+function loadProjectColors() {
+  try {
+    const value = JSON.parse(localStorage.getItem('codex-project-colors') || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch { return {}; }
+}
+
 const state = {
   models: [], threads: [], projects: [], selectedProjectId: localStorage.getItem('codex-project') || '', selectedThreadId: null, selectedThread: null,
+  expandedProjectId: localStorage.getItem('codex-expanded-project') || '', projectColors: loadProjectColors(), agentThreads: new Map(),
   cwd: localStorage.getItem('codex-cwd') || '', defaultCwd: '', projectsRoot: '', activeThreadProjectId: '', archivedView: false, loadingThreadId: null,
   modelId: localStorage.getItem('codex-model') || '', effort: localStorage.getItem('codex-effort') || '',
   files: [], busy: false, sending: false, interrupting: false, account: null, rateLimits: null, usage: null, contextUsage: null,
@@ -821,9 +839,65 @@ function associateThreadWithSelectedProject(threadId) {
   renderProjects();
 }
 
+function projectColor(project) {
+  const color = state.projectColors[project?.id];
+  return PROJECT_COLOR_OPTIONS.some((option) => option.color === color) ? color : '';
+}
+
+function closeProjectColorMenus() {
+  $$('.project-color-popover').forEach((popover) => {
+    if (popover.matches(':popover-open')) popover.hidePopover();
+    popover.remove();
+  });
+}
+
+function setProjectColor(projectId, color) {
+  if (color) state.projectColors[projectId] = color;
+  else delete state.projectColors[projectId];
+  localStorage.setItem('codex-project-colors', JSON.stringify(state.projectColors));
+  renderThreads(state.threads, $('#threadSearch').value.trim());
+}
+
+function openProjectColorMenu(project, trigger) {
+  closeProjectColorMenus();
+  const popover = document.createElement('div');
+  popover.className = 'project-color-popover';
+  popover.setAttribute('popover', 'auto');
+  popover.setAttribute('role', 'menu');
+  popover.setAttribute('aria-label', `Cor das conversas de ${project.name}`);
+  const title = document.createElement('strong');
+  title.textContent = 'Etiqueta do projeto';
+  popover.append(title);
+  const choices = [{ color: '', label: 'Cor padrão' }, ...PROJECT_COLOR_OPTIONS];
+  choices.forEach((option) => {
+    const choice = document.createElement('button');
+    choice.type = 'button';
+    choice.className = 'project-color-choice';
+    choice.setAttribute('role', 'menuitemradio');
+    choice.setAttribute('aria-checked', String(projectColor(project) === option.color));
+    const swatch = document.createElement('span');
+    swatch.className = `project-color-swatch${option.color ? '' : ' default'}`;
+    if (option.color) swatch.style.setProperty('--project-color', option.color);
+    const label = document.createElement('span');
+    label.textContent = option.label;
+    choice.append(swatch, label);
+    choice.addEventListener('click', () => { popover.hidePopover(); setProjectColor(project.id, option.color); });
+    popover.append(choice);
+  });
+  document.body.append(popover);
+  popover.showPopover();
+  const rect = trigger.getBoundingClientRect();
+  const height = popover.getBoundingClientRect().height;
+  popover.style.left = `${Math.max(8, Math.min(innerWidth - 208, rect.right - 204))}px`;
+  popover.style.top = `${Math.max(8, Math.min(innerHeight - height - 8, rect.bottom + 5))}px`;
+  popover.querySelector('button')?.focus();
+}
+
 function renderProjects() {
   const list = $('#projectList');
   if (!list) return;
+  closeProjectColorMenus();
+  $$('.project-tree-thread-actions-popover').forEach((popover) => popover.remove());
   list.replaceChildren();
 
   const all = document.createElement('button');
@@ -837,11 +911,31 @@ function renderProjects() {
   all.addEventListener('click', () => selectProject(''));
   list.append(all);
 
+  const query = $('#threadSearch')?.value.trim() || '';
   state.projects.forEach((project) => {
+    const node = document.createElement('div');
+    node.className = 'project-tree-node';
+    const row = document.createElement('div');
+    row.className = 'project-tree-row';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'project-tree-toggle';
+    const isExpanded = project.id === state.selectedProjectId && project.id === state.expandedProjectId && !query;
+    toggle.setAttribute('aria-expanded', String(isExpanded));
+    toggle.setAttribute('aria-label', `${isExpanded ? 'Recolher' : 'Expandir'} conversas de ${project.name}`);
+    toggle.innerHTML = '<span class="icon" data-icon="chevron"></span>';
+    toggle.addEventListener('click', () => {
+      if (isExpanded) {
+        state.expandedProjectId = '';
+        localStorage.removeItem('codex-expanded-project');
+        renderThreads(state.threads, $('#threadSearch').value.trim());
+      } else selectProject(project.id);
+    });
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'project-item' + (project.id === state.selectedProjectId ? ' active' : '');
     button.title = project.cwd;
+    if (projectColor(project)) button.style.setProperty('--project-color', projectColor(project));
     button.innerHTML = '<span class="icon" data-icon="folder"></span>';
     const label = document.createElement('span');
     label.className = 'project-item-label';
@@ -851,7 +945,47 @@ function renderProjects() {
     count.textContent = String(state.threads.filter((thread) => threadBelongsToProject(thread, project)).length);
     button.append(label, count);
     button.addEventListener('click', () => selectProject(project.id));
-    list.append(button);
+    const colorButton = document.createElement('button');
+    colorButton.type = 'button';
+    colorButton.className = `project-color-trigger${projectColor(project) ? ' has-color' : ''}`;
+    colorButton.setAttribute('aria-label', `Escolher cor das conversas de ${project.name}`);
+    colorButton.title = 'Escolher cor das conversas deste projeto';
+    const colorSwatch = document.createElement('span');
+    colorSwatch.className = `project-color-swatch${projectColor(project) ? '' : ' default'}`;
+    if (projectColor(project)) colorSwatch.style.setProperty('--project-color', projectColor(project));
+    colorButton.append(colorSwatch);
+    colorButton.addEventListener('click', () => openProjectColorMenu(project, colorButton));
+    row.append(toggle, button, colorButton);
+    node.append(row);
+
+    const children = document.createElement('div');
+    children.className = 'project-tree-children';
+    children.hidden = !isExpanded;
+    if (isExpanded) {
+      const projectThreads = state.threads.filter((thread) => threadBelongsToProject(thread, project))
+        .sort((left, right) => Number(right.section?.id === PINNED_THREAD_SECTION_ID) - Number(left.section?.id === PINNED_THREAD_SECTION_ID));
+      if (!projectThreads.length) {
+        const empty = document.createElement('div');
+        empty.className = 'project-tree-empty';
+        empty.textContent = state.archivedView ? 'Nenhuma conversa arquivada.' : 'Este projeto ainda não tem conversas.';
+        children.append(empty);
+      } else {
+        let previousGroup = '';
+        projectThreads.forEach((thread) => {
+          const groupName = state.archivedView ? '' : thread.section?.id === PINNED_THREAD_SECTION_ID ? 'Fixadas' : 'Recentes';
+          if (groupName && groupName !== previousGroup) {
+            const groupHeading = document.createElement('div');
+            groupHeading.className = 'thread-group-heading project-tree-group-heading';
+            groupHeading.textContent = groupName;
+            children.append(groupHeading);
+            previousGroup = groupName;
+          }
+          children.append(createThreadRow(thread, { nested: true }));
+        });
+      }
+    }
+    node.append(children);
+    list.append(node);
   });
   installIcons();
   renderConversationContext();
@@ -861,7 +995,15 @@ function selectProject(id, { folderPath = null, updateActiveThread = false } = {
   const project = state.projects.find((item) => item.id === id) || null;
   state.selectedProjectId = project?.id || '';
   if (state.selectedProjectId) localStorage.setItem('codex-project', state.selectedProjectId);
-  else localStorage.removeItem('codex-project');
+  else {
+    localStorage.removeItem('codex-project');
+    state.expandedProjectId = '';
+    localStorage.removeItem('codex-expanded-project');
+  }
+  if (project) {
+    state.expandedProjectId = project.id;
+    localStorage.setItem('codex-expanded-project', project.id);
+  }
   if (folderPath) updateWorkingDirectory(folderPath);
   else if (!state.selectedThreadId) updateWorkingDirectory(project?.cwd || state.defaultCwd || state.cwd);
   if (updateActiveThread && state.selectedThreadId) state.activeThreadProjectId = project?.id || '';
@@ -921,8 +1063,102 @@ function closeThreadMenus() {
   });
 }
 
+function createThreadRow(thread, { nested = false } = {}) {
+  const pinned = thread.section?.id === PINNED_THREAD_SECTION_ID;
+  const row = document.createElement('div');
+  row.className = `thread-row${pinned ? ' pinned' : ''}${nested ? ' project-thread-row' : ''}`;
+  const button = document.createElement('button');
+  const isRunning = thread.id === state.selectedThreadId ? state.busy : state.activeThreadIds.has(thread.id) || thread.status?.type === 'active';
+  button.className = `thread-item ${thread.id === state.selectedThreadId ? 'active' : ''}${isRunning ? ' running' : ''}`;
+  button.type = 'button';
+  button.title = threadDisplayTitle(thread);
+  button.innerHTML = '<span class="icon" data-icon="chat"></span><span class="thread-item-title"></span>';
+  $('.thread-item-title', button).textContent = threadDisplayTitle(thread);
+  const project = projectForThread(thread);
+  const color = !nested ? projectColor(project) : '';
+  if (color && project) {
+    const badge = document.createElement('span');
+    badge.className = 'thread-project-tag';
+    badge.style.setProperty('--project-color', color);
+    badge.textContent = project.name;
+    button.append(badge);
+  }
+  if (pinned) {
+    const badge = document.createElement('span');
+    badge.className = 'thread-pin-badge';
+    badge.textContent = 'Fixada';
+    button.append(badge);
+  }
+  if (isRunning) {
+    const indicator = document.createElement('span');
+    indicator.className = 'thread-running-indicator';
+    indicator.setAttribute('role', 'status');
+    indicator.setAttribute('aria-label', 'Codex trabalhando');
+    indicator.title = 'Codex trabalhando';
+    button.append(indicator);
+  }
+  button.addEventListener('click', () => openThread(thread.id));
+
+  const menu = document.createElement('div');
+  menu.className = 'thread-actions';
+  const trigger = document.createElement('button');
+  trigger.type = 'button'; trigger.className = 'thread-actions-trigger';
+  trigger.textContent = '⋯';
+  trigger.title = 'Ações da conversa';
+  trigger.setAttribute('aria-label', `Ações: ${threadDisplayTitle(thread)}`);
+  trigger.setAttribute('aria-haspopup', 'menu'); trigger.setAttribute('aria-expanded', 'false');
+  menu.append(trigger);
+  const popover = document.createElement('div');
+  popover.className = `thread-actions-popover ${nested ? 'project-tree-thread-actions-popover' : 'thread-list-actions-popover'}`;
+  popover.id = `thread-menu-${nested ? 'project-' : 'list-'}${thread.id}`;
+  popover.setAttribute('popover', 'auto'); popover.setAttribute('role', 'menu');
+  popover.setAttribute('aria-label', `Ações: ${threadDisplayTitle(thread)}`); trigger.setAttribute('aria-controls', popover.id);
+  const action = (label, handler, { danger = false, disabled = false, icon = 'chat' } = {}) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = danger ? 'thread-action danger' : 'thread-action';
+    item.setAttribute('role', 'menuitem');
+    item.innerHTML = `<span class="icon" data-icon="${icon}"></span><span>${escapeHtml(label)}</span>`;
+    item.disabled = disabled;
+    if (disabled) item.title = 'Disponível quando a execução terminar.';
+    item.addEventListener('click', (event) => {
+      event.stopPropagation();
+      popover.hidePopover();
+      handler();
+    });
+    popover.append(item);
+  };
+  const running = isRunning;
+  action('Renomear', () => performThreadAction(thread, 'rename'), { icon: 'rename' });
+  if (!state.archivedView) action(pinned ? 'Desafixar' : 'Fixar no topo', () => performThreadAction(thread, 'pin'), { icon: 'pin' });
+  action(state.archivedView ? 'Restaurar conversa' : 'Arquivar conversa', () => performThreadAction(thread, state.archivedView ? 'unarchive' : 'archive'), { disabled: running, icon: 'archive' });
+  action('Excluir conversa', () => performThreadAction(thread, 'delete'), { danger: true, disabled: running, icon: 'trash' });
+  document.body.append(popover);
+  trigger.addEventListener('click', () => {
+    if (popover.matches(':popover-open')) return popover.hidePopover();
+    closeThreadMenus(); popover.showPopover();
+    const rect = trigger.getBoundingClientRect();
+    const height = popover.getBoundingClientRect().height;
+    popover.style.left = `${Math.max(8, Math.min(innerWidth - 212, rect.right - 204))}px`;
+    popover.style.top = `${Math.max(8, Math.min(innerHeight - height - 8, rect.bottom + 5))}px`;
+  });
+  popover.addEventListener('toggle', () => trigger.setAttribute('aria-expanded', String(popover.matches(':popover-open'))));
+  trigger.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown') { event.preventDefault(); if (!popover.matches(':popover-open')) trigger.click(); $('button:not(:disabled)', popover)?.focus(); }
+  });
+  popover.addEventListener('keydown', (event) => {
+    const buttons = $$('button:not(:disabled)', popover); const index = buttons.indexOf(document.activeElement);
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); popover.hidePopover(); trigger.focus(); }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); buttons[(index + (event.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length]?.focus(); }
+  });
+  row.append(button, menu);
+  return row;
+}
+
 function renderThreads(threads = state.threads, query = $('#threadSearch')?.value.trim() || '') {
   state.threads = threads;
+  closeThreadMenus();
+  $$('.thread-list-actions-popover').forEach((popover) => popover.remove());
   renderProjects();
   const list = $('#threadList');
   const heading = $('#threadListTitle');
@@ -933,10 +1169,14 @@ function renderThreads(threads = state.threads, query = $('#threadSearch')?.valu
     archivedToggle.setAttribute('aria-label', 'Mostrar conversas arquivadas');
   }
   $('#showRecentThreads')?.setAttribute('aria-pressed', String(!state.archivedView));
-  closeThreadMenus();
-  $$('.thread-actions-popover').forEach((menu) => menu.remove());
   list.replaceChildren();
   const project = state.projects.find((item) => item.id === state.selectedProjectId);
+  const treeMode = Boolean(project && state.expandedProjectId === project.id && !query);
+  $('#clearThreadSearch')?.classList.toggle('hidden', !query);
+  if ($('#threadSearchHint') && !query) $('#threadSearchHint').textContent = '';
+  list.classList.toggle('hidden', treeMode);
+  heading?.classList.toggle('hidden', treeMode);
+  if (treeMode) return;
   const allProjects = Boolean(query && $('#threadSearchScope')?.value === 'all');
   const visibleThreads = [...(project && !allProjects ? threads.filter((thread) => threadBelongsToProject(thread, project)) : threads)]
     .sort((left, right) => Number(right.section?.id === PINNED_THREAD_SECTION_ID) - Number(left.section?.id === PINNED_THREAD_SECTION_ID));
@@ -952,75 +1192,15 @@ function renderThreads(threads = state.threads, query = $('#threadSearch')?.valu
   }
   let previousGroup = '';
   visibleThreads.forEach((thread) => {
-    const pinned = thread.section?.id === PINNED_THREAD_SECTION_ID;
-    const groupName = state.archivedView || query ? '' : pinned ? 'Fixadas' : 'Recentes';
+    const groupName = state.archivedView || query ? '' : thread.section?.id === PINNED_THREAD_SECTION_ID ? 'Fixadas' : 'Recentes';
     if (groupName && groupName !== previousGroup) {
-      const groupHeading = document.createElement('div'); groupHeading.className = 'thread-group-heading'; groupHeading.textContent = groupName;
-      list.append(groupHeading); previousGroup = groupName;
+      const groupHeading = document.createElement('div');
+      groupHeading.className = 'thread-group-heading';
+      groupHeading.textContent = groupName;
+      list.append(groupHeading);
+      previousGroup = groupName;
     }
-    const row = document.createElement('div');
-    row.className = `thread-row${pinned ? ' pinned' : ''}`;
-    const button = document.createElement('button');
-    const isRunning = thread.id === state.selectedThreadId ? state.busy : state.activeThreadIds.has(thread.id) || thread.status?.type === 'active';
-    button.className = `thread-item ${thread.id === state.selectedThreadId ? 'active' : ''}${isRunning ? ' running' : ''}`;
-    button.type = 'button';
-    button.title = threadDisplayTitle(thread);
-    button.innerHTML = `<span class="icon" data-icon="chat"></span><span class="thread-item-title"></span>${isRunning ? '<span class="thread-running-indicator" role="status" aria-label="Codex trabalhando" title="Codex trabalhando"></span>' : ''}${thread.section?.id === PINNED_THREAD_SECTION_ID ? '<span class="thread-pin-badge">Fixada</span>' : ''}`;
-    $('.thread-item-title', button).textContent = threadDisplayTitle(thread);
-    button.addEventListener('click', () => openThread(thread.id));
-    const menu = document.createElement('div');
-    menu.className = 'thread-actions';
-    const trigger = document.createElement('button');
-    trigger.type = 'button'; trigger.className = 'thread-actions-trigger';
-    trigger.textContent = '⋯';
-    trigger.title = 'Ações da conversa';
-    trigger.setAttribute('aria-label', `Ações: ${threadDisplayTitle(thread)}`);
-    trigger.setAttribute('aria-haspopup', 'menu'); trigger.setAttribute('aria-expanded', 'false');
-    menu.append(trigger);
-    const popover = document.createElement('div');
-    popover.className = 'thread-actions-popover';
-    popover.id = `thread-menu-${thread.id}`; popover.setAttribute('popover', 'auto'); popover.setAttribute('role', 'menu');
-    popover.setAttribute('aria-label', `Ações: ${threadDisplayTitle(thread)}`); trigger.setAttribute('aria-controls', popover.id);
-    const action = (label, handler, { danger = false, disabled = false, icon = 'chat' } = {}) => {
-      const item = document.createElement('button');
-      item.type = 'button';
-      item.className = danger ? 'thread-action danger' : 'thread-action';
-      item.setAttribute('role', 'menuitem');
-      item.innerHTML = `<span class="icon" data-icon="${icon}"></span><span>${escapeHtml(label)}</span>`;
-      item.disabled = disabled;
-      if (disabled) item.title = 'Disponível quando a execução terminar.';
-      item.addEventListener('click', (event) => {
-        event.stopPropagation();
-        popover.hidePopover();
-        handler();
-      });
-      popover.append(item);
-    };
-    const running = thread.status?.type === 'active';
-    action('Renomear', () => performThreadAction(thread, 'rename'), { icon: 'rename' });
-    if (!state.archivedView) action(pinned ? 'Desafixar' : 'Fixar no topo', () => performThreadAction(thread, 'pin'), { icon: 'pin' });
-    action(state.archivedView ? 'Restaurar conversa' : 'Arquivar conversa', () => performThreadAction(thread, state.archivedView ? 'unarchive' : 'archive'), { disabled: running, icon: 'archive' });
-    action('Excluir conversa', () => performThreadAction(thread, 'delete'), { danger: true, disabled: running, icon: 'trash' });
-    document.body.append(popover);
-    trigger.addEventListener('click', () => {
-      if (popover.matches(':popover-open')) return popover.hidePopover();
-      closeThreadMenus(); popover.showPopover();
-      const rect = trigger.getBoundingClientRect();
-      const height = popover.getBoundingClientRect().height;
-      popover.style.left = `${Math.max(8, Math.min(innerWidth - 212, rect.right - 204))}px`;
-      popover.style.top = `${Math.max(8, Math.min(innerHeight - height - 8, rect.bottom + 5))}px`;
-    });
-    popover.addEventListener('toggle', () => trigger.setAttribute('aria-expanded', String(popover.matches(':popover-open'))));
-    trigger.addEventListener('keydown', (event) => {
-      if (event.key === 'ArrowDown') { event.preventDefault(); if (!popover.matches(':popover-open')) trigger.click(); $('button:not(:disabled)', popover)?.focus(); }
-    });
-    popover.addEventListener('keydown', (event) => {
-      const buttons = $$('button:not(:disabled)', popover); const index = buttons.indexOf(document.activeElement);
-      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); popover.hidePopover(); trigger.focus(); }
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); buttons[(index + (event.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length]?.focus(); }
-    });
-    row.append(button, menu);
-    list.append(row);
+    list.append(createThreadRow(thread));
   });
   installIcons();
 }
@@ -1628,6 +1808,76 @@ function renderReasoningSummary(item, turnId = '', append = true) {
   return rendered;
 }
 
+function rememberAgentThread(agentThreadId, details = {}) {
+  const id = String(agentThreadId || '');
+  if (!id) return null;
+  const previous = state.agentThreads.get(id);
+  const number = previous?.number || state.agentThreads.size + 1;
+  const meta = {
+    ...previous,
+    ...Object.fromEntries(Object.entries(details).filter(([, value]) => value != null && value !== '')),
+    number,
+    color: previous?.color || AGENT_COLORS[(number - 1) % AGENT_COLORS.length],
+  };
+  state.agentThreads.set(id, meta);
+  return meta;
+}
+
+function agentName(meta) {
+  const pathName = String(meta?.agentPath || '').replace(/\\/g, '/').split('/').filter(Boolean).at(-1) || '';
+  const readablePathName = pathName.replace(/\.(md|toml|json)$/i, '').split(/[_.-]+/).filter(Boolean).map((word) => word[0].toUpperCase() + word.slice(1)).join(' ');
+  return meta?.nickname || readablePathName || `Agente ${meta?.number || ''}`.trim();
+}
+
+function agentRoleName(meta) {
+  return [agentName(meta), meta?.role].filter(Boolean).join(' · ');
+}
+
+function agentStatusLabel(status) {
+  const normalized = String(status || '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').toLowerCase();
+  return ({ 'pending init': 'iniciando', running: 'trabalhando', interrupted: 'interrompido', completed: 'concluído', errored: 'falhou', shutdown: 'encerrado', 'not found': 'indisponível' })[normalized] || normalized || 'designado';
+}
+
+function refreshAgentActivityCards(agentThreadId) {
+  for (const card of state.activityCards.values()) {
+    if (card.dataset.agentThreadId === agentThreadId && card.agentActivityItem) {
+      renderActivity(card.agentActivityItem, false, card.dataset.agentTurnId || '');
+    }
+  }
+}
+
+function indexAgentThreads(turns) {
+  for (const turn of turns || []) for (const item of turn.items || []) {
+    if (item.type === 'subAgentActivity') {
+      rememberAgentThread(item.agentThreadId, {
+        agentPath: item.agentPath,
+        model: item.model,
+        reasoningEffort: item.reasoningEffort,
+        kind: item.kind,
+      });
+    }
+  }
+  for (const turn of turns || []) for (const item of turn.items || []) {
+    if (item.type !== 'collabToolCall') continue;
+    const states = item.agentsStates && typeof item.agentsStates === 'object' ? item.agentsStates : {};
+    const refs = Array.isArray(item.receiverAgents) ? item.receiverAgents : [];
+    const ids = [...new Set([...(item.receiverThreadIds || []), ...Object.keys(states), ...refs.map((agent) => agent.threadId)].filter(Boolean))];
+    for (const id of ids) {
+      const ref = refs.find((agent) => agent.threadId === id);
+      const agentState = states[id] || {};
+      rememberAgentThread(id, {
+        nickname: ref?.agentNickname,
+        role: ref?.agentRole,
+        status: agentState.status,
+        message: agentState.message,
+        prompt: item.prompt,
+        model: item.model,
+        reasoningEffort: item.reasoningEffort,
+      });
+    }
+  }
+}
+
 function renderActivity(item, append = false, turnId = '') {
   if (item.type === 'commandExecution') return renderCommandActivity(item, append, turnId);
   const key = `${state.selectedThreadId}:${item.id}`;
@@ -1640,8 +1890,9 @@ function renderActivity(item, append = false, turnId = '') {
     heading.className = 'activity-heading';
     const icon = document.createElement('span'); icon.className = 'icon';
     const title = document.createElement('span');
+    const agentRoster = document.createElement('div'); agentRoster.className = 'agent-roster hidden';
     const output = document.createElement('pre'); output.className = 'activity-output hidden';
-    heading.append(icon, title); card.append(heading, output);
+    heading.append(icon, title); card.append(heading, agentRoster, output);
     state.activityCards.set(key, card);
     if (append) turnGroup.content.append(card);
   }
@@ -1669,21 +1920,52 @@ function renderActivity(item, append = false, turnId = '') {
     const isFailed = status === 'failed' || Object.values(states).some((agent) => ['errored', 'not found'].includes(normalize(agent?.status)));
     const action = tool === 'spawn agent' ? 'delegou uma tarefa' : tool === 'wait' ? 'aguardou o trabalho' : tool === 'send input' ? 'enviou uma orientação' : tool === 'resume agent' ? 'retomou um agente' : tool === 'close agent' ? 'encerrou um agente' : tool === 'interrupt agent' ? 'interrompeu um agente' : tool === 'list agents' ? 'consultou os agentes' : 'coordenou agentes';
     const result = isFailed ? 'com falha' : status === 'interrupted' ? 'interrompido' : (status === 'in progress' || hasRunningAgent) ? 'em andamento' : 'concluído';
-    const agentStatusLabels = { 'pending init': 'iniciando', running: 'trabalhando', interrupted: 'interrompido', completed: 'concluiu', errored: 'falhou', shutdown: 'encerrado', 'not found': 'indisponível' };
     const countLabel = agentIds.length ? ` · ${agentIds.length} agente${agentIds.length === 1 ? '' : 's'}` : '';
     headingText.textContent = `Agentes auxiliares · ${action}${countLabel} · ${result}`;
     const details = [];
     const prompt = typeof item.prompt === 'string' ? item.prompt.trim() : '';
     if (prompt) details.push(`Tarefa: ${prompt.slice(0, 500)}${prompt.length > 500 ? '…' : ''}`);
+    const roster = $('.agent-roster', card);
+    roster.replaceChildren();
     for (const agentId of agentIds) {
       const ref = agentRefs.find((agent) => agent.threadId === agentId);
-      const identity = [ref?.agentNickname, ref?.agentRole].filter(Boolean).join(' · ') || `Agente ${String(agentId).slice(0, 8)}`;
       const agentState = states[agentId];
       const agentStatus = normalize(agentState?.status);
-      const stateLabel = agentStatus ? ` — ${agentStatusLabels[agentStatus] || agentStatus}` : '';
-      const message = typeof agentState?.message === 'string' ? `: ${agentState.message.slice(0, 180)}` : '';
-      details.push(`${identity}${stateLabel}${message}`);
+      const meta = rememberAgentThread(agentId, { nickname: ref?.agentNickname, role: ref?.agentRole, status: agentState?.status, message: agentState?.message, prompt, model: item.model, reasoningEffort: item.reasoningEffort });
+      const chip = document.createElement('span');
+      chip.className = 'agent-chip';
+      chip.style.setProperty('--agent-color', meta.color);
+      const avatar = document.createElement('span');
+      avatar.className = 'agent-avatar';
+      avatar.textContent = `A${meta.number}`;
+      const chipLabel = document.createElement('span');
+      chipLabel.className = 'agent-chip-label';
+      chipLabel.textContent = agentRoleName(meta);
+      const chipStatus = document.createElement('small');
+      chipStatus.textContent = agentStatusLabel(agentState?.status);
+      chip.append(avatar, chipLabel, chipStatus);
+      roster.append(chip);
+      const message = typeof agentState?.message === 'string' ? ` · ${agentState.message.slice(0, 180)}` : '';
+      details.push(`${agentRoleName(meta)} — ${agentStatusLabel(agentState?.status)}${message}`);
     }
+    agentIds.forEach(refreshAgentActivityCards);
+    roster.classList.toggle('hidden', !agentIds.length);
+    if (details.length) output.textContent = details.join('\n');
+  } else if (item.type === 'subAgentActivity') {
+    const meta = rememberAgentThread(item.agentThreadId, { agentPath: item.agentPath, model: item.model, reasoningEffort: item.reasoningEffort, kind: item.kind });
+    card.dataset.agentThreadId = item.agentThreadId || '';
+    card.dataset.agentTurnId = turnId || '';
+    card.agentActivityItem = item;
+    headingIcon.className = 'icon agent-avatar';
+    headingIcon.style.setProperty('--agent-color', meta.color);
+    headingIcon.textContent = `A${meta.number}`;
+    headingText.textContent = `${agentRoleName(meta)} · ${({ started: 'iniciado', interacted: 'trabalhando', interrupted: 'interrompido', completed: 'concluído' })[item.kind] || 'atividade'}`;
+    const details = [];
+    if (meta.status) details.push(`Estado: ${agentStatusLabel(meta.status)}`);
+    if (meta.message) details.push(String(meta.message).slice(0, 240));
+    if (item.model || meta.model) details.push(`Modelo: ${item.model || meta.model}`);
+    if (item.reasoningEffort || meta.reasoningEffort) details.push(`Esforço: ${effortLabel(item.reasoningEffort || meta.reasoningEffort)}`);
+    if (meta.prompt) details.push(`Tarefa: ${String(meta.prompt).slice(0, 500)}`);
     if (details.length) output.textContent = details.join('\n');
   } else {
     headingIcon.innerHTML = `<svg viewBox="0 0 24 24">${icons.bolt}</svg>`;
@@ -1696,6 +1978,7 @@ function renderActivity(item, append = false, turnId = '') {
 }
 
 function renderTurnHistory(turns, threadId) {
+  indexAgentThreads(turns);
   const sameThread = $('#messages').dataset.threadId === threadId;
   const previousScrollTop = $('#messages').scrollTop;
   if (!sameThread) state.followLatest = true;
@@ -1743,7 +2026,7 @@ function renderTurnHistory(turns, threadId) {
         }
       } else if (item.type === 'reasoning') {
         if (renderReasoningSummary(item, turn.id, true)) count++;
-      } else if (['commandExecution', 'fileChange', 'webSearch', 'mcpToolCall', 'collabToolCall', 'plan'].includes(item.type)) {
+      } else if (['commandExecution', 'fileChange', 'webSearch', 'mcpToolCall', 'collabToolCall', 'subAgentActivity', 'plan'].includes(item.type)) {
         renderActivity(item, true, turn.id); count++;
       }
     });
@@ -1810,7 +2093,10 @@ function addApproval(request) {
 
 function handleCodexNotification(message) {
   const params = message.params || {};
-  const eventThreadId = params.threadId || params.turn?.threadId;
+  const eventThreadId = params.threadId || params.turn?.threadId || params.thread?.id;
+  if (message.method === 'thread/started' && params.thread?.id && (params.thread.agentNickname || params.thread.agentRole)) {
+    rememberAgentThread(params.thread.id, { nickname: params.thread.agentNickname, role: params.thread.agentRole, model: params.thread.model });
+  }
   if (eventThreadId === state.selectedThreadId) {
     state.executionRevision += 1;
     state.lastExecutionEventAt = Date.now();
@@ -2016,6 +2302,11 @@ async function bootstrap() {
     state.defaultCwd = data.defaultCwd || '/';
     state.projectsRoot = data.projectsRoot || `${state.defaultCwd}/projects`;
     if (!state.projects.some((project) => project.id === state.selectedProjectId)) state.selectedProjectId = '';
+    if (state.expandedProjectId && !state.projects.some((project) => project.id === state.expandedProjectId)) state.expandedProjectId = '';
+    if (state.selectedProjectId && !state.expandedProjectId) {
+      state.expandedProjectId = state.selectedProjectId;
+      localStorage.setItem('codex-expanded-project', state.expandedProjectId);
+    }
     const startupProject = state.projects.find((project) => project.id === state.selectedProjectId);
     if (startupProject) updateWorkingDirectory(startupProject.cwd);
     else if (!state.cwd) updateWorkingDirectory(state.defaultCwd);
