@@ -35,8 +35,8 @@ export const icons = {
   stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
 };
 
-export function installIcons() {
-  $$('[data-icon]').forEach((node) => {
+export function installIcons(root = document) {
+  $$('[data-icon]', root).forEach((node) => {
     const name = node.dataset.icon;
     if (!icons[name]) return;
     node.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name]}</svg>`;
@@ -56,5 +56,22 @@ export function toast(message, kind = '') {
 }
 
 export function randomKey() { return `request-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
+
+const frameTasks = new Map();
+
+/**
+ * Run `task` once on the next animation frame, coalescing repeated requests with the
+ * same key. Streaming deltas use it so a burst of tokens costs one render per frame.
+ */
+export function onNextFrame(key, task) {
+  const pending = frameTasks.size > 0;
+  frameTasks.set(key, task);
+  if (pending) return;
+  requestAnimationFrame(() => {
+    const tasks = [...frameTasks.values()];
+    frameTasks.clear();
+    for (const run of tasks) run();
+  });
+}
 
 export function debounce(callback, delay) { let timer; return (...args) => { clearTimeout(timer); timer = setTimeout(() => callback(...args), delay); }; }

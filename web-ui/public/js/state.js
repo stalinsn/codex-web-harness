@@ -18,7 +18,7 @@ export const state = {
   models: [], threads: [], projects: [], selectedProjectId: localStorage.getItem('codex-project') || '', selectedThreadId: null, selectedThread: null,
   expandedProjectId: localStorage.getItem('codex-expanded-project') || '', projectColors: loadProjectColors(), threadColors: loadThreadColors(), unassignedExpanded: localStorage.getItem('codex-unassigned-expanded') !== 'false', agentThreads: new Map(),
   cwd: localStorage.getItem('codex-cwd') || '', defaultCwd: '', projectsRoot: '', activeThreadProjectId: '', archivedView: false, loadingThreadId: null,
-  historyThreadId: '', historyTurns: [], historyNextCursor: null, historyLoadedOlder: false, historyLoadingOlder: false,
+  historyThreadId: '', historyTurns: [], renderedHistorySnapshot: '', historyNextCursor: null, historyLoadedOlder: false, historyLoadingOlder: false,
   modelId: localStorage.getItem('codex-model') || '', effort: localStorage.getItem('codex-effort') || '',
   files: [], busy: false, sending: false, interrupting: false, account: null, rateLimits: null, usage: null, contextUsage: null,
   queueItems: [], recoveredQueueItems: [], deferredQueueItems: [], rateLimitFailure: null, draftQueueGroupId: localStorage.getItem('codex-draft-queue-group') || '', turnStartedAtMs: null, turnTimer: null,

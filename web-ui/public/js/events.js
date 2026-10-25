@@ -3,7 +3,7 @@ import { rememberAgentThread, renderActivity, renderReasoningSummary, setReasoni
 import { PREFIX } from './config.js';
 import { loadThreadHistory, rememberCompletedTurn, setBusy, syncExecutionState, turnStatus } from './conversation.js';
 import { maybeDrainDeferredQueue } from './deferred-queue.js';
-import { $, randomKey, toast } from './dom.js';
+import { $, onNextFrame, randomKey, toast } from './dom.js';
 import { applyAccountData, refreshUsage, renderContextUsage, renderUsage, updateThreadHeader } from './inspector.js';
 import { setConnection } from './layout.js';
 import { markdown } from './markdown.js';
@@ -91,8 +91,11 @@ function handleCodexNotification(message) {
     if (!itemId) return;
     const stream = getOrCreateStreamMessage(itemId, params.turnId, params.phase || params.item?.phase || '');
     stream.text += params.delta || '';
-    $('.message-content', stream.row).innerHTML = markdown(stream.text);
-    scrollConversation();
+    // Re-rendering the whole Markdown on every token is quadratic; do it once per frame.
+    onNextFrame(stream, () => {
+      $('.message-content', stream.row).innerHTML = markdown(stream.text);
+      scrollConversation();
+    });
     return;
   }
   if (message.method === 'item/commandExecution/outputDelta') {
@@ -100,10 +103,14 @@ function handleCodexNotification(message) {
     if (!itemId) return;
     const key = `${state.selectedThreadId}:${itemId}`;
     const card = state.activityCards.get(key) || renderActivity({ id: itemId, type: 'commandExecution', command: params.command, status: 'inProgress' }, true, params.turnId);
-    const output = $('.activity-output', card);
-    output.textContent += params.delta || '';
-    output.classList.remove('hidden');
-    scrollConversation();
+    card.pendingOutput = (card.pendingOutput || '') + (params.delta || '');
+    onNextFrame(card, () => {
+      const output = $('.activity-output', card);
+      output.append(card.pendingOutput);
+      card.pendingOutput = '';
+      output.classList.remove('hidden');
+      scrollConversation();
+    });
     return;
   }
   if (message.method === 'item/started' || message.method === 'item/completed') {

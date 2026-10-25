@@ -1,18 +1,16 @@
 // HTTP request handling: auth API, session gate, JSON API routes, SSE and static files.
 import { AuthError } from './auth/auth-manager.mjs';
-import { config } from './config.mjs';
 import { getPublicPath, isAllowedOrigin, isSafeMethod } from './http/request.mjs';
 import { fail } from './http/respond.mjs';
 import { Router } from './http/router.mjs';
 import { applySecurityHeaders } from './http/security.mjs';
-import { serveStatic } from './http/static.mjs';
 import { handleAuthApi } from './routes/auth.mjs';
 import { registerProjectRoutes } from './routes/projects.mjs';
 import { registerSystemRoutes } from './routes/system.mjs';
 import { registerThreadRoutes } from './routes/threads.mjs';
 import { registerTurnRoutes } from './routes/turns.mjs';
 
-export function createRequestHandler({ auth, codex, events }) {
+export function createRequestHandler({ auth, codex, events, assets }) {
   const router = new Router();
   const deps = { codex, events };
   registerSystemRoutes(router, deps);
@@ -31,7 +29,7 @@ export function createRequestHandler({ auth, codex, events }) {
       return fail(res, 400, 'Endereço inválido.');
     }
     if (pathName === null) return fail(res, 404, 'Rota não encontrada.');
-    if (!pathName.startsWith('/api/')) return serveStatic(config.publicDir, req, res, pathName);
+    if (!pathName.startsWith('/api/')) return assets.serve(req, res, pathName, url, applySecurityHeaders);
 
     if (pathName.startsWith('/api/auth/')) {
       try { return await handleAuthApi(auth, req, res, pathName); }

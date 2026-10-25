@@ -109,7 +109,14 @@ export async function loadThreadHistory(threadId, { background = false } = {}) {
   const active = execution.active;
   state.activeTurnId = execution.turn?.id || null;
   for (const turn of incomingTurns) if (['completed', 'failed', 'interrupted'].includes(turnStatus(turn))) rememberCompletedTurn(turn.id);
-  renderTurnHistory(state.historyTurns, threadId);
+  // Background syncs usually return what is already on screen; rebuilding the whole
+  // conversation then only costs layout and collapses details the user opened.
+  const snapshot = JSON.stringify(state.historyTurns);
+  const unchanged = background && $('#messages').dataset.threadId === threadId && state.renderedHistorySnapshot === snapshot;
+  if (!unchanged) {
+    renderTurnHistory(state.historyTurns, threadId);
+    state.renderedHistorySnapshot = snapshot;
+  }
   if (active) state.activeThreadIds.add(threadId);
   else state.activeThreadIds.delete(threadId);
   renderThreads(state.threads, $('#threadSearch').value.trim());
@@ -117,8 +124,8 @@ export async function loadThreadHistory(threadId, { background = false } = {}) {
   state.turnStartedAtMs = activeTurn?.startedAt ? Number(activeTurn.startedAt) * 1000 : (active ? state.turnStartedAtMs || Date.now() : null);
   setBusy(active);
   refreshQueue(threadId).catch((error) => toast(error.message, 'error'));
-  state.pendingApprovals.forEach((request) => { if (request.params?.threadId === threadId) addApproval(request); });
-  if (window.innerWidth <= 680) closeSidebar();
+  if (!unchanged) state.pendingApprovals.forEach((request) => { if (request.params?.threadId === threadId) addApproval(request); });
+  if (!background && window.innerWidth <= 680) closeSidebar();
   return data;
 }
 
@@ -146,6 +153,7 @@ export async function loadOlderHistory() {
     state.followLatest = false;
     for (const turn of olderTurns) if (['completed', 'failed', 'interrupted'].includes(turnStatus(turn))) rememberCompletedTurn(turn.id);
     renderTurnHistory(state.historyTurns, threadId);
+    state.renderedHistorySnapshot = '';
     messages.scrollTop = previousTop + Math.max(0, messages.scrollHeight - previousHeight);
   } catch (error) {
     if (state.selectedThreadId === threadId) toast(error.message || 'Não consegui carregar as mensagens anteriores.', 'error');

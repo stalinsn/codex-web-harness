@@ -90,7 +90,7 @@ function renderCommandActivity(item, append, turnId) {
   const command = $('.command-name', entry);
   const output = $('.activity-output', entry);
   command.textContent = item.command || 'Comando';
-  if (item.aggregatedOutput) output.textContent = item.aggregatedOutput;
+  if (item.aggregatedOutput) { output.textContent = item.aggregatedOutput; entry.pendingOutput = ''; }
   output.classList.toggle('hidden', !output.textContent);
   group.items.set(key, item.status || 'inProgress');
   const statuses = [...group.items.values()];

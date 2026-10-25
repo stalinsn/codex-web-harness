@@ -66,49 +66,58 @@ export function createThreadRow(thread, { nested = false, showUnassigned = false
   trigger.setAttribute('aria-label', `Ações: ${threadDisplayTitle(thread)}`);
   trigger.setAttribute('aria-haspopup', 'menu'); trigger.setAttribute('aria-expanded', 'false');
   menu.append(trigger);
-  const popover = document.createElement('div');
-  popover.className = `thread-actions-popover ${nested ? 'project-tree-thread-actions-popover' : 'thread-list-actions-popover'}`;
-  popover.id = `thread-menu-${nested ? 'project-' : 'list-'}${thread.id}`;
-  popover.setAttribute('popover', 'auto'); popover.setAttribute('role', 'menu');
-  popover.setAttribute('aria-label', `Ações: ${threadDisplayTitle(thread)}`); trigger.setAttribute('aria-controls', popover.id);
-  const action = (label, handler, { danger = false, disabled = false, icon = 'chat' } = {}) => {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = danger ? 'thread-action danger' : 'thread-action';
-    item.setAttribute('role', 'menuitem');
-    item.innerHTML = `<span class="icon" data-icon="${icon}"></span><span>${escapeHtml(label)}</span>`;
-    item.disabled = disabled;
-    if (disabled) item.title = 'Disponível quando a execução terminar.';
-    item.addEventListener('click', (event) => {
-      event.stopPropagation();
-      popover.hidePopover();
-      handler();
-    });
-    popover.append(item);
-  };
   const running = isRunning;
-  action('Renomear', () => performThreadAction(thread, 'rename'), { icon: 'rename' });
-  if (!project) action(color ? 'Alterar cor da conversa' : 'Colorir conversa', () => openThreadColorMenu(thread, trigger), { icon: 'tag' });
-  if (!state.archivedView) action(pinned ? 'Desafixar' : 'Fixar no topo', () => performThreadAction(thread, 'pin'), { icon: 'pin' });
-  action(state.archivedView ? 'Restaurar conversa' : 'Arquivar conversa', () => performThreadAction(thread, state.archivedView ? 'unarchive' : 'archive'), { disabled: running, icon: 'archive' });
-  action('Excluir conversa', () => performThreadAction(thread, 'delete'), { danger: true, disabled: running, icon: 'trash' });
-  document.body.append(popover);
+  // The menu is built on first open: building one per row on every list render
+  // (and on every running-state change) was the sidebar's main DOM cost.
+  let popover = null;
+  const buildMenu = () => {
+    popover = document.createElement('div');
+    popover.className = `thread-actions-popover ${nested ? 'project-tree-thread-actions-popover' : 'thread-list-actions-popover'}`;
+    popover.id = `thread-menu-${nested ? 'project-' : 'list-'}${thread.id}`;
+    popover.setAttribute('popover', 'auto'); popover.setAttribute('role', 'menu');
+    popover.setAttribute('aria-label', `Ações: ${threadDisplayTitle(thread)}`); trigger.setAttribute('aria-controls', popover.id);
+    const action = (label, handler, { danger = false, disabled = false, icon = 'chat' } = {}) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = danger ? 'thread-action danger' : 'thread-action';
+      item.setAttribute('role', 'menuitem');
+      item.innerHTML = `<span class="icon" data-icon="${icon}"></span><span>${escapeHtml(label)}</span>`;
+      item.disabled = disabled;
+      if (disabled) item.title = 'Disponível quando a execução terminar.';
+      item.addEventListener('click', (event) => {
+        event.stopPropagation();
+        popover.hidePopover();
+        handler();
+      });
+      popover.append(item);
+    };
+    action('Renomear', () => performThreadAction(thread, 'rename'), { icon: 'rename' });
+    if (!project) action(color ? 'Alterar cor da conversa' : 'Colorir conversa', () => openThreadColorMenu(thread, trigger), { icon: 'tag' });
+    if (!state.archivedView) action(pinned ? 'Desafixar' : 'Fixar no topo', () => performThreadAction(thread, 'pin'), { icon: 'pin' });
+    action(state.archivedView ? 'Restaurar conversa' : 'Arquivar conversa', () => performThreadAction(thread, state.archivedView ? 'unarchive' : 'archive'), { disabled: running, icon: 'archive' });
+    action('Excluir conversa', () => performThreadAction(thread, 'delete'), { danger: true, disabled: running, icon: 'trash' });
+    installIcons(popover);
+    popover.addEventListener('toggle', () => trigger.setAttribute('aria-expanded', String(popover.matches(':popover-open'))));
+    popover.addEventListener('keydown', (event) => {
+      const buttons = $$('button:not(:disabled)', popover); const index = buttons.indexOf(document.activeElement);
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); popover.hidePopover(); trigger.focus(); }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); buttons[(index + (event.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length]?.focus(); }
+    });
+    document.body.append(popover);
+    return popover;
+  };
   trigger.addEventListener('click', () => {
-    if (popover.matches(':popover-open')) return popover.hidePopover();
-    closeThreadMenus(); popover.showPopover();
+    if (popover?.isConnected && popover.matches(':popover-open')) return popover.hidePopover();
+    closeThreadMenus();
+    if (!popover?.isConnected) buildMenu();
+    popover.showPopover();
     const rect = trigger.getBoundingClientRect();
     const height = popover.getBoundingClientRect().height;
     popover.style.left = `${Math.max(8, Math.min(innerWidth - 212, rect.right - 204))}px`;
     popover.style.top = `${Math.max(8, Math.min(innerHeight - height - 8, rect.bottom + 5))}px`;
   });
-  popover.addEventListener('toggle', () => trigger.setAttribute('aria-expanded', String(popover.matches(':popover-open'))));
   trigger.addEventListener('keydown', (event) => {
-    if (event.key === 'ArrowDown') { event.preventDefault(); if (!popover.matches(':popover-open')) trigger.click(); $('button:not(:disabled)', popover)?.focus(); }
-  });
-  popover.addEventListener('keydown', (event) => {
-    const buttons = $$('button:not(:disabled)', popover); const index = buttons.indexOf(document.activeElement);
-    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); popover.hidePopover(); trigger.focus(); }
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); buttons[(index + (event.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length]?.focus(); }
+    if (event.key === 'ArrowDown') { event.preventDefault(); if (!popover?.isConnected || !popover.matches(':popover-open')) trigger.click(); $('button:not(:disabled)', popover)?.focus(); }
   });
   row.append(button, menu);
   return row;

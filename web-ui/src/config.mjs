@@ -13,6 +13,7 @@ export const config = Object.freeze({
   codexHome: CODEX_HOME,
   codexBin: process.env.CODEX_BIN || join(HOME_DIR, '.local', 'bin', 'codex'),
   defaultCwd: process.env.CODEX_DEFAULT_CWD || HOME_DIR,
+  dev: process.env.CODEX_UI_DEV === '1',
   publicDir: resolve(process.env.CODEX_UI_PUBLIC || join(import.meta.dirname, '..', 'public')),
   uploadDir: join(CODEX_HOME, 'web-uploads'),
   projectsFile: join(CODEX_HOME, 'web-projects.json'),
