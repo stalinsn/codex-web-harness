@@ -763,3 +763,22 @@ body.resizing-inspector { cursor: col-resize; user-select: none; }
   .queue-panel { max-height: 230px; }
   .queue-list { max-height: 190px; }
 }
+
+.voice-send { color: #f6f7ff; border-color: #8d9fe7; background: #495d9d; }
+.voice-panel #voicePlayer { display: block; width: 100%; min-height: 44px; flex-shrink: 0; }
+.voice-panel-actions { align-items: stretch; }
+.attachment-file { position: relative; display: flex; flex-direction: column; gap: 5px; width: min(280px, 100%); padding: 11px 30px 11px 12px; color: #dbe0f5; border: 1px solid #454958; border-radius: 10px; background: #22252e; }
+.attachment-file > a { display: block; overflow: hidden; color: #dbe0f5; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-file > small { color: #979eb5; font-size: 10px; }
+.attachment-file audio { width: 100%; height: 40px; }
+.attachment-transcribe { min-height: 36px; border: 1px solid #505a7d; border-radius: 7px; color: #dce3ff; font-size: 11px; background: #30394f; cursor: pointer; }
+.message-files { display: grid; gap: 8px; margin-top: 8px; }
+.message-file { display: block; width: fit-content; max-width: 100%; padding: 9px 11px; color: #e0e7ff; font-size: 12px; border: 1px solid #ffffff30; border-radius: 8px; background: #0002; overflow-wrap: anywhere; }
+.message-files audio { width: min(300px, 100%); height: 44px; }
+@media (max-width: 680px) { .voice-panel-actions button, .attachment-transcribe { min-height: 44px; } }
+.attachment-strip { max-height: 180px; overflow-y: auto; }
+@media (max-width: 680px) { .attachment-strip { max-height: 150px; } }
+.attachment-file { padding-right: 48px; }
+.attachment-file .attachment-remove { position: absolute; top: 3px; right: 3px; display: grid; width: 32px; height: 32px; padding: 0; place-items: center; color: #c4cada; font-size: 20px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; }
+.attachment-file .attachment-remove:hover { color: #fff; background: #ffffff12; }
+@media (max-width: 680px) { .attachment-file .attachment-remove { top: 0; right: 0; width: 44px; height: 44px; } }

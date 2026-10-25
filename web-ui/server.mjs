@@ -11,6 +11,7 @@ import readline from 'node:readline';
 import { promisify } from 'node:util';
 import { AuthError, AuthManager } from './auth.mjs';
 import { voiceStatus, startTranscription, getTranscription, cancelTranscription } from './transcription.mjs';
+import { saveFiles, serveFile } from './attachments.mjs';
 
 const HOME_DIR = process.env.HOME || homedir();
 const HOST = process.env.CODEX_UI_HOST || '127.0.0.1';
@@ -384,6 +385,14 @@ function normalizeModel(value) {
   return model;
 }
 
+function validateAttachments(body) {
+  const images = body.images || [];
+  const files = body.files || [];
+  if (!Array.isArray(images) || !Array.isArray(files) || images.length + files.length > 8) throw Object.assign(new Error('Envie no máximo 8 anexos por mensagem.'), { statusCode: 400 });
+  const bytes = [...images, ...files].reduce((total, file) => total + Math.ceil(String(file?.data || '').length * .75), 0);
+  if (bytes > 24 * 1024 * 1024 + 16) throw Object.assign(new Error('O limite total é 24 MB por mensagem.'), { statusCode: 413 });
+}
+
 async function saveImages(threadId, files) {
   if (!Array.isArray(files) || files.length > MAX_IMAGES) throw new Error(`Envie no máximo ${MAX_IMAGES} imagens por mensagem.`);
   const items = [];
@@ -739,6 +748,9 @@ async function handleApi(req, res, pathName, url) {
     return json(res, 200, { threads: result.data || [], nextCursor: result.nextCursor || null });
   }
 
+  const fileMatch = pathName.match(/^\/api\/files\/([a-zA-Z0-9_-]{1,100})\/([a-zA-Z0-9._-]{1,200})$/);
+  if (req.method === 'GET' && fileMatch) return serveFile(UPLOAD_DIR, fileMatch[1], fileMatch[2], req, res, url);
+
   const imageMatch = pathName.match(/^\/api\/images\/([a-zA-Z0-9_-]{1,100})\/([a-zA-Z0-9._-]{1,200})$/);
   if (req.method === 'GET' && imageMatch) {
     const imagePath = join(UPLOAD_DIR, imageMatch[1], imageMatch[2]);
@@ -807,12 +819,14 @@ async function handleApi(req, res, pathName, url) {
     const threadId = steerRoute[1];
     const body = await readBody(req);
     const text = typeof body.text === 'string' ? body.text.trim() : '';
-    if (!text && (!Array.isArray(body.images) || body.images.length === 0)) return fail(res, 400, 'Escreva uma orientação ou anexe uma imagem.');
+    validateAttachments(body);
+    if (!text && !body.images?.length && !body.files?.length) return fail(res, 400, 'Escreva uma orientação ou anexe um arquivo.');
     const expectedTurnId = await activeTurnIdFor(threadId);
     if (!expectedTurnId) return fail(res, 409, 'Não encontrei uma execução ativa para orientar. A mensagem continua no campo para você reenviar.');
     const input = [];
     if (text) input.push({ type: 'text', text });
     input.push(...await saveImages(threadId, body.images || []));
+    input.push(...await saveFiles(UPLOAD_DIR, threadId, body.files || []));
     const result = await rpc('turn/steer', {
       threadId,
       expectedTurnId,
@@ -923,7 +937,8 @@ async function handleApi(req, res, pathName, url) {
     let threadId = typeof body.threadId === 'string' ? body.threadId : '';
     const currentThreadId = Boolean(threadId);
     let queueForActiveTurn = false;
-    if (!text && (!Array.isArray(body.images) || body.images.length === 0)) return fail(res, 400, 'Escreva uma mensagem ou anexe uma imagem.');
+    validateAttachments(body);
+    if (!text && !body.images?.length && !body.files?.length) return fail(res, 400, 'Escreva uma mensagem ou anexe um arquivo.');
 
     if (threadId) {
       if (!/^[a-zA-Z0-9_-]{1,100}$/.test(threadId)) return fail(res, 400, 'ID de conversa inválido.');
@@ -956,6 +971,7 @@ async function handleApi(req, res, pathName, url) {
     const input = [];
     if (text) input.push({ type: 'text', text });
     input.push(...await saveImages(threadId, body.images || []));
+    input.push(...await saveFiles(UPLOAD_DIR, threadId, body.files || []));
     if (queueForActiveTurn) {
       const queued = await rpc('thread/queue/add', {
         threadId,

@@ -6,7 +6,7 @@ Uma interface web responsiva para conversar com o Codex CLI instalado na sua pr�
 
 - Conversas persistentes, projetos e histórico local do Codex.
 - Seletor de contexto para iniciar dúvidas gerais, continuar em um projeto existente ou criar um projeto com pasta própria dentro de `~/projects`.
-- Envio de imagens por arquivo ou colagem de prints, seleção de modelo e nível de raciocínio.
+- Anexos de arquivos gerais e imagens, colagem de prints, seleção de modelo e nível de raciocínio.
 - Fila de mensagens durante uma execução e ação para orientar a execução atual.
 - Ações por mensagem enfileirada para orientar a execução imediatamente ou devolver texto e imagens ao rascunho; o botão para interromper fica junto ao compositor.
 - Resposta final visível, com reasoning resumido e atividades intermediárias agrupados e recolhidos por turno.
@@ -100,9 +100,9 @@ MIT. Consulte [LICENSE](LICENSE).
 
 ## Entrada de prompt e voz local
 
-O compositor oferece envio explícito, imagens, gravação e importação de áudio. No celular, Enter cria uma linha; no desktop, Enter envia e Shift+Enter cria uma linha. Ctrl/Cmd+Enter envia também no celular com teclado físico. Modelo e esforço aplicam-se à próxima mensagem; durante uma execução, Enviar passa a adicionar à fila, e Orientar agora redireciona o turno atual.
+O compositor oferece envio explícito, um botão Anexar para arquivos gerais e um botão Gravar para o microfone. Arquivos de áudio anexados podem ser usados como voz por uma ação na prévia. No celular, Enter cria uma linha; no desktop, Enter envia e Shift+Enter cria uma linha. Ctrl/Cmd+Enter envia também no celular com teclado físico. Modelo e esforço aplicam-se à próxima mensagem; durante uma execução, Enviar passa a adicionar à fila, e Orientar agora redireciona o turno atual.
 
-A voz segue **gravar → ouvir → transcrever → revisar → enviar**. O reconhecimento é feito sobre o arquivo completo na VPS, sem Web Speech e sem chave de API. A transcrição nunca envia o prompt automaticamente. Em caso de falha, a gravação continua disponível para repetir, baixar ou descartar. O áudio pode ser salvo pelo usuário antes da transcrição; arquivos temporários no servidor são apagados ao concluir ou cancelar.
+A voz oferece dois caminhos após gravar e ouvir: **Transcrever para revisar** coloca o texto no campo sem enviar; **Enviar áudio** transcreve localmente e envia automaticamente na conversa atual (ou adiciona à fila durante uma execução). O reconhecimento é feito sobre o arquivo completo na VPS, sem Web Speech e sem chave de API. A transcrição só envia automaticamente quando o usuário escolhe Enviar áudio. Os modelos atualmente disponíveis recebem texto e imagens, então o envio de voz usa a transcrição como entrada do modelo. Em caso de falha, a gravação continua disponível para repetir, baixar ou descartar. O áudio pode ser salvo pelo usuário antes da transcrição; arquivos temporários no servidor são apagados ao concluir ou cancelar.
 
 Para instalar o modelo multilíngue Whisper small e suas dependências Python isoladas:
 
@@ -117,3 +117,9 @@ Os caminhos padrão são `~/.local/venvs/harness-voice/bin/python` e `~/.cache/h
 O indicador de execução acompanha o turno atual, incluindo após recarregar a página ou orientar uma tarefa em andamento. Orientações abrem um novo bloco de progresso depois da mensagem do usuário. Atualizações intermediárias ficam expandidas enquanto o turno está ativo e são recolhidas ao concluir; a resposta final permanece visível. Ao reconectar, voltar à aba ou passar um período sem eventos durante uma execução, o cliente consulta o histórico para recuperar o estado. Conclusões e respostas antigas não devem alterar o estado de um turno mais recente.
 
 Cada mensagem na fila oferece Cancelar para remover apenas aquela submissão, sem alterar o rascunho ou interromper a execução atual. Ações concorrentes sobre a mesma mensagem ficam bloqueadas até a resposta do servidor. Uma falha de remoção mantém a mensagem visível para nova tentativa, e respostas antigas de consulta da fila são descartadas. Orientar agora fica disponível apenas enquanto há uma execução ativa.
+
+O botão Anexar aceita até 8 arquivos, incluindo até 4 imagens, com 24 MiB no total. Imagens têm limite individual de 8 MiB; os outros arquivos, 12 MiB. Imagens vão como entrada visual; os demais arquivos ficam na pasta privada da conversa e são referenciados no prompt por metadados com seu caminho local, para leitura pelas ferramentas do Codex. Downloads e reprodução de áudios no histórico exigem autenticação; conteúdo genérico é servido como download para impedir a execução de HTML anexado. A fila preserva os arquivos ao devolver uma mensagem ao rascunho.
+
+Gravações são preparadas em WAV mono a 16 kHz para reprodução consistente; se a conversão não estiver disponível, a prévia usa o formato original. O controle Ouvir inicia a reprodução por gesto explícito do usuário. Os arquivos temporários usados na transcrição continuam sendo apagados ao terminar, e um erro de envio preserva tanto o texto quanto a gravação para repetir sem transcrever de novo.
+
+Ao escolher Enviar áudio, a gravação também acompanha a mensagem como arquivo para poder ser ouvida depois no histórico. Somente os arquivos temporários de processamento são apagados; anexos enviados permanecem na pasta da conversa, assim como as imagens.

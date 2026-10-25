@@ -18,12 +18,12 @@ def main():
         raise ValueError('O áudio é muito curto. Grave sua mensagem novamente.')
     model = WhisperModel(sys.argv[2], device='cpu', compute_type='int8', cpu_threads=1, num_workers=1, local_files_only=True)
     segments, _ = model.transcribe(
-        audio, language='pt', beam_size=3, temperature=0,
-        vad_filter=True, vad_parameters={'min_silence_duration_ms': 500},
-        condition_on_previous_text=False, repetition_penalty=1.1,
+        audio, language='pt', beam_size=5, temperature=0,
+        vad_filter=True, vad_parameters={'threshold': 0.35, 'min_silence_duration_ms': 600, 'speech_pad_ms': 400},
+        condition_on_previous_text=False, repetition_penalty=1.0,
         initial_prompt='Conversa em português brasileiro sobre projetos de software, GitHub, Docker e desenvolvimento web.',
     )
-    text = ' '.join(segment.text.strip() for segment in segments if segment.no_speech_prob < 0.7).strip()
+    text = ' '.join(segment.text.strip() for segment in segments).strip()
     if not text:
         raise ValueError('Não identifiquei fala neste áudio. Aproxime o microfone e tente novamente.')
     print(json.dumps({'text': text, 'duration': duration}, ensure_ascii=False))

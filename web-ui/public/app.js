@@ -18,7 +18,7 @@ let vpsHealthRequest = null;
 let executionSyncRequest = null;
 const queueActions = new Map();
 let queueRefreshSequence = 0;
-const voice = { phase: 'idle', recorder: null, stream: null, chunks: [], blob: null, url: '', timer: null, startedAt: 0, seconds: 0, request: null, jobId: null, cancelled: false, context: null, meterSource: null, meterFrame: null, hasSignal: false, generation: 0 };
+const voice = { phase: 'idle', recorder: null, stream: null, chunks: [], blob: null, url: '', timer: null, startedAt: 0, seconds: 0, request: null, jobId: null, cancelled: false, context: null, meterSource: null, meterFrame: null, hasSignal: false, generation: 0, transcriptInserted: false, autoSend: false };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -405,7 +405,7 @@ function toast(message, kind = '') {
   setTimeout(() => node.remove(), 4200);
 }
 
-function voiceIsActive() { return ['requesting', 'recording', 'transcribing'].includes(voice.phase); }
+function voiceIsActive() { return ['requesting', 'recording', 'preparing', 'transcribing'].includes(voice.phase); }
 function touchComposer() { return window.matchMedia('(pointer: coarse)').matches; }
 function voiceTime(seconds) { return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`; }
 
@@ -416,22 +416,26 @@ function renderVoice(error = '') {
   panel.hidden = voice.phase === 'idle';
   panel.classList.toggle('is-recording', recording);
   panel.classList.toggle('is-transcribing', voice.phase === 'transcribing');
-  $('#voiceStatus').textContent = ({ requesting: 'Liberando microfone…', recording: 'Gravando sua mensagem', ready: 'Ouça e transcreva para revisar', transcribing: 'Transcrevendo… você pode continuar escrevendo' })[voice.phase] || '';
+  $('#voiceStatus').textContent = ({ requesting: 'Liberando microfone…', recording: 'Gravando sua mensagem', ready: 'Ouça e transcreva para revisar', preparing: 'Preparando prévia do áudio…', transcribing: voice.autoSend ? 'Transcrevendo para enviar…' : 'Transcrevendo para revisar…' })[voice.phase] || '';
   $('#voiceTimer').textContent = voiceTime(voice.seconds);
   $('#voicePlayer').hidden = !voice.blob || recording;
   $('#stopRecording').hidden = !recording;
   $('#transcribeAudio').hidden = !voice.blob || recording;
   $('#transcribeAudio').disabled = voice.phase === 'transcribing';
-  $('#transcribeAudio').textContent = voice.phase === 'transcribing' ? 'Transcrevendo…' : 'Transcrever áudio';
+  $('#transcribeAudio').textContent = voice.phase === 'transcribing' ? 'Transcrevendo…' : 'Transcrever para revisar';
+  $('#sendAudio').hidden = !voice.blob || recording;
+  $('#sendAudio').disabled = voice.phase !== 'ready' || state.sending;
+  $('#sendAudio').textContent = state.busy ? 'Enviar áudio à fila' : 'Enviar áudio';
+  $('#playAudio').hidden = !voice.blob || recording;
   $('#downloadAudio').hidden = !voice.blob || recording;
   $('#discardAudio').textContent = voice.phase === 'transcribing' ? 'Cancelar transcrição' : 'Descartar';
   $('#voiceError').hidden = !error;
   $('#voiceError').textContent = error;
   $('#voiceInput').classList.toggle('listening', recording);
   $('#voiceInput').setAttribute('aria-pressed', String(recording));
-  $('#voiceInput').disabled = voice.phase === 'requesting' || voice.phase === 'transcribing' || voice.phase === 'ready';
+  $('#voiceInput').disabled = voice.phase !== 'idle' && voice.phase !== 'recording';
   $('#voiceButtonLabel').textContent = recording ? 'Concluir' : 'Gravar';
-  $('#attachAudio').disabled = voice.phase !== 'idle';
+  $('#messageInput').disabled = voice.phase === 'transcribing' && voice.autoSend;
   updateComposerControls();
 }
 
@@ -449,24 +453,88 @@ function clearRecordedAudio() {
   voice.request?.abort(); voice.request = null;
   if (voice.jobId) api(`/api/voice/transcriptions/${voice.jobId}`, { method: 'DELETE' }).catch(() => {});
   voice.jobId = null;
+  if (voice.attachedFile && state.files.includes(voice.attachedFile)) {
+    state.files = state.files.filter((file) => file !== voice.attachedFile);
+    renderAttachments();
+  }
+  voice.attachedFile = null;
   if (voice.recorder?.state === 'recording') voice.recorder.stop();
   releaseMicrophone(); voice.recorder = null;
   $('#voicePlayer').pause(); $('#voicePlayer').removeAttribute('src'); $('#voicePlayer').load();
   if (voice.url) URL.revokeObjectURL(voice.url);
-  voice.url = ''; voice.blob = null; voice.chunks = []; voice.phase = 'idle'; voice.seconds = 0;
+  voice.url = ''; voice.blob = null; voice.chunks = []; voice.phase = 'idle'; voice.seconds = 0; voice.transcriptInserted = false; voice.autoSend = false;
   renderVoice();
 }
 
 function showRecordedAudio(blob) {
   if (!blob.size) { clearRecordedAudio(); toast('O áudio ficou vazio. Tente gravar novamente.', 'error'); return; }
   if (blob.size > 12 * 1024 * 1024) { clearRecordedAudio(); toast('O limite é de 12 MB por áudio.', 'error'); return; }
-  voice.blob = blob; voice.url = URL.createObjectURL(blob); voice.phase = 'ready';
-  $('#voicePlayer').src = voice.url;
+  if (voice.url) URL.revokeObjectURL(voice.url);
+  voice.blob = blob; voice.url = URL.createObjectURL(blob); voice.phase = 'ready'; voice.transcriptInserted = false; voice.autoSend = false;
+  const player = $('#voicePlayer'); player.src = voice.url; player.muted = false; player.volume = 1; player.load();
   renderVoice();
 }
 
-async function transcribeRecordedAudio() {
-  if (!voice.blob || voice.phase !== 'ready') return;
+async function prepareVoicePreview(blob) {
+  const generation = voice.generation;
+  voice.phase = 'preparing'; renderVoice();
+  try {
+    const OfflineContext = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!OfflineContext) throw new Error('Decoder indisponível');
+    const decoder = new OfflineContext(1, 1, 16000);
+    const decoded = await decoder.decodeAudioData(await blob.arrayBuffer());
+    if (generation !== voice.generation) return;
+    if (decoded.duration > 181) { showRecordedAudio(blob); renderVoice('O limite para transcrição é 3 minutos. Você pode ouvir ou salvar o arquivo.'); return; }
+    const samples = decoded.length;
+    const buffer = new ArrayBuffer(44 + samples * 2);
+    const view = new DataView(buffer);
+    const write = (offset, value) => { for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)); };
+    write(0, 'RIFF'); view.setUint32(4, 36 + samples * 2, true); write(8, 'WAVE'); write(12, 'fmt ');
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, decoded.sampleRate, true);
+    view.setUint32(28, decoded.sampleRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true); write(36, 'data'); view.setUint32(40, samples * 2, true);
+    const channels = Array.from({ length: decoded.numberOfChannels }, (_, i) => decoded.getChannelData(i));
+    for (let i = 0; i < samples; i++) {
+      const sample = Math.max(-1, Math.min(1, channels.reduce((sum, channel) => sum + channel[i], 0) / channels.length));
+      view.setInt16(44 + i * 2, sample < 0 ? sample * 32768 : sample * 32767, true);
+    }
+    voice.seconds = Math.round(decoded.duration);
+    showRecordedAudio(new Blob([buffer], { type: 'audio/wav' }));
+  } catch {
+    if (generation === voice.generation) showRecordedAudio(blob);
+  }
+}
+
+async function sendVoiceTranscript() {
+  voice.phase = 'ready'; voice.autoSend = false; renderVoice();
+  if (!voice.attachedFile || !state.files.includes(voice.attachedFile)) {
+    if (state.files.length >= 8 || state.files.reduce((total, file) => total + (file.size || 0), 0) + voice.blob.size > 24 * 1024 * 1024) {
+      renderVoice('Remova um anexo antes de enviar a gravação. O texto e o áudio foram mantidos.');
+      return;
+    }
+    const generation = voice.generation;
+    const blob = voice.blob;
+    voice.phase = 'preparing'; renderVoice();
+    let dataUrl;
+    try { dataUrl = await blobDataUrl(blob); }
+    catch { if (generation === voice.generation) { voice.phase = 'ready'; renderVoice('Não consegui preparar o áudio para enviar. Tente novamente.'); } return; }
+    if (generation !== voice.generation) return;
+    const extension = blob.type.includes('mp4') ? 'm4a' : blob.type.includes('wav') ? 'wav' : blob.type.includes('ogg') ? 'ogg' : 'webm';
+    voice.attachedFile = { name: `gravacao-${Date.now()}.${extension}`, mime: blob.type, isImage: false, size: blob.size, dataUrl, data: String(dataUrl).split(',')[1] };
+    state.files.push(voice.attachedFile);
+    renderAttachments();
+  }
+  voice.phase = 'ready'; renderVoice();
+  const sent = await submitMessage(undefined, { allowVoice: true });
+  if (sent) clearRecordedAudio();
+  else renderVoice('Não consegui enviar. O texto e a gravação foram mantidos para tentar novamente.');
+}
+
+async function transcribeRecordedAudio({ send = false } = {}) {
+  if (!voice.blob || voice.phase !== 'ready' || state.sending) return;
+  if (voice.transcriptInserted) { if (send) await sendVoiceTranscript(); else clearRecordedAudio(); return; }
+  const targetThreadId = state.selectedThreadId;
+  voice.autoSend = send;
+  $('#voicePlayer').pause();
   const generation = voice.generation;
   voice.phase = 'transcribing'; voice.request = new AbortController();
   const signal = voice.request.signal;
@@ -485,14 +553,16 @@ async function transcribeRecordedAudio() {
       if (result.status === 'completed') {
         if (!result.text?.trim()) throw new Error('Não identifiquei fala neste áudio. Tente gravar novamente.');
         if (generation !== voice.generation) return;
+        if (targetThreadId !== state.selectedThreadId) throw new Error('A conversa mudou. O áudio foi preservado; escolha onde deseja enviá-lo e tente novamente.');
         const textarea = $('#messageInput');
         const draft = textarea.value.trimEnd();
         textarea.value = `${draft}${draft ? '\n\n' : ''}${result.text.trim()}`;
-        voice.jobId = null;
-        clearRecordedAudio();
+        voice.jobId = null; voice.transcriptInserted = true;
+        if (!send) clearRecordedAudio();
         textarea.dispatchEvent(new Event('input', { bubbles: true }));
         if (!touchComposer()) textarea.focus();
-        toast('Transcrição pronta. Revise o texto e toque em Enviar.');
+        if (send) await sendVoiceTranscript();
+        else toast('Transcrição pronta. Revise o texto e toque em Enviar.');
         return;
       }
       await new Promise((resolve, reject) => {
@@ -531,7 +601,7 @@ async function startVoiceRecording() {
       releaseMicrophone(); voice.recorder = null;
       if (voice.cancelled) return;
       const blob = new Blob(voice.chunks, { type: recorder.mimeType || voice.chunks[0]?.type || 'audio/webm' });
-      showRecordedAudio(blob);
+      prepareVoicePreview(blob);
     };
     recorder.onerror = () => { clearRecordedAudio(); toast('A gravação foi interrompida pelo navegador. Tente novamente.', 'error'); };
     recorder.start(500); voice.startedAt = Date.now(); voice.seconds = 0; voice.phase = 'recording';
@@ -1172,11 +1242,15 @@ function updateComposerControls() {
   if (send) {
     send.title = state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem';
     send.setAttribute('aria-label', state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem');
-    send.disabled = state.sending || voice.phase !== 'idle' || !hasDraft;
+    send.disabled = state.sending || !['idle', 'ready'].includes(voice.phase) || (!hasDraft && !voice.blob);
     $('#sendLabel').textContent = state.sending ? 'Enviando…' : state.busy ? 'Fila' : 'Enviar';
+    if (voice.phase === 'ready' && !state.sending) { $('#sendLabel').textContent = state.busy ? 'Áudio à fila' : 'Enviar áudio'; send.title = 'Transcrever na VPS e enviar a mensagem'; send.setAttribute('aria-label', send.title); }
     send.classList.toggle('queue-mode', state.busy);
   }
   if ($('#attachImage')) $('#attachImage').disabled = state.sending;
+  if ($('#sendAudio')) $('#sendAudio').disabled = state.sending || voice.phase !== 'ready';
+  if ($('#transcribeAudio')) $('#transcribeAudio').disabled = state.sending || voice.phase !== 'ready';
+  if ($('#discardAudio')) $('#discardAudio').disabled = state.sending;
   if ($('#steerButton')) {
     $('#steerButton').classList.toggle('hidden', !state.busy || !state.selectedThreadId);
     $('#steerButton').disabled = state.sending || voice.phase !== 'idle' || !hasDraft;
@@ -1232,7 +1306,7 @@ function openImagePreview(src, caption = 'Imagem anexada') {
   $('#imagePreviewDialog').showModal();
 }
 
-function makeMessage(role, { text = '', images = [], time = null, id = '', turnId = '', phase = '', finalAnswer = true, parent = null } = {}) {
+function makeMessage(role, { text = '', images = [], files = [], time = null, id = '', turnId = '', phase = '', finalAnswer = true, parent = null } = {}) {
   $('#welcome').classList.add('hidden');
   const row = document.createElement('article');
   row.className = `message ${role}`;
@@ -1262,6 +1336,15 @@ function makeMessage(role, { text = '', images = [], time = null, id = '', turnI
     preview.append(img);
     imageBox?.append(preview);
   }
+  if (files.length) {
+    const box = document.createElement('div'); box.className = 'message-files';
+    for (const file of files) {
+      const link = document.createElement('a'); link.className = 'message-file'; link.href = file.url; link.download = file.name; link.textContent = `📎 ${file.name}`;
+      box.append(link);
+      if (file.mime?.startsWith('audio/')) { const player = document.createElement('audio'); player.controls = true; player.preload = 'metadata'; player.src = file.url; player.setAttribute('aria-label', `Ouvir ${file.name}`); box.append(player); }
+    }
+    $('.message-body', row).append(box);
+  }
   if (imageBox && !imageBox.children.length) imageBox.remove();
   if (time) $('.message-meta', row).textContent = time;
   (parent || $('#messages')).append(row);
@@ -1279,6 +1362,20 @@ function scrollConversation(force = false) {
   requestAnimationFrame(() => {
     if (state.followLatest) area.scrollTop = area.scrollHeight;
   });
+}
+
+function splitAttachmentText(raw, threadId) {
+  const files = [];
+  const text = String(raw || '').replace(/\[Arquivo anexado\]\s*\n([^\n]+)\n\[\/Arquivo anexado\]/g, (block, json) => {
+    try {
+      const file = JSON.parse(json);
+      const storedName = String(file.path || '').split(/[\\/]/).pop();
+      if (!file.name || !/^[a-zA-Z0-9._-]{1,200}$/.test(storedName)) return block;
+      files.push({ ...file, storedName, url: `${PREFIX}/api/files/${encodeURIComponent(threadId)}/${encodeURIComponent(storedName)}?name=${encodeURIComponent(file.name)}` });
+      return '';
+    } catch { return block; }
+  }).trim();
+  return { text, files };
 }
 
 function imageFromContent(content, threadId) {
@@ -1555,11 +1652,11 @@ function renderTurnHistory(turns, threadId) {
     let lastAssistant = null;
     items.forEach((item, index) => {
       if (item.type === 'userMessage') {
-        const text = (item.content || []).filter((part) => part.type === 'text').map((part) => part.text).join('\n');
+        const { text, files } = splitAttachmentText((item.content || []).filter((part) => part.type === 'text').map((part) => part.text).join('\n'), threadId);
         const images = imageFromContent(item.content, threadId);
-        if (text || images.length) {
+        if (text || images.length || files.length) {
           if (item.id) state.userMessageIds.add(item.id);
-          makeMessage('user', { text, images, id: item.id }); startProgressSegment(turn.id); count++;
+          makeMessage('user', { text, images, files, id: item.id }); startProgressSegment(turn.id); count++;
         }
       } else if (item.type === 'agentMessage') {
         if (item.text) {
@@ -1719,10 +1816,10 @@ function handleCodexNotification(message) {
       renderReasoningSummary(item, params.turnId, true);
     } else if (item.type === 'userMessage' && message.method === 'item/started') {
       if (!item.id || !state.userMessageIds.has(item.id)) {
-        const text = (item.content || []).filter((part) => part.type === 'text').map((part) => part.text).join('\n');
+        const { text, files } = splitAttachmentText((item.content || []).filter((part) => part.type === 'text').map((part) => part.text).join('\n'), state.selectedThreadId);
         const images = imageFromContent(item.content, state.selectedThreadId);
         if (item.id) state.userMessageIds.add(item.id);
-        if (text || images.length) { makeMessage('user', { text, images, id: item.id }); startProgressSegment(params.turnId); }
+        if (text || images.length || files.length) { makeMessage('user', { text, images, files, id: item.id }); startProgressSegment(params.turnId); }
       }
     } else if (item.type === 'userMessage') {
       // The user message was rendered when its item started.
@@ -1986,21 +2083,37 @@ function renderAttachments() {
   box.replaceChildren();
   box.classList.toggle('hidden', !state.files.length);
   state.files.forEach((file, index) => {
-    const tile = document.createElement('div'); tile.className = 'attachment-preview';
-    const preview = document.createElement('button'); preview.type = 'button'; preview.className = 'attachment-image-open'; preview.title = 'Ampliar imagem'; preview.setAttribute('aria-label', `Ampliar ${file.name}`);
-    const image = document.createElement('img'); image.src = file.dataUrl; image.alt = file.name;
-    preview.addEventListener('click', () => openImagePreview(image.src, file.name));
-    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'attachment-remove'; remove.title = 'Remover imagem'; remove.innerHTML = `<span class="icon" data-icon="close"></span>`;
-    remove.addEventListener('click', () => { state.files.splice(index, 1); renderAttachments(); });
-    preview.append(image); tile.append(preview, remove); box.append(tile);
+    const tile = document.createElement('div'); tile.className = file.isImage ? 'attachment-preview' : 'attachment-file';
+    if (file.isImage) {
+      const preview = document.createElement('button'); preview.type = 'button'; preview.className = 'attachment-image-open'; preview.setAttribute('aria-label', `Ampliar ${file.name}`);
+      const image = document.createElement('img'); image.src = file.dataUrl; image.alt = file.name;
+      preview.addEventListener('click', () => openImagePreview(image.src, file.name)); preview.append(image); tile.append(preview);
+    } else {
+      const name = document.createElement('a'); name.href = file.dataUrl; name.download = file.name; name.textContent = file.name; name.title = `Baixar ${file.name}`;
+      const size = document.createElement('small'); size.textContent = formatBytes(file.size || 0); tile.append(name, size);
+      if (file.mime.startsWith('audio/')) {
+        const player = document.createElement('audio'); player.controls = true; player.preload = 'metadata'; player.src = file.dataUrl; player.setAttribute('aria-label', `Ouvir ${file.name}`); tile.append(player);
+        const transcribe = document.createElement('button'); transcribe.type = 'button'; transcribe.className = 'attachment-transcribe'; transcribe.textContent = 'Usar como voz';
+        transcribe.addEventListener('click', async () => {
+          if (voice.phase !== 'idle') { toast('Conclua ou descarte o áudio atual primeiro.', 'error'); return; }
+          const response = await fetch(file.dataUrl); const blob = await response.blob();
+          state.files = state.files.filter((entry) => entry !== file); renderAttachments();
+          voice.cancelled = false; voice.generation += 1; prepareVoicePreview(blob);
+        }); tile.append(transcribe);
+      }
+    }
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'attachment-remove'; remove.textContent = '×'; remove.setAttribute('aria-label', `Remover ${file.name}`);
+    remove.addEventListener('click', () => { state.files.splice(index, 1); renderAttachments(); }); tile.append(remove); box.append(tile);
   });
   installIcons();
   updateComposerControls();
 }
 
 function queueItemLabel(item) {
-  const text = (item.input || []).filter((part) => part.type === 'text').map((part) => part.text).join('\n').trim();
+  const parsed = splitAttachmentText((item.input || []).filter((part) => part.type === 'text').map((part) => part.text).join('\n'), state.selectedThreadId);
+  const text = parsed.text;
   const images = (item.input || []).filter((part) => part.type === 'image' || part.type === 'localImage').length;
+  if (parsed.files.length) return `${text}${text ? ' · ' : ''}${parsed.files.map((file) => file.name).join(', ')}${images ? ` · ${images} imagem(ns)` : ''}`;
   if (text && images) return `${text} · ${images} imagem${images === 1 ? '' : 's'}`;
   if (text) return text;
   return images ? `${images} imagem${images === 1 ? '' : 's'} anexada${images === 1 ? '' : 's'}` : 'Mensagem sem texto';
@@ -2108,11 +2221,13 @@ async function cancelQueueItem(item, threadId) {
 
 async function restoreQueueItem(item, threadId) {
   const input = Array.isArray(item.input) ? item.input : [];
-  const text = input.filter((part) => part.type === 'text').map((part) => String(part.text || '')).join('\n');
+  const parsed = splitAttachmentText(input.filter((part) => part.type === 'text').map((part) => String(part.text || '')).join('\n'), threadId);
+  const text = parsed.text;
   const imageParts = input.filter((part) => part.type === 'image' || part.type === 'localImage');
   const localImageParts = imageParts.filter((part) => part.type === 'localImage' && typeof part.path === 'string');
   if (imageParts.length !== localImageParts.length) throw new Error('Não consegui recuperar todas as imagens. A mensagem continua na fila.');
-  if (state.files.length + localImageParts.length > 4) throw new Error('Remova uma imagem do rascunho antes de devolver esta mensagem.');
+  if (state.files.length + localImageParts.length + parsed.files.length > 8) throw new Error('Remova um anexo do rascunho antes de devolver esta mensagem.');
+  if (state.files.filter((file) => file.isImage).length + localImageParts.length > 4) throw new Error('O limite é de 4 imagens por mensagem. Remova uma imagem do rascunho primeiro.');
 
   const restoredFiles = [];
   for (const part of localImageParts) {
@@ -2124,11 +2239,18 @@ async function restoreQueueItem(item, threadId) {
     const dataUrl = await new Promise((resolvePromise, rejectPromise) => {
       const reader = new FileReader(); reader.onload = () => resolvePromise(reader.result); reader.onerror = () => rejectPromise(new Error('Não consegui recuperar uma imagem.')); reader.readAsDataURL(blob);
     });
-    restoredFiles.push({ name, mime: blob.type || 'image/png', dataUrl, data: String(dataUrl).split(',')[1] });
+    restoredFiles.push({ name, isImage: true, size: blob.size, mime: blob.type || 'image/png', dataUrl, data: String(dataUrl).split(',')[1] });
   }
 
+  for (const file of parsed.files) {
+    const response = await fetch(file.url, { credentials: 'same-origin', cache: 'no-store' });
+    if (!response.ok) throw new Error('Não consegui recuperar um arquivo. A mensagem continua na fila.');
+    const blob = await response.blob(); const dataUrl = await blobDataUrl(blob);
+    restoredFiles.push({ name: file.name, isImage: false, size: blob.size, mime: file.mime || blob.type || 'application/octet-stream', dataUrl, data: String(dataUrl).split(',')[1] });
+  }
   if (state.selectedThreadId !== threadId) throw new Error('Volte a esta conversa para devolver a mensagem da fila. Ela continua guardada.');
-  if (state.files.length + restoredFiles.length > 4) throw new Error('Remova uma imagem do rascunho antes de devolver esta mensagem.');
+  if (state.files.length + restoredFiles.length > 8) throw new Error('Remova um anexo do rascunho antes de devolver esta mensagem.');
+  if ([...state.files, ...restoredFiles].reduce((total, file) => total + (file.size || 0), 0) > 24 * 1024 * 1024) throw new Error('O total dos anexos ultrapassa 24 MB. A mensagem continua na fila.');
   if (!item.localOnly) await api(`/api/threads/${encodeURIComponent(threadId)}/queue/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
   const textarea = $('#messageInput');
   const draft = textarea.value.trimEnd();
@@ -2153,25 +2275,38 @@ async function refreshQueue(threadId = state.selectedThreadId) {
   renderQueue();
 }
 
+function blobDataUrl(blob) {
+  return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('Não consegui ler o arquivo.')); reader.readAsDataURL(blob); });
+}
+
 async function addFiles(files) {
-  const accepted = [...files];
-  for (const file of accepted) {
-    if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type)) { toast(`${file.name}: formato não suportado.`, 'error'); continue; }
-    if (file.size > 8 * 1024 * 1024) { toast(`${file.name}: o limite é 8 MB por imagem.`, 'error'); continue; }
-    if (state.files.length >= 4) { toast('O limite é de 4 imagens por mensagem.', 'error'); break; }
-    const dataUrl = await new Promise((resolvePromise, rejectPromise) => {
-      const reader = new FileReader(); reader.onload = () => resolvePromise(reader.result); reader.onerror = () => rejectPromise(new Error('Não foi possível ler a imagem.')); reader.readAsDataURL(file);
-    }).catch((error) => { toast(error.message, 'error'); return null; });
+  for (const file of [...files]) {
+    const isImage = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type);
+    if (file.size > (isImage ? 8 : 12) * 1024 * 1024) { toast(`${file.name}: limite de ${isImage ? 8 : 12} MB por arquivo.`, 'error'); continue; }
+    if (state.files.length >= 8) { toast('O limite é de 8 anexos por mensagem.', 'error'); break; }
+    if (isImage && state.files.filter((entry) => entry.isImage).length >= 4) { toast('O limite é de 4 imagens por mensagem.', 'error'); continue; }
+    if (state.files.reduce((total, entry) => total + (entry.size || 0), 0) + file.size > 24 * 1024 * 1024) { toast('O limite total é de 24 MB por mensagem.', 'error'); continue; }
+    const dataUrl = await blobDataUrl(file).catch((error) => { toast(error.message, 'error'); return null; });
     if (!dataUrl) continue;
-    state.files.push({ name: file.name, mime: file.type, dataUrl, data: String(dataUrl).split(',')[1] });
+    const extension = file.name.split('.').pop().toLowerCase();
+    const audioType = { m4a: 'audio/mp4', mp3: 'audio/mpeg', wav: 'audio/wav', webm: 'audio/webm', ogg: 'audio/ogg', aac: 'audio/aac' }[extension];
+    state.files.push({ name: file.name, isImage, size: file.size, mime: audioType || file.type || 'application/octet-stream', dataUrl, data: String(dataUrl).split(',')[1] });
   }
   renderAttachments();
 }
 
-async function submitMessage(event) {
+function attachmentPayload(files) {
+  return {
+    images: files.filter((file) => file.isImage).map(({ name, mime, data }) => ({ name, mime, data })),
+    files: files.filter((file) => !file.isImage).map(({ name, mime, data }) => ({ name, mime, data })),
+  };
+}
+
+async function submitMessage(event, { allowVoice = false } = {}) {
   event?.preventDefault();
   if (state.sending) return;
-  if (voice.phase !== 'idle') { toast('Conclua a transcrição ou descarte o áudio antes de enviar.', 'error'); return; }
+  if (voice.phase === 'ready' && !allowVoice) return transcribeRecordedAudio({ send: true });
+  if (voice.phase !== 'idle' && !allowVoice) { toast('Conclua a gravação antes de enviar.', 'error'); return false; }
   const textarea = $('#messageInput');
   const text = textarea.value.trim();
   if (!text && !state.files.length) return;
@@ -2181,7 +2316,7 @@ async function submitMessage(event) {
   try {
     const result = await api('/api/turn', {
       method: 'POST',
-      body: JSON.stringify({ threadId: currentThread, text, model: state.modelId, effort: state.effort, cwd: state.cwd, images: files.map(({ name, mime, data }) => ({ name, mime, data })) }),
+      body: JSON.stringify({ threadId: currentThread, text, model: state.modelId, effort: state.effort, cwd: state.cwd, ...attachmentPayload(files) }),
     });
     state.selectedThreadId = result.threadId;
     if (!currentThread) {
@@ -2202,8 +2337,10 @@ async function submitMessage(event) {
     }
     if (textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
     if (files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
+    return true;
   } catch (error) {
     toast(error.message, 'error');
+    return false;
   } finally {
     state.sending = false;
     updateComposerControls();
@@ -2223,7 +2360,7 @@ async function steerMessage() {
   try {
     await api(`/api/threads/${encodeURIComponent(threadId)}/steer`, {
       method: 'POST',
-      body: JSON.stringify({ text, images: files.map(({ name, mime, data }) => ({ name, mime, data })) }),
+      body: JSON.stringify({ text, ...attachmentPayload(files) }),
     });
     if (textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
     if (files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
@@ -2263,8 +2400,16 @@ function bindEvents() {
   $('#voiceInput').addEventListener('click', startVoiceRecording);
   $('#stopRecording').addEventListener('click', stopVoiceRecording);
   $('#discardAudio').addEventListener('click', clearRecordedAudio);
-  $('#transcribeAudio').addEventListener('click', transcribeRecordedAudio);
-  $('#attachAudio').addEventListener('click', () => $('#audioInput').click());
+  $('#transcribeAudio').addEventListener('click', () => transcribeRecordedAudio());
+  $('#sendAudio').addEventListener('click', () => transcribeRecordedAudio({ send: true }));
+  $('#playAudio').addEventListener('click', async () => {
+    const player = $('#voicePlayer');
+    try { if (player.paused) { player.muted = false; player.volume = 1; await player.play(); } else player.pause(); }
+    catch { renderVoice('Não consegui reproduzir neste navegador. Use Salvar áudio para ouvir no aparelho.'); }
+  });
+  $('#voicePlayer').addEventListener('play', () => { $('#playAudio').textContent = 'Pausar'; });
+  $('#voicePlayer').addEventListener('pause', () => { $('#playAudio').textContent = 'Ouvir'; });
+  $('#voicePlayer').addEventListener('error', () => { if (voice.blob) renderVoice('Não foi possível abrir a prévia. Use Salvar áudio para ouvir no aparelho.'); });
   $('#audioInput').addEventListener('change', (event) => {
     const file = event.target.files?.[0]; event.target.value = '';
     if (!file || voice.phase !== 'idle') return;
@@ -2272,7 +2417,7 @@ function bindEvents() {
     const types = { m4a: 'audio/mp4', mp3: 'audio/mpeg', wav: 'audio/wav', webm: 'audio/webm', ogg: 'audio/ogg', aac: 'audio/aac' };
     if (!types[extension] && !file.type.startsWith('audio/')) { toast('Escolha um arquivo de áudio.', 'error'); return; }
     voice.cancelled = false; voice.generation += 1;
-    showRecordedAudio(new Blob([file], { type: types[extension] || file.type }));
+    prepareVoicePreview(new Blob([file], { type: types[extension] || file.type }));
   });
   $('#voicePlayer').addEventListener('loadedmetadata', () => { const duration = $('#voicePlayer').duration; if (Number.isFinite(duration)) { voice.seconds = Math.round(duration); $('#voiceTimer').textContent = voiceTime(voice.seconds); } });
   $('#downloadAudio').addEventListener('click', () => {
@@ -2286,9 +2431,9 @@ function bindEvents() {
   });
   $('#messageInput').addEventListener('paste', async (event) => {
     let files = [...(event.clipboardData?.items || [])]
-      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .filter((item) => item.kind === 'file')
       .map((item) => item.getAsFile()).filter(Boolean);
-    if (!files.length) files = [...(event.clipboardData?.files || [])].filter((file) => file.type.startsWith('image/'));
+    if (!files.length) files = [...(event.clipboardData?.files || [])];
     if (!files.length) return;
     event.preventDefault();
     const text = event.clipboardData?.getData('text/plain');
