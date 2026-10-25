@@ -8,9 +8,15 @@
     <title>Codex Web Harness</title>
     <link rel="manifest" href="/codex-agent/manifest.webmanifest" />
     <link rel="stylesheet" href="/codex-agent/styles.readability-20261025.css" />
+    <link rel="stylesheet" href="/codex-agent/styles.session-20261025.css" />
   </head>
   <body>
-    <main class="auth-screen" id="authScreen" aria-labelledby="authTitle">
+    <main class="session-loading" id="sessionLoading" role="status" aria-live="polite">
+      <span class="session-loading-spinner" aria-hidden="true"></span>
+      <p id="sessionLoadingText">Restaurando sua sessão…</p>
+      <button class="session-loading-retry" id="retrySession" type="button" hidden>Tentar novamente</button>
+    </main>
+    <main class="auth-screen" id="authScreen" aria-labelledby="authTitle" hidden>
       <div class="auth-layout">
         <section class="auth-promo" aria-label="Codex Web Harness">
           <a class="auth-brand" href="/codex-agent/" aria-label="Codex Web Harness">

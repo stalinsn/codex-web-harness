@@ -16,6 +16,7 @@ const state = {
 const authUi = { mode: 'login', step: 'credentials', challengeId: '', setupRequired: false, countdown: null, started: false };
 let vpsHealthRequest = null;
 let executionSyncRequest = null;
+let authCheckRequest = null;
 const queueActions = new Map();
 let queueRefreshSequence = 0;
 const completionSound = { context: null, playedTurnIds: new Set() };
@@ -391,6 +392,7 @@ async function resendAuthCode() {
 }
 
 function startApplication() {
+  $('#sessionLoading').hidden = true;
   $('#authScreen').hidden = true;
   $('#appShell').hidden = false;
   if (authUi.started) return;
@@ -401,6 +403,46 @@ function startApplication() {
   bindEvents(); connectEvents(); bootstrap();
   setInterval(() => { if (!document.hidden && state.busy && Date.now() - state.lastExecutionEventAt > 20_000) syncExecutionState().catch(() => {}); }, 15_000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) syncExecutionState().catch(() => {}); });
+}
+
+async function checkAuthentication() {
+  if (authCheckRequest) return authCheckRequest;
+  const loading = $('#sessionLoading');
+  loading.hidden = false;
+  $('#authScreen').hidden = true;
+  $('#sessionLoadingText').textContent = 'Restaurando sua sessão…';
+  $('#retrySession').hidden = true;
+
+  authCheckRequest = (async () => {
+    let lastError;
+    let status;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        status = await api('/api/auth/status');
+        if (typeof status.authenticated !== 'boolean') throw new Error('A resposta de sessão veio incompleta.');
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) await new Promise((resolvePromise) => setTimeout(resolvePromise, 350 * (attempt + 1)));
+      }
+    }
+
+    if (lastError) {
+      $('#sessionLoadingText').textContent = 'Não consegui confirmar sua sessão agora.';
+      $('#retrySession').hidden = false;
+      return;
+    }
+
+    authUi.setupRequired = Boolean(status.setupRequired);
+    if (status.authenticated) return startApplication();
+    authUi.mode = authUi.setupRequired ? 'setup' : 'login';
+    authUi.step = 'credentials';
+    showAuthFlow();
+    loading.hidden = true;
+    $('#authScreen').hidden = false;
+  })().finally(() => { authCheckRequest = null; });
+  return authCheckRequest;
 }
 
 async function initializeAuthentication() {
@@ -421,16 +463,8 @@ async function initializeAuthentication() {
     $('#togglePassword').textContent = visible ? 'Ocultar' : 'Mostrar';
     $('#togglePassword').setAttribute('aria-label', visible ? 'Ocultar senha' : 'Mostrar senha');
   });
-  try {
-    const status = await api('/api/auth/status');
-    authUi.setupRequired = Boolean(status.setupRequired);
-    if (status.authenticated) return startApplication();
-    authUi.mode = authUi.setupRequired ? 'setup' : 'login';
-    authUi.step = 'credentials'; showAuthFlow();
-  } catch (error) {
-    authUi.mode = 'login'; authUi.step = 'credentials'; showAuthFlow();
-    showAuthNotice(error.message || 'Não foi possível verificar sua sessão.', 'error');
-  }
+  $('#retrySession').addEventListener('click', () => checkAuthentication());
+  await checkAuthentication();
 }
 
 function toast(message, kind = '') {

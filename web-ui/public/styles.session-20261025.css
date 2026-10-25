@@ -1,0 +1,49 @@
+.session-loading[hidden],
+.auth-screen[hidden] {
+  display: none !important;
+}
+
+.session-loading {
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 13px;
+  padding: 24px;
+  color: #bbc0d0;
+  background: #101116;
+  font-size: 14px;
+  text-align: center;
+}
+
+.session-loading p { margin: 0; }
+
+.session-loading-spinner {
+  width: 25px;
+  height: 25px;
+  border: 2px solid #343640;
+  border-top-color: #a8adff;
+  border-radius: 50%;
+  animation: session-loading-spin 800ms linear infinite;
+}
+
+.session-loading-retry {
+  margin-top: 5px;
+  padding: 8px 13px;
+  color: #f3f4fb;
+  background: #292b35;
+  border: 1px solid #454858;
+  border-radius: 8px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.session-loading-retry:hover { background: #343643; }
+
+@keyframes session-loading-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .session-loading-spinner { animation-duration: 2s; }
+}
