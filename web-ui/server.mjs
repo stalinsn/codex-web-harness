@@ -373,6 +373,17 @@ async function getProjects() {
   }
 }
 
+function findProjectForCwd(projects, cwd) {
+  if (typeof cwd !== 'string' || !cwd.startsWith('/')) return null;
+  const target = resolve(cwd);
+  return projects
+    .filter((project) => {
+      const root = resolve(project.cwd);
+      return target === root || target.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
+    })
+    .sort((left, right) => resolve(right.cwd).length - resolve(left.cwd).length)[0] || null;
+}
+
 async function saveProjects(projects) {
   const temporary = join(CODEX_HOME, 'web-projects-' + randomUUID() + '.tmp');
   await writeFile(temporary, JSON.stringify({ projects }, null, 2) + '\n', { encoding: 'utf8', mode: 0o600, flag: 'wx' });
@@ -748,6 +759,30 @@ async function handleApi(req, res, pathName, url) {
     return json(res, 200, { threads: result.data || [], nextCursor: result.nextCursor || null });
   }
 
+  const projectAssociationMatch = pathName.match(/^\/api\/threads\/([a-zA-Z0-9_-]{1,100})\/project-association$/);
+  if (projectAssociationMatch && req.method === 'POST') {
+    const threadId = projectAssociationMatch[1];
+    const result = await rpc('thread/read', { threadId });
+    const threadCwd = typeof result.thread?.cwd === 'string' ? result.thread.cwd : '';
+    const projects = await getProjects();
+    const project = findProjectForCwd(projects, threadCwd) || projects.find((item) => item.threadIds.includes(threadId)) || null;
+    if (project) {
+      let changed = false;
+      for (const item of projects) {
+        const hasThread = item.threadIds.includes(threadId);
+        if (item.id === project.id && !hasThread) {
+          item.threadIds.push(threadId);
+          changed = true;
+        } else if (item.id !== project.id && hasThread) {
+          item.threadIds = item.threadIds.filter((id) => id !== threadId);
+          changed = true;
+        }
+      }
+      if (changed) await saveProjects(projects);
+    }
+    return json(res, 200, { projectId: project?.id || '', projects });
+  }
+
   const fileMatch = pathName.match(/^\/api\/files\/([a-zA-Z0-9_-]{1,100})\/([a-zA-Z0-9._-]{1,200})$/);
   if (req.method === 'GET' && fileMatch) return serveFile(UPLOAD_DIR, fileMatch[1], fileMatch[2], req, res, url);
 
@@ -957,7 +992,7 @@ async function handleApi(req, res, pathName, url) {
       resumedThreads.add(threadId);
       try {
         const projects = await getProjects();
-        const project = projects.find((item) => cwd === item.cwd || cwd.startsWith(item.cwd.endsWith('/') ? item.cwd : item.cwd + '/'));
+        const project = findProjectForCwd(projects, cwd);
         if (project && !project.threadIds.includes(threadId)) {
           project.threadIds.push(threadId);
           await saveProjects(projects);

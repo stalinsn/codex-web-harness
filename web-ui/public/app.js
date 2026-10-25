@@ -788,11 +788,11 @@ function pathIsWithin(path, root) {
 
 function projectForThread(thread) {
   if (!thread) return null;
-  return state.projects.find((project) => {
-    if ((project.threadIds || []).includes(thread.id)) return true;
-    const cwd = thread.cwd || thread.workingDirectory || thread.workspace?.cwd || '';
-    return pathIsWithin(cwd, project.cwd);
-  }) || null;
+  const cwd = thread.cwd || thread.workingDirectory || thread.workspace?.cwd || '';
+  const cwdProject = state.projects
+    .filter((project) => pathIsWithin(cwd, project.cwd))
+    .sort((left, right) => right.cwd.length - left.cwd.length)[0];
+  return cwdProject || state.projects.find((project) => (project.threadIds || []).includes(thread.id)) || null;
 }
 
 function threadBelongsToProject(thread, project) {
@@ -2433,7 +2433,18 @@ async function openThread(threadId) {
     await loadThreadHistory(threadId);
     if (state.selectedThreadId !== threadId) return;
     const thread = state.selectedThread || state.threads.find((item) => item.id === threadId);
-    const project = projectForThread(thread);
+    const summary = state.threads.find((item) => item.id === threadId);
+    if (summary && thread?.cwd) summary.cwd = thread.cwd;
+    let project = projectForThread(thread);
+    if (project && thread?.cwd && !(project.threadIds || []).includes(threadId)) {
+      try {
+        const association = await api(`/api/threads/${encodeURIComponent(threadId)}/project-association`, { method: 'POST', body: '{}' });
+        if (Array.isArray(association.projects)) state.projects = association.projects;
+        project = projectForThread(thread) || state.projects.find((item) => item.id === association.projectId) || null;
+      } catch (error) {
+        console.warn('Não foi possível persistir o vínculo da conversa com o projeto.', error);
+      }
+    }
     state.activeThreadProjectId = project?.id || '';
     const cwd = project?.cwd || thread?.cwd || thread?.workingDirectory || thread?.workspace?.cwd || state.defaultCwd;
     selectProject(project?.id || '', { folderPath: cwd, updateActiveThread: true });
