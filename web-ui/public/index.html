@@ -14,6 +14,7 @@
     <link rel="stylesheet" href="/codex-agent/styles.history-lazy-20261025.css" />
     <link rel="stylesheet" href="/codex-agent/styles.sidebar-organization-20261025.css" />
     <link rel="stylesheet" href="/codex-agent/styles.activity-width-20261025.css" />
+    <link rel="stylesheet" href="/codex-agent/styles.rate-limit-20261025.css" />
   </head>
   <body>
     <main class="session-loading" id="sessionLoading" role="status" aria-live="polite">
@@ -174,6 +175,10 @@
             </div>
           </div>
           <div class="messages" id="messages"></div>
+          <section class="rate-limit-notice hidden" id="rateLimitNotice" role="status" aria-live="polite">
+            <span class="rate-limit-notice-icon" aria-hidden="true">!</span>
+            <div><strong id="rateLimitNoticeTitle">Limite de uso atingido</strong><p id="rateLimitNoticeDetail"></p></div>
+          </section>
           <button type="button" class="scroll-to-latest hidden" id="scrollToLatest" aria-label="Ir para a última mensagem" title="Ir para a última mensagem">↓</button>
           <div class="running-indicator hidden" id="runningIndicator"><span class="loader"></span><span id="runningText">Codex está trabalhando…</span></div>
         </section>
@@ -261,6 +266,6 @@
     </dialog>
 
     <div class="toast-container" id="toastContainer" aria-live="polite"></div>
-    <script src="/codex-agent/app.sidebar-organization-20261025.js" defer></script>
+    <script src="/codex-agent/app.rate-limit-queue-20261025.js" defer></script>
   </body>
 </html>

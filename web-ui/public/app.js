@@ -31,7 +31,7 @@ const state = {
   historyThreadId: '', historyTurns: [], historyNextCursor: null, historyLoadedOlder: false, historyLoadingOlder: false,
   modelId: localStorage.getItem('codex-model') || '', effort: localStorage.getItem('codex-effort') || '',
   files: [], busy: false, sending: false, interrupting: false, account: null, rateLimits: null, usage: null, contextUsage: null,
-  queueItems: [], recoveredQueueItems: [], turnStartedAtMs: null, turnTimer: null,
+  queueItems: [], recoveredQueueItems: [], deferredQueueItems: [], rateLimitFailure: null, draftQueueGroupId: localStorage.getItem('codex-draft-queue-group') || '', turnStartedAtMs: null, turnTimer: null,
   streamedMessages: new Map(), activityCards: new Map(), commandGroups: new Map(), reasoningGroups: new Map(), turnIntermediates: new Map(), userMessageIds: new Set(), pendingApprovals: new Map(),
   activeTurnId: null,
   completedTurnIds: new Set(), progressSegments: new Map(), executionRevision: 0, lastExecutionEventAt: Date.now(),
@@ -45,8 +45,19 @@ let executionSyncRequest = null;
 let authCheckRequest = null;
 const queueActions = new Map();
 let queueRefreshSequence = 0;
+let deferredQueueDbPromise = null;
+let deferredDrainPromise = null;
+let quotaRefreshPromise = null;
+let quotaResetTimer = null;
+let quotaPollTimer = null;
+let scheduledQuotaResetAt = 0;
 const completionSound = { context: null, playedTurnIds: new Set() };
 const voice = { phase: 'idle', recorder: null, stream: null, chunks: [], blob: null, url: '', timer: null, startedAt: 0, seconds: 0, request: null, jobId: null, cancelled: false, context: null, meterSource: null, meterFrame: null, hasSignal: false, generation: 0, transcriptInserted: false, autoSend: false };
+
+if (!state.draftQueueGroupId) {
+  state.draftQueueGroupId = randomKey();
+  localStorage.setItem('codex-draft-queue-group', state.draftQueueGroupId);
+}
 
 function prepareCompletionSound() {
   const AudioContextClass = window.AudioContext || window.webkitAudioContext;
@@ -252,6 +263,192 @@ function formatCountdown(timestamp) {
 
 function updateResetCountdowns() {
   $$('.meter-countdown').forEach((node) => { node.textContent = formatCountdown(node.dataset.resetAt); });
+}
+
+function getRateLimitBlock() {
+  const data = state.rateLimits;
+  const buckets = data ? (Array.isArray(data) ? data : Object.values(data)) : [];
+  const now = Date.now() / 1000;
+  const exhausted = [];
+  buckets.forEach((bucket, index) => {
+    const label = bucket.limitName || (index === 0 ? 'Codex' : bucket.limitId || 'Outro limite');
+    [bucket.primary, bucket.secondary].filter(Boolean).forEach((window, windowIndex) => {
+      const usedPercent = Number(window.usedPercent);
+      if (!Number.isFinite(usedPercent) || usedPercent < 100) return;
+      const resetAt = Number(window.resetsAt) || 0;
+      if (!resetAt || resetAt > now) exhausted.push({ label: label + ' · janela ' + (windowIndex === 0 ? 'curta' : 'longa'), resetAt });
+    });
+  });
+  if (!exhausted.length) return null;
+  const hasUnknownReset = exhausted.some((window) => !window.resetAt);
+  const resetAt = hasUnknownReset ? 0 : Math.max(...exhausted.map((window) => window.resetAt));
+  const labels = exhausted.filter((window) => !resetAt || window.resetAt === resetAt).map((window) => window.label);
+  return { resetAt, labels: [...new Set(labels)] };
+}
+
+function isRateLimitError(message) {
+  return /rate[ -]?limit|usage limit|quota|too many requests|reached.{0,30}limit|limit.{0,30}reached|limit.{0,30}exceed|exceed.{0,30}limit|hit.{0,20}limit|limite.{0,30}atingid|atingid.{0,30}limite/i.test(String(message || ''));
+}
+
+function hasRateLimitData() {
+  const data = state.rateLimits;
+  const buckets = data ? (Array.isArray(data) ? data : Object.values(data)) : [];
+  return buckets.some((bucket) => bucket && (bucket.primary || bucket.secondary));
+}
+
+function getEffectiveRateLimitBlock() {
+  const block = getRateLimitBlock();
+  if (block) return block;
+  const failure = state.rateLimitFailure;
+  if (!failure) return null;
+  const resetAt = Number(failure.resetAt) || 0;
+  if (resetAt && resetAt <= Date.now() / 1000) return null;
+  return { resetAt, labels: failure.labels?.length ? failure.labels : ['limite de uso'] };
+}
+
+function clearResolvedRateLimitFailure() {
+  const failure = state.rateLimitFailure;
+  if (!failure) return;
+  const reported = getRateLimitBlock();
+  if (reported) {
+    if (!failure.resetAt || reported.resetAt > failure.resetAt) failure.resetAt = reported.resetAt;
+    if (reported.labels?.length) failure.labels = reported.labels;
+    return;
+  }
+  if (!hasRateLimitData()) return;
+  const resetAt = Number(failure.resetAt) || 0;
+  const retryAfter = resetAt ? resetAt * 1000 : (Number(failure.createdAt) || Date.now()) + 60_000;
+  if (Date.now() >= retryAfter) state.rateLimitFailure = null;
+}
+
+function recordRateLimitFailure(message) {
+  const block = getRateLimitBlock();
+  const alreadyRecorded = state.rateLimitFailure && Date.now() - (Number(state.rateLimitFailure.createdAt) || 0) < 10_000;
+  state.rateLimitFailure = {
+    message: String(message || 'O Codex interrompeu o turno por limite de uso.'),
+    resetAt: block?.resetAt || 0,
+    labels: block?.labels || [],
+    createdAt: alreadyRecorded ? state.rateLimitFailure.createdAt : Date.now(),
+  };
+  renderRateLimitNotice();
+  renderQueue();
+  updateComposerControls();
+  if (!alreadyRecorded) refreshUsage(true).catch(() => {});
+}
+
+function openDeferredQueueDb() {
+  if (!('indexedDB' in window)) return Promise.reject(new Error('Este navegador não permite salvar a fila local. A mensagem ficou no rascunho.'));
+  if (!deferredQueueDbPromise) {
+    deferredQueueDbPromise = new Promise((resolvePromise, rejectPromise) => {
+      const request = indexedDB.open('codex-web-harness-deferred-queue', 1);
+      request.onupgradeneeded = () => request.result.createObjectStore('items', { keyPath: 'id' });
+      request.onsuccess = () => resolvePromise(request.result);
+      request.onerror = () => rejectPromise(new Error('Não consegui abrir a fila local. A mensagem ficou no rascunho.'));
+      request.onblocked = () => rejectPromise(new Error('A fila local está sendo atualizada em outra aba. A mensagem ficou no rascunho.'));
+    });
+  }
+  return deferredQueueDbPromise;
+}
+
+function deferredQueueRecord(item) {
+  return { ...item, files: (item.files || []).map(({ dataUrl, ...file }) => file) };
+}
+
+function hydrateDeferredQueueRecord(item) {
+  return { ...item, files: (item.files || []).map((file) => ({ ...file, dataUrl: file.dataUrl || ('data:' + (file.mime || 'application/octet-stream') + ';base64,' + (file.data || '')) })) };
+}
+
+async function persistDeferredQueue(items) {
+  const db = await openDeferredQueueDb();
+  await new Promise((resolvePromise, rejectPromise) => {
+    const transaction = db.transaction('items', 'readwrite');
+    const store = transaction.objectStore('items');
+    store.clear();
+    items.forEach((item) => store.put(deferredQueueRecord(item)));
+    transaction.oncomplete = () => resolvePromise();
+    transaction.onerror = () => rejectPromise(new Error('Não consegui salvar a fila local. A mensagem ficou no rascunho.'));
+    transaction.onabort = () => rejectPromise(new Error('Não consegui salvar a fila local. A mensagem ficou no rascunho.'));
+  });
+}
+
+async function loadDeferredQueue() {
+  const db = await openDeferredQueueDb();
+  const items = await new Promise((resolvePromise, rejectPromise) => {
+    const request = db.transaction('items', 'readonly').objectStore('items').getAll();
+    request.onsuccess = () => resolvePromise(request.result || []);
+    request.onerror = () => rejectPromise(new Error('Não consegui ler a fila local.'));
+  });
+  state.deferredQueueItems = items.map(hydrateDeferredQueueRecord).map((item) => item.attemptingAt
+    ? { ...item, attemptingAt: 0, needsReview: true, lastError: 'A página foi recarregada durante o envio. Confira a conversa antes de tentar novamente.' }
+    : item).sort((left, right) => Number(left.createdAt) - Number(right.createdAt));
+  if (items.some((item) => item.attemptingAt)) await persistDeferredQueue(state.deferredQueueItems);
+  renderQueue();
+  renderRateLimitNotice();
+}
+
+async function putDeferredQueueItem(item) {
+  const next = [...state.deferredQueueItems, item];
+  await persistDeferredQueue(next);
+  state.deferredQueueItems = next;
+  renderQueue();
+  renderRateLimitNotice();
+}
+
+async function updateDeferredQueueItems(items) {
+  await persistDeferredQueue(items);
+  state.deferredQueueItems = items;
+  renderQueue();
+  renderRateLimitNotice();
+}
+
+function renderRateLimitNotice() {
+  const notice = $('#rateLimitNotice');
+  if (!notice) return;
+  const block = getEffectiveRateLimitBlock();
+  const failure = state.rateLimitFailure;
+  notice.classList.toggle('hidden', !block && !failure);
+  if (!block && !failure) { scheduleQuotaRefresh(); updateComposerControls(); return; }
+  const title = $('#rateLimitNoticeTitle');
+  const detail = $('#rateLimitNoticeDetail');
+  if (title) title.textContent = failure && !getRateLimitBlock() ? 'A solicitação parou por limite de uso' : 'Limite de uso atingido';
+  const resetAt = block?.resetAt || 0;
+  const reset = resetAt ? 'A janela libera ' + formatCountdown(resetAt) + ' (' + formatReset(resetAt) + ').' : 'O horário de reinício ainda não foi informado.';
+  const windows = block?.labels?.length ? ' (' + block.labels.join(', ') + ')' : '';
+  const queuedCount = state.deferredQueueItems.length;
+  const automaticCount = state.deferredQueueItems.filter((item) => !item.needsReview).length;
+  const reviewCount = queuedCount - automaticCount;
+  const queued = queuedCount
+    ? ` ${queuedCount} ${queuedCount === 1 ? 'mensagem está guardada' : 'mensagens estão guardadas'} na fila local deste navegador.`
+      + (automaticCount ? ` ${automaticCount === 1 ? 'Ela será enviada' : 'Elas serão enviadas'} automaticamente quando liberar.` : '')
+      + (reviewCount ? ` ${reviewCount === 1 ? 'Uma mensagem precisa' : `${reviewCount} mensagens precisam`} de revisão antes de reenviar.` : '')
+      + ' Você também pode devolver uma mensagem ao rascunho ou cancelar.'
+    : ' Novas mensagens serão guardadas na fila local deste navegador até liberar.';
+  if (detail) detail.textContent = (getRateLimitBlock() ? 'O processamento foi limitado' + windows + '. ' : '') + reset + queued;
+  scheduleQuotaRefresh(block);
+  updateComposerControls();
+}
+
+function scheduleQuotaRefresh(block = getEffectiveRateLimitBlock()) {
+  const hasQueue = state.deferredQueueItems.length > 0;
+  if (block && block.resetAt) {
+    if (scheduledQuotaResetAt !== block.resetAt) {
+      clearTimeout(quotaResetTimer);
+      scheduledQuotaResetAt = block.resetAt;
+      quotaResetTimer = setTimeout(() => {
+        scheduledQuotaResetAt = 0;
+        refreshUsage(true).catch(() => {});
+      }, Math.max(1000, block.resetAt * 1000 - Date.now() + 1000));
+    }
+  } else {
+    clearTimeout(quotaResetTimer);
+    scheduledQuotaResetAt = 0;
+  }
+  if ((hasQueue || state.rateLimitFailure) && !quotaPollTimer) {
+    quotaPollTimer = setInterval(() => { refreshUsage(true).catch(() => {}); }, block && block.resetAt ? 5 * 60_000 : 60_000);
+  } else if (!hasQueue && !state.rateLimitFailure && quotaPollTimer) {
+    clearInterval(quotaPollTimer);
+    quotaPollTimer = null;
+  }
 }
 
 function effortLabel(value) {
@@ -522,7 +719,7 @@ function renderVoice(error = '') {
   $('#transcribeAudio').textContent = voice.phase === 'transcribing' ? 'Transcrevendo…' : 'Transcrever para revisar';
   $('#sendAudio').hidden = !voice.blob || recording;
   $('#sendAudio').disabled = voice.phase !== 'ready' || state.sending;
-  $('#sendAudio').textContent = state.busy ? 'Enviar áudio à fila' : 'Enviar áudio';
+  $('#sendAudio').textContent = state.busy || getEffectiveRateLimitBlock() ? 'Áudio à fila' : 'Enviar áudio';
   $('#playAudio').hidden = !voice.blob || recording;
   $('#downloadAudio').hidden = !voice.blob || recording;
   $('#discardAudio').textContent = voice.phase === 'transcribing' ? 'Cancelar transcrição' : 'Descartar';
@@ -1401,6 +1598,7 @@ function renderUsage() {
   ].filter((metric) => metric.value != null && Number.isFinite(Number(metric.value)));
   $('#tokenSummary').innerHTML = metrics.map((metric) => `<div class="token-stat"><strong>${escapeHtml(metric.format(metric.value))}</strong><span>${escapeHtml(metric.label)}</span></div>`).join('');
   updateResetCountdowns();
+  renderRateLimitNotice();
   const plan = state.account?.planType;
   if (plan && $('#planBadge')) $('#planBadge').textContent = String(plan).replace(/^./, (char) => char.toUpperCase());
 }
@@ -1610,25 +1808,27 @@ function updateRunningClock() {
 
 function updateComposerControls() {
   const hasDraft = Boolean($('#messageInput')?.value.trim() || state.files.length);
+  const limitBlock = getEffectiveRateLimitBlock();
+  const limitBlocked = Boolean(limitBlock);
   const send = $('#sendButton');
   const modelSelect = $('#modelSelect');
   const effortSelect = $('#effortSelect');
   if (modelSelect) modelSelect.disabled = !state.models.length;
   if (effortSelect) effortSelect.disabled = !getSelectedModel()?.supportedReasoningEfforts?.length;
   if (send) {
-    send.title = state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem';
-    send.setAttribute('aria-label', state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem');
+    send.title = limitBlocked ? 'Guardar mensagem na fila até o limite liberar' : state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem';
+    send.setAttribute('aria-label', limitBlocked ? 'Guardar mensagem na fila até o limite liberar' : state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem');
     send.disabled = state.sending || !['idle', 'ready'].includes(voice.phase) || (!hasDraft && !voice.blob);
-    $('#sendLabel').textContent = state.sending ? 'Enviando…' : state.busy ? 'Fila' : 'Enviar';
-    if (voice.phase === 'ready' && !state.sending) { $('#sendLabel').textContent = state.busy ? 'Áudio à fila' : 'Enviar áudio'; send.title = 'Transcrever na VPS e enviar a mensagem'; send.setAttribute('aria-label', send.title); }
-    send.classList.toggle('queue-mode', state.busy);
+    $('#sendLabel').textContent = state.sending ? 'Enviando…' : (state.busy || limitBlocked) ? 'Fila' : 'Enviar';
+    if (voice.phase === 'ready' && !state.sending) { $('#sendLabel').textContent = (state.busy || limitBlocked) ? 'Áudio à fila' : 'Enviar áudio'; send.title = limitBlocked ? 'Guardar a gravação na fila até o limite liberar' : 'Transcrever na VPS e enviar a mensagem'; send.setAttribute('aria-label', send.title); }
+    send.classList.toggle('queue-mode', state.busy || limitBlocked);
   }
   if ($('#attachImage')) $('#attachImage').disabled = state.sending;
-  if ($('#sendAudio')) $('#sendAudio').disabled = state.sending || voice.phase !== 'ready';
+  if ($('#sendAudio')) { $('#sendAudio').disabled = state.sending || voice.phase !== 'ready'; $('#sendAudio').textContent = state.busy || limitBlocked ? 'Áudio à fila' : 'Enviar áudio'; }
   if ($('#transcribeAudio')) $('#transcribeAudio').disabled = state.sending || voice.phase !== 'ready';
   if ($('#discardAudio')) $('#discardAudio').disabled = state.sending;
   if ($('#steerButton')) {
-    $('#steerButton').classList.toggle('hidden', !state.busy || !state.selectedThreadId);
+    $('#steerButton').classList.toggle('hidden', !state.busy || !state.selectedThreadId || limitBlocked);
     $('#steerButton').disabled = state.sending || voice.phase !== 'idle' || !hasDraft;
   }
   if ($('#stopTurn')) {
@@ -1638,9 +1838,10 @@ function updateComposerControls() {
   }
   if ($('#composerHint')) $('#composerHint').textContent = voice.phase === 'recording'
     ? 'Gravando · até 3 minutos'
+    : limitBlocked ? `Limite de uso atingido${limitBlock.resetAt ? ` · libera ${formatCountdown(limitBlock.resetAt)}` : ''} · envios entram na fila`
     : state.busy ? 'Em execução · sua próxima mensagem entra na fila'
     : touchComposer() ? 'Escreva ou grave sua mensagem' : 'Enter envia · Shift+Enter cria uma linha';
-  if ($('#composerFootnote')) $('#composerFootnote').textContent = voice.phase === 'ready' ? 'O áudio fica aqui até você transcrever ou descartar.' : voice.phase === 'transcribing' ? 'O áudio é processado na VPS. Ao terminar, revise o texto antes de enviar.' : state.busy ? 'Use Orientar agora para enviar uma instrução à execução atual.' : 'Grave, transcreva e revise antes de enviar.';
+  if ($('#composerFootnote')) $('#composerFootnote').textContent = limitBlocked ? 'As mensagens e anexos ficam salvos na fila deste navegador e serão tentados quando o limite liberar.' : voice.phase === 'ready' ? 'O áudio fica aqui até você transcrever ou descartar.' : voice.phase === 'transcribing' ? 'O áudio é processado na VPS. Ao terminar, revise o texto antes de enviar.' : state.busy ? 'Use Orientar agora para enviar uma instrução à execução atual.' : 'Grave, transcreva e revise antes de enviar.';
 
 }
 
@@ -2231,6 +2432,16 @@ function addApproval(request) {
 
 function handleCodexNotification(message) {
   const params = message.params || {};
+  if (message.method === 'account/rateLimits/updated') {
+    const candidate = params.rateLimitsByLimitId || params.rateLimits || params;
+    const values = candidate ? (Array.isArray(candidate) ? candidate : Object.values(candidate)) : [];
+    if (values.some((bucket) => bucket && (bucket.primary || bucket.secondary))) state.rateLimits = candidate;
+    clearResolvedRateLimitFailure();
+    renderUsage();
+    renderQueue();
+    if (state.deferredQueueItems.length && !getEffectiveRateLimitBlock()) maybeDrainDeferredQueue().catch(() => {});
+    return;
+  }
   const eventThreadId = params.threadId || params.turn?.threadId || params.thread?.id;
   if (message.method === 'thread/started' && params.thread?.id && (params.thread.agentNickname || params.thread.agentRole)) {
     rememberAgentThread(params.thread.id, { nickname: params.thread.agentNickname, role: params.thread.agentRole, model: params.thread.model });
@@ -2250,6 +2461,20 @@ function handleCodexNotification(message) {
   if (message.method === 'item/commandExecution/requestApproval' || message.method === 'item/fileChange/requestApproval') {
     addApproval({ id: params.requestId ?? params.itemId ?? randomKey(), method: message.method, params, serverRequestId: params.requestId });
     return;
+  }
+  if (message.method === 'error') {
+    const errorMessage = params.error?.message || 'Ocorreu um erro no turno.';
+    if (isRateLimitError(errorMessage)) {
+      recordRateLimitFailure(errorMessage);
+      if (eventThreadId && eventThreadId === state.selectedThreadId && params.willRetry !== true) {
+        state.activeThreadIds.delete(eventThreadId);
+        state.activeTurnId = null;
+        setBusy(false, 'Pausado pelo limite de uso');
+        renderThreads(state.threads, $('#threadSearch').value.trim());
+      }
+      toast('Limite de uso atingido. O turno foi interrompido; a próxima mensagem pode ficar na fila.', 'error');
+      return;
+    }
   }
   if (message.method === 'thread/status/changed' && eventThreadId === state.selectedThreadId) {
     if (params.status?.type !== 'active') { setBusy(false); state.activeTurnId = null; }
@@ -2332,9 +2557,7 @@ function handleCodexNotification(message) {
     $('#threadMeta').dataset.usage = JSON.stringify(params.tokenUsage || params);
     return;
   }
-  if (message.method === 'error') {
-    toast(params.error?.message || 'Ocorreu um erro no turno.', 'error');
-  }
+  if (message.method === 'error') toast(params.error?.message || 'Ocorreu um erro no turno.', 'error');
 }
 
 function randomKey() { return `request-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
@@ -2349,7 +2572,7 @@ function connectEvents() {
     else if (event.type === 'codex-event') handleCodexNotification(event.data);
     else if (event.type === 'server-request') addApproval(event.data);
     else if (event.type === 'request-resolved') state.pendingApprovals.delete(event.data.requestId);
-    else if (event.type === 'account-data') { state.account = event.data.account; state.rateLimits = event.data.rateLimits; state.usage = event.data.usage; renderUsage(); }
+    else if (event.type === 'account-data') applyAccountData(event.data);
     else if (event.type === 'thread-usage') {
       const usage = event.data.tokenUsage || event.data;
       const tokenText = usage.total?.totalTokens ?? usage.totalTokens ?? usage.total?.inputTokens;
@@ -2379,13 +2602,16 @@ function connectEvents() {
       state.selectedThreadId = event.data.thread.id;
       state.activeThreadProjectId = state.selectedProjectId;
       associateThreadWithSelectedProject(event.data.thread.id);
+      updateThreadHeader({ id: event.data.thread.id, name: 'Nova conversa', model: getSelectedModel()?.displayName || state.modelId });
       renderConversationContext();
     }
     else if (event.type === 'turn-completed') {
       const turnId = event.data.turn?.id;
+      const turnError = event.data.turn?.error?.message || event.data.turn?.error || event.data.turn?.failureReason || event.data.turn?.status?.message || '';
+      if (isRateLimitError(turnError)) recordRateLimitFailure(turnError);
       const isSelected = event.data.threadId === state.selectedThreadId;
       const superseded = isSelected && state.activeTurnId && turnId && state.activeTurnId !== turnId;
-      if (!superseded && event.data.turn?.status !== 'interrupted') playCompletionSound(turnId);
+      if (!superseded && !['interrupted', 'failed', 'error'].includes(turnStatus(event.data.turn))) playCompletionSound(turnId);
       rememberCompletedTurn(turnId);
       if (event.data.threadId && !superseded) {
         state.activeThreadIds.delete(event.data.threadId);
@@ -2417,11 +2643,30 @@ async function refreshThreadList(query = $('#threadSearch')?.value.trim() || '')
 }
 
 async function refreshUsage(force = true) {
-  const data = await api(`/api/bootstrap${force ? '?refresh=true' : ''}`);
+  if (quotaRefreshPromise) return quotaRefreshPromise;
+  const request = (async () => {
+    const data = await api(`/api/bootstrap${force ? '?refresh=true' : ''}`);
+    state.account = data.account;
+    state.rateLimits = data.rateLimits;
+    state.usage = data.usage;
+    clearResolvedRateLimitFailure();
+    renderUsage();
+    renderQueue();
+    if (state.deferredQueueItems.length && !getEffectiveRateLimitBlock()) maybeDrainDeferredQueue().catch(() => {});
+  })();
+  quotaRefreshPromise = request;
+  try { await request; }
+  finally { if (quotaRefreshPromise === request) quotaRefreshPromise = null; }
+}
+
+function applyAccountData(data = {}) {
   state.account = data.account;
   state.rateLimits = data.rateLimits;
   state.usage = data.usage;
+  clearResolvedRateLimitFailure();
   renderUsage();
+  renderQueue();
+  if (state.deferredQueueItems.length && !getEffectiveRateLimitBlock()) maybeDrainDeferredQueue().catch(() => {});
 }
 
 async function bootstrap() {
@@ -2431,6 +2676,7 @@ async function bootstrap() {
     state.account = data.account;
     state.rateLimits = data.rateLimits;
     state.usage = data.usage;
+    clearResolvedRateLimitFailure();
     state.threads = data.threads || [];
     state.activeThreadIds = new Set(state.threads.filter((thread) => thread.status?.type === 'active').map((thread) => thread.id));
     state.projects = data.projects || [];
@@ -2446,10 +2692,12 @@ async function bootstrap() {
     if (startupProject) updateWorkingDirectory(startupProject.cwd);
     else if (!state.cwd) updateWorkingDirectory(state.defaultCwd);
     (data.pending || []).forEach((request) => state.pendingApprovals.set(String(request.id), request));
+    await loadDeferredQueue().catch((error) => toast(error.message, 'error'));
     populateModels(); renderUsage(); renderProjects(); renderThreads(); setConnection(true, 'Codex conectado');
     if ($('#planBadge') && data.account?.planType) $('#planBadge').textContent = String(data.account.planType).replace(/^./, (char) => char.toUpperCase());
     const threadId = new URLSearchParams(location.hash.slice(1)).get('thread');
     if (threadId) await openThread(threadId);
+    if (state.deferredQueueItems.length) maybeDrainDeferredQueue().catch(() => {});
   } catch (error) {
     setConnection(false, 'Codex indisponível');
     toast(error.message, 'error');
@@ -2648,6 +2896,8 @@ async function openThread(threadId) {
 
 function newChat() {
   state.followLatest = true;
+  state.draftQueueGroupId = randomKey();
+  localStorage.setItem('codex-draft-queue-group', state.draftQueueGroupId);
   state.selectedThreadId = null;
   state.selectedThread = null;
   state.activeThreadProjectId = '';
@@ -2696,6 +2946,14 @@ function renderAttachments() {
 }
 
 function queueItemLabel(item) {
+  if (item.localDeferred) {
+    const text = String(item.text || '');
+    const files = (item.files || []).map((file) => file.name);
+    const images = (item.files || []).filter((file) => file.isImage).length;
+    const fileNames = files.filter((name) => !(item.files || []).some((file) => file.name === name && file.isImage));
+    const attachments = [...fileNames, ...(images ? [images + ' imagem' + (images === 1 ? '' : 'ns')] : [])].join(', ');
+    return text + (text && attachments ? ' · ' : '') + (attachments || 'Mensagem sem texto');
+  }
   const parsed = splitAttachmentText((item.input || []).filter((part) => part.type === 'text').map((part) => part.text).join('\n'), state.selectedThreadId);
   const text = parsed.text;
   const images = (item.input || []).filter((part) => part.type === 'image' || part.type === 'localImage').length;
@@ -2710,7 +2968,7 @@ function renderQueue() {
   const list = $('#queueList');
   if (!panel || !list) return;
   const threadId = state.selectedThreadId;
-  const items = threadId ? state.queueItems : [];
+  const items = [...(threadId ? state.queueItems : []), ...state.deferredQueueItems.filter((item) => (item.threadId || null) === (threadId || null))];
   panel.classList.toggle('hidden', !items.length);
   $('#queueCount').textContent = items.length ? `${items.length} ${items.length === 1 ? 'mensagem' : 'mensagens'}` : '';
   list.replaceChildren();
@@ -2718,7 +2976,9 @@ function renderQueue() {
     const row = document.createElement('div'); row.className = 'queued-item';
     const position = document.createElement('span'); position.className = 'queued-position'; position.textContent = String(index + 1);
     const text = document.createElement('span'); text.className = 'queued-text'; text.textContent = queueItemLabel(item);
-    const imageParts = (item.input || []).filter((part) => part.type === 'image' || part.type === 'localImage');
+    const imageParts = item.localDeferred
+      ? (item.files || []).filter((file) => file.isImage).map((file) => ({ url: file.dataUrl, name: file.name }))
+      : (item.input || []).filter((part) => part.type === 'image' || part.type === 'localImage');
     const imagePreviews = document.createElement('div'); imagePreviews.className = 'queued-image-previews';
     imageParts.forEach((part, imageIndex) => {
       let src = part.url || '';
@@ -2733,6 +2993,12 @@ function renderQueue() {
       imageButton.append(image); imagePreviews.append(imageButton);
     });
     if (!imagePreviews.children.length) imagePreviews.remove();
+    const deferredState = item.localDeferred ? document.createElement('small') : null;
+    if (deferredState) {
+      deferredState.className = 'queued-state';
+      const block = getEffectiveRateLimitBlock();
+      deferredState.textContent = item.attemptingAt ? 'Enviando…' : item.lastError ? 'Envio pendente: ' + item.lastError : block && block.resetAt ? 'Aguardando limite · libera ' + formatCountdown(block.resetAt) : 'Aguardando liberação do limite.';
+    }
     const actions = document.createElement('div'); actions.className = 'queued-actions';
     const steer = document.createElement('button'); steer.type = 'button'; steer.className = 'queue-action queue-steer'; steer.textContent = 'Orientar agora'; steer.title = 'Tirar da fila e enviar como orientação para a execução atual';
     steer.hidden = Boolean(item.localOnly);
@@ -2750,6 +3016,11 @@ function renderQueue() {
         throw error;
       }
     }));
+    const sendDeferred = document.createElement('button'); sendDeferred.type = 'button'; sendDeferred.className = 'queue-action queue-send'; sendDeferred.textContent = 'Enviar agora'; sendDeferred.title = 'Tentar enviar esta mensagem agora';
+    sendDeferred.hidden = !item.localDeferred;
+    sendDeferred.disabled = Boolean(getEffectiveRateLimitBlock() || item.attemptingAt);
+    if (getEffectiveRateLimitBlock()) sendDeferred.title = 'Disponível quando o limite liberar';
+    sendDeferred.addEventListener('click', () => withQueueAction(item, threadId, 'send', async () => sendDeferredQueueItem(item, { manual: true })));
     const restore = document.createElement('button'); restore.type = 'button'; restore.className = 'queue-action queue-restore'; restore.textContent = 'Voltar ao rascunho'; restore.title = 'Tirar da fila e devolver ao campo de mensagem';
     restore.addEventListener('click', () => withQueueAction(item, threadId, 'restore', async () => {
       await restoreQueueItem(item, threadId);
@@ -2760,15 +3031,17 @@ function renderQueue() {
       const result = await cancelQueueItem(item, threadId);
       toast(result.alreadyGone ? 'Esta mensagem já saiu da fila. A lista foi atualizada.' : 'Mensagem removida da fila.');
     }));
-    actions.append(steer, restore, cancel);
+    actions.append(steer, sendDeferred, restore, cancel);
     const pending = queueActions.get(`${threadId}:${item.id}`);
     for (const button of actions.children) button.disabled = Boolean(pending);
     if (!pending && !state.busy) { steer.disabled = true; steer.title = 'Disponível durante uma execução ativa'; }
     if (pending === 'cancel') cancel.textContent = 'Cancelando…';
     if (pending === 'restore') restore.textContent = 'Restaurando…';
     if (pending === 'steer') steer.textContent = 'Enviando…';
+    if (pending === 'send') sendDeferred.textContent = 'Enviando…';
     row.append(position, text);
     if (imagePreviews.isConnected || imagePreviews.children.length) row.append(imagePreviews);
+    if (deferredState) row.append(deferredState);
     row.append(actions); list.append(row);
   });
   installIcons();
@@ -2786,6 +3059,10 @@ async function withQueueAction(item, threadId, action, callback) {
 }
 
 async function cancelQueueItem(item, threadId) {
+  if (item.localDeferred) {
+    await updateDeferredQueueItems(state.deferredQueueItems.filter((queued) => queued.id !== item.id));
+    return { alreadyGone: false };
+  }
   let alreadyGone = false;
   if (!item.localOnly) {
     try { await api(`/api/threads/${encodeURIComponent(threadId)}/queue/${encodeURIComponent(item.id)}`, { method: 'DELETE' }); }
@@ -2806,6 +3083,23 @@ async function cancelQueueItem(item, threadId) {
 }
 
 async function restoreQueueItem(item, threadId) {
+  if (item.localDeferred) {
+    const text = String(item.text || '');
+    const restoredFiles = (item.files || []).map((file) => ({ ...file, dataUrl: file.dataUrl || ('data:' + (file.mime || 'application/octet-stream') + ';base64,' + (file.data || '')) }));
+    if (state.selectedThreadId !== (threadId || null)) throw new Error('Volte ao rascunho desta conversa para devolver a mensagem. Ela continua guardada.');
+    if (state.files.length + restoredFiles.length > 8) throw new Error('Remova um anexo do rascunho antes de devolver esta mensagem.');
+    if ([...state.files, ...restoredFiles].filter((file) => file.isImage).length > 4) throw new Error('O limite é de 4 imagens por mensagem. Remova uma imagem do rascunho primeiro.');
+    if ([...state.files, ...restoredFiles].reduce((total, file) => total + (file.size || 0), 0) > 24 * 1024 * 1024) throw new Error('O total dos anexos ultrapassa 24 MB. A mensagem continua na fila.');
+    await updateDeferredQueueItems(state.deferredQueueItems.filter((queued) => queued.id !== item.id));
+    const textarea = $('#messageInput');
+    const draft = textarea.value.trimEnd();
+    textarea.value = draft + (draft && text ? '\n\n' : '') + text;
+    state.files.push(...restoredFiles);
+    renderAttachments();
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    textarea.focus();
+    return;
+  }
   const input = Array.isArray(item.input) ? item.input : [];
   const parsed = splitAttachmentText(input.filter((part) => part.type === 'text').map((part) => String(part.text || '')).join('\n'), threadId);
   const text = parsed.text;
@@ -2888,6 +3182,127 @@ function attachmentPayload(files) {
   };
 }
 
+async function queueDraftForRateLimit(text, files, threadId, block = getRateLimitBlock()) {
+  const textarea = $('#messageInput');
+  const wasSending = state.sending;
+  state.sending = true;
+  updateComposerControls();
+  try {
+    const item = {
+      id: randomKey(),
+      threadId: threadId || null,
+      text,
+      files: files.map((file) => ({ name: file.name, isImage: Boolean(file.isImage), size: Number(file.size) || 0, mime: file.mime || 'application/octet-stream', data: file.data || String(file.dataUrl || '').split(',')[1] || '', dataUrl: file.dataUrl || '' })),
+      model: state.modelId,
+      effort: state.effort,
+      cwd: state.cwd,
+      draftQueueGroupId: threadId ? '' : state.draftQueueGroupId,
+      createdAt: Date.now(),
+      localOnly: true,
+      localDeferred: true,
+      attemptingAt: 0,
+      retryAt: 0,
+      needsReview: false,
+      lastError: '',
+    };
+    await putDeferredQueueItem(item);
+    if (textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
+    if (files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
+    const wait = block && block.resetAt ? ' Libera ' + formatCountdown(block.resetAt) + '.' : '';
+    toast('Limite de uso atingido. Mensagem guardada na fila.' + wait);
+    textarea.dispatchEvent(new Event('input'));
+    return true;
+  } catch (error) {
+    toast(error.message || 'Não consegui guardar a mensagem. Ela continua no rascunho.', 'error');
+    return false;
+  } finally {
+    state.sending = wasSending;
+    updateComposerControls();
+    if (!touchComposer()) textarea.focus();
+  }
+}
+
+async function sendDeferredQueueItem(item, { manual = false } = {}) {
+  const block = getEffectiveRateLimitBlock();
+  if (block) {
+    renderRateLimitNotice();
+    if (manual) throw new Error('O limite ainda está ativo. A mensagem continua guardada na fila.');
+    return false;
+  }
+  if (item.attemptingAt || (!manual && (item.needsReview || Number(item.retryAt) > Date.now()))) return false;
+  const attempted = { ...item, attemptingAt: Date.now(), lastError: '' };
+  await updateDeferredQueueItems(state.deferredQueueItems.map((queued) => queued.id === item.id ? attempted : queued));
+  const shouldOpenNewThread = !item.threadId && !state.selectedThreadId && item.draftQueueGroupId === state.draftQueueGroupId;
+  try {
+    const result = await api('/api/turn', {
+      method: 'POST',
+      body: JSON.stringify({
+        threadId: item.threadId || undefined,
+        text: item.text,
+        model: item.model,
+        effort: item.effort,
+        cwd: item.cwd,
+        ...attachmentPayload(item.files || []),
+      }),
+    });
+    const resolvedThreadId = result.threadId || item.threadId || null;
+    const remaining = state.deferredQueueItems
+      .filter((queued) => queued.id !== item.id)
+      .map((queued) => !item.threadId && resolvedThreadId && queued.draftQueueGroupId === item.draftQueueGroupId && !queued.threadId ? { ...queued, threadId: resolvedThreadId } : queued);
+    await updateDeferredQueueItems(remaining);
+    state.rateLimitFailure = null;
+    if (resolvedThreadId) {
+      state.activeThreadIds.add(resolvedThreadId);
+      if (shouldOpenNewThread) {
+        state.selectedThreadId = resolvedThreadId;
+        state.activeThreadProjectId = state.projects.find((project) => pathIsWithin(item.cwd, project.cwd))?.id || '';
+        state.activeTurnId = result.turn?.id || null;
+        state.turnStartedAtMs = Date.now();
+        updateThreadHeader({ id: resolvedThreadId, name: 'Nova conversa', model: item.model });
+        setBusy(true);
+        loadThreadHistory(resolvedThreadId).catch(() => {});
+      } else if (state.selectedThreadId === resolvedThreadId) {
+        state.activeTurnId = result.turn?.id || state.activeTurnId;
+        state.turnStartedAtMs ||= Date.now();
+        setBusy(true);
+      }
+      if (result.queued && state.selectedThreadId === resolvedThreadId) refreshQueue(resolvedThreadId).catch(() => {});
+    }
+    refreshThreadList().catch(() => {});
+    renderRateLimitNotice();
+    if (manual) toast('Mensagem enviada.');
+    return true;
+  } catch (error) {
+    if (isRateLimitError(error.message)) {
+      state.rateLimitFailure = { message: error.message, resetAt: getRateLimitBlock()?.resetAt || 0 };
+      const retryItem = { ...attempted, attemptingAt: 0, retryAt: Date.now() + 60_000, needsReview: false, lastError: '' };
+      await updateDeferredQueueItems(state.deferredQueueItems.map((queued) => queued.id === item.id ? retryItem : queued)).catch(() => {});
+      await refreshUsage(true).catch(() => {});
+      if (manual) throw new Error('O limite ainda está ativo. A mensagem continua guardada na fila.');
+      return false;
+    }
+    const failedItem = { ...attempted, attemptingAt: 0, needsReview: true, lastError: error.message || 'Não foi possível enviar.' };
+    await updateDeferredQueueItems(state.deferredQueueItems.map((queued) => queued.id === item.id ? failedItem : queued)).catch(() => {});
+    if (manual) throw error;
+    return false;
+  }
+}
+
+function maybeDrainDeferredQueue() {
+  if (deferredDrainPromise) return deferredDrainPromise;
+  if (!state.deferredQueueItems.length || getEffectiveRateLimitBlock()) return Promise.resolve(false);
+  const item = state.deferredQueueItems.find((queued) => !queued.attemptingAt && !queued.needsReview && Number(queued.retryAt) <= Date.now());
+  if (!item) return Promise.resolve(false);
+  deferredDrainPromise = sendDeferredQueueItem(item).catch(() => false).finally(() => {
+    deferredDrainPromise = null;
+    if (state.deferredQueueItems.length && !getEffectiveRateLimitBlock()) {
+      const next = state.deferredQueueItems.find((queued) => !queued.attemptingAt && !queued.needsReview && Number(queued.retryAt) <= Date.now());
+      if (next) setTimeout(() => maybeDrainDeferredQueue().catch(() => {}), 500);
+    }
+  });
+  return deferredDrainPromise;
+}
+
 async function submitMessage(event, { allowVoice = false } = {}) {
   event?.preventDefault();
   if (state.sending) return;
@@ -2898,12 +3313,16 @@ async function submitMessage(event, { allowVoice = false } = {}) {
   if (!text && !state.files.length) return;
   const currentThread = state.selectedThreadId;
   const files = [...state.files];
+  const rateLimitBlock = getEffectiveRateLimitBlock();
+  if (rateLimitBlock) return queueDraftForRateLimit(text, files, currentThread, rateLimitBlock);
   state.sending = true; updateComposerControls();
   try {
     const result = await api('/api/turn', {
       method: 'POST',
       body: JSON.stringify({ threadId: currentThread, text, model: state.modelId, effort: state.effort, cwd: state.cwd, ...attachmentPayload(files) }),
     });
+    state.rateLimitFailure = null;
+    renderRateLimitNotice();
     state.selectedThreadId = result.threadId;
     if (!currentThread) {
       state.activeThreadProjectId = state.selectedProjectId;
@@ -2925,6 +3344,18 @@ async function submitMessage(event, { allowVoice = false } = {}) {
     if (files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
     return true;
   } catch (error) {
+    if (isRateLimitError(error.message)) {
+      state.rateLimitFailure = { message: error.message, resetAt: getRateLimitBlock()?.resetAt || 0, createdAt: Date.now() };
+      await refreshUsage(true).catch(() => {});
+      const failedThreadId = currentThread || error.data?.threadId || state.selectedThreadId || null;
+      if (!currentThread && failedThreadId) {
+        state.selectedThreadId = failedThreadId;
+        state.activeThreadProjectId = state.selectedProjectId;
+        updateThreadHeader({ id: failedThreadId, name: 'Nova conversa', model: getSelectedModel()?.displayName || state.modelId });
+        refreshThreadList().catch(() => {});
+      }
+      return await queueDraftForRateLimit(text, files, failedThreadId, getEffectiveRateLimitBlock());
+    }
     toast(error.message, 'error');
     return false;
   } finally {
@@ -2942,16 +3373,26 @@ async function steerMessage() {
   if (!text && !state.files.length) return;
   const threadId = state.selectedThreadId;
   const files = [...state.files];
+  const rateLimitBlock = getEffectiveRateLimitBlock();
+  if (rateLimitBlock) return queueDraftForRateLimit(text, files, threadId, rateLimitBlock);
   state.sending = true; updateComposerControls();
   try {
     await api(`/api/threads/${encodeURIComponent(threadId)}/steer`, {
       method: 'POST',
       body: JSON.stringify({ text, ...attachmentPayload(files) }),
     });
+    state.rateLimitFailure = null;
+    renderRateLimitNotice();
     if (textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
     if (files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
     toast('Orientação enviada para a execução atual.');
-  } catch (error) { toast(error.message, 'error'); }
+  } catch (error) {
+    if (isRateLimitError(error.message)) {
+      state.rateLimitFailure = { message: error.message, resetAt: getRateLimitBlock()?.resetAt || 0, createdAt: Date.now() };
+      await refreshUsage(true).catch(() => {});
+      await queueDraftForRateLimit(text, files, threadId, getEffectiveRateLimitBlock());
+    } else toast(error.message, 'error');
+  }
   finally {
     state.sending = false;
     updateComposerControls();

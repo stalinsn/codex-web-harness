@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { lstat, mkdir, readFile, realpath, rename, rmdir, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, rename, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
@@ -250,6 +250,10 @@ function json(res, status, data) {
 
 function fail(res, status, message) { json(res, status, { error: message }); }
 
+function isRateLimitErrorMessage(message) {
+  return /rate[ -]?limit|usage limit|quota|too many requests|reached.{0,30}limit|limit.{0,30}reached|limit.{0,30}exceed|exceed.{0,30}limit|hit.{0,20}limit|limite.{0,30}atingid|atingid.{0,30}limite/i.test(String(message || ''));
+}
+
 function readBody(req, limit = MAX_BODY) {
   return new Promise((resolvePromise, rejectPromise) => {
     const chunks = [];
@@ -425,6 +429,24 @@ async function saveImages(threadId, files) {
     }
   }
   return items;
+}
+
+async function cleanupTurnUploads(threadId, imageParts, fileParts) {
+  const root = resolve(join(UPLOAD_DIR, threadId)) + sep;
+  const paths = (imageParts || []).map((item) => item.path).filter(Boolean);
+  for (const part of fileParts || []) {
+    const match = /\[Arquivo anexado\]\s*\n([\s\S]*?)\n\[\/Arquivo anexado\]/.exec(String(part?.text || ''));
+    if (!match) continue;
+    try {
+      const metadata = JSON.parse(match[1]);
+      if (typeof metadata.path === 'string') paths.push(metadata.path);
+    } catch { /* Ignore malformed attachment metadata. */ }
+  }
+  await Promise.all(paths.map(async (path) => {
+    const target = resolve(path);
+    if (!target.startsWith(root)) return;
+    await unlink(target).catch(() => {});
+  }));
 }
 
 async function threadHasActiveTurn(threadId) {
@@ -860,14 +882,21 @@ async function handleApi(req, res, pathName, url) {
     if (!expectedTurnId) return fail(res, 409, 'Não encontrei uma execução ativa para orientar. A mensagem continua no campo para você reenviar.');
     const input = [];
     if (text) input.push({ type: 'text', text });
-    input.push(...await saveImages(threadId, body.images || []));
-    input.push(...await saveFiles(UPLOAD_DIR, threadId, body.files || []));
-    const result = await rpc('turn/steer', {
-      threadId,
-      expectedTurnId,
-      clientUserMessageId: randomUUID(),
-      input,
-    });
+    const imageParts = await saveImages(threadId, body.images || []);
+    const fileParts = await saveFiles(UPLOAD_DIR, threadId, body.files || []);
+    input.push(...imageParts, ...fileParts);
+    let result;
+    try {
+      result = await rpc('turn/steer', {
+        threadId,
+        expectedTurnId,
+        clientUserMessageId: randomUUID(),
+        input,
+      });
+    } catch (error) {
+      if (isRateLimitErrorMessage(error.message)) await cleanupTurnUploads(threadId, imageParts, fileParts);
+      throw error;
+    }
     return json(res, 202, { threadId, turnId: result.turnId, steered: true });
   }
 
@@ -1008,8 +1037,9 @@ async function handleApi(req, res, pathName, url) {
 
     const input = [];
     if (text) input.push({ type: 'text', text });
-    input.push(...await saveImages(threadId, body.images || []));
-    input.push(...await saveFiles(UPLOAD_DIR, threadId, body.files || []));
+    const imageParts = await saveImages(threadId, body.images || []);
+    const fileParts = await saveFiles(UPLOAD_DIR, threadId, body.files || []);
+    input.push(...imageParts, ...fileParts);
     if (queueForActiveTurn) {
       const queued = await rpc('thread/queue/add', {
         threadId,
@@ -1019,14 +1049,23 @@ async function handleApi(req, res, pathName, url) {
       emit('thread-queue-changed', { threadId });
       return json(res, 202, { threadId, queued: true, queuedSubmission: queued.queuedSubmission || null });
     }
-    const turn = await rpc('turn/start', {
-      threadId,
-      input,
-      model: selectedModel.id,
-      effort,
-      cwd,
-      clientUserMessageId: randomUUID(),
-    });
+    let turn;
+    try {
+      turn = await rpc('turn/start', {
+        threadId,
+        input,
+        model: selectedModel.id,
+        effort,
+        cwd,
+        clientUserMessageId: randomUUID(),
+      });
+    } catch (error) {
+      if (isRateLimitErrorMessage(error.message)) {
+        await cleanupTurnUploads(threadId, imageParts, fileParts);
+        return json(res, 429, { error: error.message, threadId, rateLimited: true });
+      }
+      throw error;
+    }
     if (turn.turn?.id) activeTurns.set(threadId, turn.turn.id);
     emit('turn-accepted', { threadId, turnId: turn.turn?.id, model: selectedModel.id, effort, cwd });
     return json(res, 202, { threadId, turn: turn.turn || null });
