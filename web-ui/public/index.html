@@ -7,7 +7,7 @@
     <meta name="description" content="Converse com o Codex na sua VPS." />
     <title>Codex Web Harness</title>
     <link rel="manifest" href="/codex-agent/manifest.webmanifest" />
-    <link rel="stylesheet" href="/codex-agent/styles.storage-20261025.css" />
+    <link rel="stylesheet" href="/codex-agent/styles.prompt-20261025.css" />
   </head>
   <body>
     <main class="auth-screen" id="authScreen" aria-labelledby="authTitle">
@@ -174,23 +174,31 @@
             <div class="queue-list" id="queueList"></div>
           </section>
           <form class="composer" id="composerForm">
-            <div class="composer-topline"><span id="composerHint">Enter envia · Shift+Enter cria uma linha</span><div class="composer-actions"><button type="button" class="steer-button hidden" id="steerButton"><span class="icon" data-icon="bolt"></span>Orientar agora</button><button type="button" class="stop-turn hidden" id="stopTurn"><span class="icon" data-icon="stop"></span><span class="stop-button-label">Parar</span></button></div></div>
-            <textarea id="messageInput" rows="1" placeholder="Pergunte qualquer coisa" aria-label="Mensagem para o Codex"></textarea>
-            <div class="composer-bottom">
+            <div class="composer-topline"><span id="composerHint" role="status">Escreva ou grave sua mensagem</span><div class="composer-actions"><button type="button" class="steer-button hidden" id="steerButton"><span class="icon" data-icon="bolt"></span>Orientar agora</button><button type="button" class="stop-turn hidden" id="stopTurn"><span class="icon" data-icon="stop"></span><span class="stop-button-label">Parar</span></button></div></div>
+            <section class="voice-panel" id="voicePanel" aria-label="Mensagem de voz" hidden>
+              <div class="voice-panel-heading"><span class="voice-status" id="voiceStatus" role="status" aria-live="polite"></span><span class="voice-timer" id="voiceTimer">0:00</span></div>
+              <audio id="voicePlayer" controls preload="metadata" aria-label="Ouvir gravação" hidden></audio>
+              <div class="voice-panel-actions"><button type="button" id="stopRecording" class="voice-review-action" hidden>Concluir gravação</button><button type="button" id="transcribeAudio" class="voice-review-action" hidden>Transcrever áudio</button><button type="button" id="downloadAudio" class="voice-review-discard" hidden>Salvar áudio</button><button type="button" id="discardAudio" class="voice-review-discard">Descartar</button></div>
+              <p id="voiceError" class="voice-error" role="alert" hidden></p>
+            </section>
+            <textarea id="messageInput" rows="2" placeholder="Escreva uma mensagem ou grave um áudio…" aria-label="Mensagem para o Codex" enterkeyhint="enter"></textarea>
+            <div class="composer-toolbar">
               <div class="composer-tools">
-                <button type="button" class="composer-icon" id="attachImage" title="Anexar imagem" aria-label="Anexar imagem"><span class="icon" data-icon="paperclip"></span></button>
-                <button type="button" class="composer-icon voice-input" id="voiceInput" title="Gravar áudio" aria-label="Gravar áudio"><span class="icon" data-icon="microphone"></span></button>
+                <button type="button" class="composer-tool" id="attachImage" title="Anexar imagens" aria-label="Anexar imagens"><span class="icon" data-icon="paperclip"></span><span>Imagem</span></button>
+                <button type="button" class="composer-tool voice-input" id="voiceInput" title="Gravar áudio" aria-label="Gravar áudio"><span class="icon" data-icon="microphone"></span><span id="voiceButtonLabel">Gravar</span></button>
+                <button type="button" class="composer-tool" id="attachAudio" title="Transcrever um arquivo de áudio" aria-label="Escolher arquivo de áudio"><span>Áudio</span></button>
                 <input type="file" id="imageInput" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
-                <button type="button" class="cwd-control" id="cwdControl"><span class="icon" data-icon="folder"></span><span id="cwdLabel">/home/codex</span><span class="icon" data-icon="chevron"></span></button>
+                <input type="file" id="audioInput" accept="audio/*,.m4a,.mp3,.wav,.webm,.ogg" hidden />
               </div>
-              <div class="composer-controls">
-                <label class="select-wrap model-wrap" title="Modelo"><span class="sr-only">Modelo</span><select id="modelSelect" aria-label="Modelo"><option>Carregando modelos…</option></select><span class="icon" data-icon="chevron"></span></label>
-                <label class="select-wrap effort-wrap" title="Nível de raciocínio"><span class="effort-glyph">◉</span><select id="effortSelect" aria-label="Nível de raciocínio"></select><span class="icon" data-icon="chevron"></span></label>
-                <button class="send-button" id="sendButton" type="submit" aria-label="Enviar mensagem"><span class="icon" data-icon="arrow-up"></span></button>
-              </div>
+              <button class="send-button" id="sendButton" type="submit" aria-label="Enviar mensagem"><span id="sendLabel">Enviar</span><span class="icon" data-icon="arrow-up"></span></button>
+            </div>
+            <div class="composer-settings">
+              <button type="button" class="cwd-control" id="cwdControl" title="Pasta de trabalho"><span class="icon" data-icon="folder"></span><span id="cwdLabel">/home/codex</span><span class="icon" data-icon="chevron"></span></button>
+              <label class="select-wrap model-wrap"><span class="select-label">Modelo</span><select id="modelSelect" aria-label="Modelo para a próxima mensagem"><option>Carregando…</option></select></label>
+              <label class="select-wrap effort-wrap"><span class="select-label">Esforço</span><select id="effortSelect" aria-label="Esforço para a próxima mensagem"></select></label>
             </div>
           </form>
-          <p class="composer-footnote">Durante a execução, mensagens entram na fila; use Orientar agora para redirecionar. Áudios só são transcritos quando você tocar em Transcrever.</p>
+          <p class="composer-footnote" id="composerFootnote">Grave, transcreva e revise antes de enviar.</p>
         </section>
       </main>
 
@@ -243,6 +251,6 @@
     </dialog>
 
     <div class="toast-container" id="toastContainer" aria-live="polite"></div>
-    <script src="/codex-agent/app.storage-20261025.js" defer></script>
+    <script src="/codex-agent/app.prompt-20261025.js" defer></script>
   </body>
 </html>

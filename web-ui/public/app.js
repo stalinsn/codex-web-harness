@@ -14,11 +14,7 @@ const state = {
 };
 const authUi = { mode: 'login', step: 'credentials', challengeId: '', setupRequired: false, countdown: null, started: false };
 let vpsHealthRequest = null;
-let voiceRecorder = null;
-let voiceStream = null;
-let voiceChunks = [];
-let voiceObjectUrl = '';
-let recordedAudioBlob = null;
+const voice = { phase: 'idle', recorder: null, stream: null, chunks: [], blob: null, url: '', timer: null, startedAt: 0, seconds: 0, request: null, jobId: null, cancelled: false, context: null, meterSource: null, meterFrame: null, hasSignal: false, generation: 0 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -403,121 +399,186 @@ function toast(message, kind = '') {
   setTimeout(() => node.remove(), 4200);
 }
 
-function setVoiceRecording(recording) {
-  const button = $('#voiceInput');
-  button.classList.toggle('listening', recording);
-  button.title = recording ? 'Parar gravação' : 'Gravar áudio';
-  button.setAttribute('aria-label', button.title);
-  $('#composerHint').textContent = recording ? 'Gravando áudio… toque no botão para parar' : (state.busy ? 'Enter adiciona à fila · Shift+Enter cria uma linha' : 'Enter envia · Shift+Enter cria uma linha');
+function voiceIsActive() { return ['requesting', 'recording', 'transcribing'].includes(voice.phase); }
+function touchComposer() { return window.matchMedia('(pointer: coarse)').matches; }
+function voiceTime(seconds) { return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`; }
+
+function renderVoice(error = '') {
+  const panel = $('#voicePanel');
+  $('#composerForm').classList.toggle('has-voice', voice.phase !== 'idle');
+  const recording = voice.phase === 'recording';
+  panel.hidden = voice.phase === 'idle';
+  panel.classList.toggle('is-recording', recording);
+  panel.classList.toggle('is-transcribing', voice.phase === 'transcribing');
+  $('#voiceStatus').textContent = ({ requesting: 'Liberando microfone…', recording: 'Gravando sua mensagem', ready: 'Ouça e transcreva para revisar', transcribing: 'Transcrevendo… você pode continuar escrevendo' })[voice.phase] || '';
+  $('#voiceTimer').textContent = voiceTime(voice.seconds);
+  $('#voicePlayer').hidden = !voice.blob || recording;
+  $('#stopRecording').hidden = !recording;
+  $('#transcribeAudio').hidden = !voice.blob || recording;
+  $('#transcribeAudio').disabled = voice.phase === 'transcribing';
+  $('#transcribeAudio').textContent = voice.phase === 'transcribing' ? 'Transcrevendo…' : 'Transcrever áudio';
+  $('#downloadAudio').hidden = !voice.blob || recording;
+  $('#discardAudio').textContent = voice.phase === 'transcribing' ? 'Cancelar transcrição' : 'Descartar';
+  $('#voiceError').hidden = !error;
+  $('#voiceError').textContent = error;
+  $('#voiceInput').classList.toggle('listening', recording);
+  $('#voiceInput').setAttribute('aria-pressed', String(recording));
+  $('#voiceInput').disabled = voice.phase === 'requesting' || voice.phase === 'transcribing' || voice.phase === 'ready';
+  $('#voiceButtonLabel').textContent = recording ? 'Concluir' : 'Gravar';
+  $('#attachAudio').disabled = voice.phase !== 'idle';
+  updateComposerControls();
+}
+
+function releaseMicrophone() {
+  clearInterval(voice.timer); voice.timer = null;
+  cancelAnimationFrame(voice.meterFrame);
+  voice.stream?.getTracks().forEach((track) => track.stop()); voice.stream = null;
+  voice.meterSource?.disconnect(); voice.meterSource = null;
+  voice.context?.close().catch(() => {}); voice.context = null;
 }
 
 function clearRecordedAudio() {
-  if (voiceObjectUrl) URL.revokeObjectURL(voiceObjectUrl);
-  voiceObjectUrl = '';
-  recordedAudioBlob = null;
-  $('#voiceReview')?.remove();
+  voice.cancelled = true;
+  voice.generation += 1;
+  voice.request?.abort(); voice.request = null;
+  if (voice.jobId) api(`/api/voice/transcriptions/${voice.jobId}`, { method: 'DELETE' }).catch(() => {});
+  voice.jobId = null;
+  if (voice.recorder?.state === 'recording') voice.recorder.stop();
+  releaseMicrophone(); voice.recorder = null;
+  $('#voicePlayer').pause(); $('#voicePlayer').removeAttribute('src'); $('#voicePlayer').load();
+  if (voice.url) URL.revokeObjectURL(voice.url);
+  voice.url = ''; voice.blob = null; voice.chunks = []; voice.phase = 'idle'; voice.seconds = 0;
+  renderVoice();
 }
 
 function showRecordedAudio(blob) {
-  clearRecordedAudio();
-  recordedAudioBlob = blob;
-  voiceObjectUrl = URL.createObjectURL(blob);
-  const review = document.createElement('div');
-  review.className = 'voice-review';
-  review.id = 'voiceReview';
-  const player = document.createElement('audio');
-  player.controls = true;
-  player.src = voiceObjectUrl;
-  player.setAttribute('aria-label', 'Ouvir áudio gravado');
-  const transcribe = document.createElement('button');
-  transcribe.type = 'button'; transcribe.className = 'voice-review-action'; transcribe.textContent = 'Transcrever'; transcribe.addEventListener('click', transcribeRecordedAudio);
-  const discard = document.createElement('button');
-  discard.type = 'button'; discard.className = 'voice-review-discard'; discard.textContent = 'Descartar'; discard.addEventListener('click', clearRecordedAudio);
-  review.append(player, transcribe, discard);
-  $('#attachmentStrip').after(review);
+  if (!blob.size) { clearRecordedAudio(); toast('O áudio ficou vazio. Tente gravar novamente.', 'error'); return; }
+  if (blob.size > 12 * 1024 * 1024) { clearRecordedAudio(); toast('O limite é de 12 MB por áudio.', 'error'); return; }
+  voice.blob = blob; voice.url = URL.createObjectURL(blob); voice.phase = 'ready';
+  $('#voicePlayer').src = voice.url;
+  renderVoice();
 }
 
 async function transcribeRecordedAudio() {
-  if (!recordedAudioBlob) return;
-  const button = $('#voiceReview .voice-review-action');
-  button.disabled = true; button.textContent = 'Transcrevendo…';
-  let stream = null;
-  let recorder = null;
-  let recognition = null;
+  if (!voice.blob || voice.phase !== 'ready') return;
+  const generation = voice.generation;
+  voice.phase = 'transcribing'; voice.request = new AbortController();
+  const signal = voice.request.signal;
+  renderVoice();
   try {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) throw new Error('Este navegador não oferece transcrição de áudio. Você ainda pode ouvir o áudio e usar o microfone do teclado para ditar.');
-    // Replay the saved recording into a fresh microphone stream only after explicit consent.
-    // This avoids continuous/interim results which some mobile engines duplicate.
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextClass || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error('A transcrição deste áudio não é compatível com este navegador. Você ainda pode ouvir a gravação e usar o microfone do teclado.');
-    const context = new AudioContextClass();
-    const decoded = await context.decodeAudioData(await recordedAudioBlob.arrayBuffer());
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const audio = context.createBufferSource();
-    const destination = context.createMediaStreamDestination();
-    audio.buffer = decoded; audio.connect(destination);
-    for (const track of destination.stream.getAudioTracks()) stream.addTrack(track);
-    recorder = new MediaRecorder(stream, MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? { mimeType: 'audio/webm;codecs=opus' } : undefined);
-    const chunks = [];
-    recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
-    const recorded = new Promise((resolve, reject) => {
-      recorder.onerror = () => reject(new Error('Falha ao preparar o áudio para transcrição.'));
-      recorder.onstop = () => resolve(new Blob(chunks, { type: chunks[0]?.type || 'audio/webm' }));
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('Não consegui ler a gravação.')); reader.readAsDataURL(voice.blob);
     });
-    const audioDone = new Promise((resolve) => { audio.onended = resolve; });
-    recorder.start(250);
-    const transcriptResult = new Promise((resolve, reject) => {
-      recognition = new SpeechRecognition();
-      recognition.lang = 'pt-BR'; recognition.continuous = false; recognition.interimResults = false; recognition.maxAlternatives = 1;
-      recognition.onresult = (event) => resolve(event.results?.[0]?.[0]?.transcript?.trim() || '');
-      recognition.onerror = (event) => reject(new Error(event.error === 'not-allowed' ? 'Permita o acesso ao microfone para transcrever.' : 'Não foi possível transcrever este áudio neste navegador.'));
-      recognition.onend = () => reject(new Error('Não foi possível reconhecer fala no áudio.'));
-    });
-    recognition.start();
-    audio.start();
-    const [recordedBlob, transcript] = await Promise.all([recorded, transcriptResult]);
-    void recordedBlob; // Consume the browser's capture to keep its stream active during recognition.
-    await audioDone;
-    if (!transcript) throw new Error('Não foi possível reconhecer fala no áudio.');
-    recognition.onend = null;
-    const textarea = $('#messageInput');
-    textarea.value = `${textarea.value.trimEnd()}${textarea.value.trim() ? ' ' : ''}${transcript}`;
-    textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    clearRecordedAudio();
-    textarea.focus();
-    toast('Transcrição adicionada ao campo. Revise antes de enviar.');
+    if (signal.aborted) return;
+    const job = await api('/api/voice/transcriptions', { method: 'POST', signal, body: JSON.stringify({ mime: voice.blob.type, data: String(dataUrl).split(',')[1] }) });
+    voice.jobId = job.id;
+    const deadline = Date.now() + 330_000;
+    while (!signal.aborted && Date.now() < deadline) {
+      const result = await api(`/api/voice/transcriptions/${job.id}`, { signal });
+      if (result.status === 'failed' || result.status === 'cancelled') throw new Error(result.error || 'Transcrição cancelada.');
+      if (result.status === 'completed') {
+        if (!result.text?.trim()) throw new Error('Não identifiquei fala neste áudio. Tente gravar novamente.');
+        if (generation !== voice.generation) return;
+        const textarea = $('#messageInput');
+        const draft = textarea.value.trimEnd();
+        textarea.value = `${draft}${draft ? '\n\n' : ''}${result.text.trim()}`;
+        voice.jobId = null;
+        clearRecordedAudio();
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        if (!touchComposer()) textarea.focus();
+        toast('Transcrição pronta. Revise o texto e toque em Enviar.');
+        return;
+      }
+      await new Promise((resolve, reject) => {
+        const cancel = () => { clearTimeout(timer); reject(new DOMException('Cancelado', 'AbortError')); };
+        const timer = setTimeout(() => { signal.removeEventListener('abort', cancel); resolve(); }, 1500);
+        signal.addEventListener('abort', cancel, { once: true });
+      });
+    }
+    if (!signal.aborted) throw new Error('A transcrição demorou demais. Seu áudio continua aqui para tentar novamente.');
   } catch (error) {
-    button.disabled = false; button.textContent = 'Tentar transcrever';
-    toast(error.message || 'Não foi possível transcrever o áudio.', 'error');
-  } finally {
-    try { if (recorder?.state !== 'inactive') recorder?.stop(); } catch {}
-    try { recognition?.stop(); } catch {}
-    stream?.getTracks().forEach((track) => track.stop());
+    if (error.name === 'AbortError' || generation !== voice.generation) return;
+    if (voice.jobId) api(`/api/voice/transcriptions/${voice.jobId}`, { method: 'DELETE' }).catch(() => {});
+    voice.jobId = null; voice.request = null; voice.phase = 'ready';
+    renderVoice(error.message || 'Não foi possível transcrever. Seu áudio foi preservado.');
   }
 }
 
 async function startVoiceRecording() {
-  if (voiceRecorder?.state === 'recording') { voiceRecorder.stop(); return; }
-  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) { toast('Gravação de áudio não é compatível com este navegador. Atualize o navegador ou use o microfone do teclado.', 'error'); return; }
-  clearRecordedAudio();
+  if (voice.phase === 'recording') { stopVoiceRecording(); return; }
+  if (voice.phase !== 'idle') return;
+  if (touchComposer()) $('#messageInput').blur();
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) { $('#audioInput').click(); return; }
+  voice.cancelled = false; voice.phase = 'requesting'; voice.hasSignal = false;
+  const generation = ++voice.generation;
+  renderVoice();
   try {
-    voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mimeType = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'].find((type) => MediaRecorder.isTypeSupported(type));
-    voiceRecorder = new MediaRecorder(voiceStream, mimeType ? { mimeType } : undefined);
-    voiceChunks = [];
-    voiceRecorder.ondataavailable = (event) => { if (event.data.size) voiceChunks.push(event.data); };
-    voiceRecorder.onstop = () => {
-      voiceStream?.getTracks().forEach((track) => track.stop()); voiceStream = null; voiceRecorder = null;
-      setVoiceRecording(false);
-      if (voiceChunks.length) { showRecordedAudio(new Blob(voiceChunks, { type: voiceChunks[0].type || 'audio/webm' })); toast('Áudio gravado. Ouça e escolha Transcrever quando estiver pronto.'); }
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+    if (voice.cancelled || generation !== voice.generation) { stream.getTracks().forEach((track) => track.stop()); return; }
+    voice.stream = stream;
+    const mimeType = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm', 'audio/ogg;codecs=opus'].find((type) => MediaRecorder.isTypeSupported(type));
+    const recorder = new MediaRecorder(stream, { ...(mimeType ? { mimeType } : {}), audioBitsPerSecond: 64000 });
+    voice.recorder = recorder; voice.chunks = [];
+    recorder.ondataavailable = (event) => { if (event.data.size && generation === voice.generation) voice.chunks.push(event.data); };
+    recorder.onstop = () => {
+      if (generation !== voice.generation) return;
+      releaseMicrophone(); voice.recorder = null;
+      if (voice.cancelled) return;
+      const blob = new Blob(voice.chunks, { type: recorder.mimeType || voice.chunks[0]?.type || 'audio/webm' });
+      showRecordedAudio(blob);
     };
-    voiceRecorder.start(250);
-    setVoiceRecording(true);
+    recorder.onerror = () => { clearRecordedAudio(); toast('A gravação foi interrompida pelo navegador. Tente novamente.', 'error'); };
+    recorder.start(500); voice.startedAt = Date.now(); voice.seconds = 0; voice.phase = 'recording';
+    voice.timer = setInterval(() => {
+      voice.seconds = Math.floor((Date.now() - voice.startedAt) / 1000);
+      $('#voiceTimer').textContent = `${voiceTime(voice.seconds)} / 3:00`;
+      if (voice.seconds >= 180 && recorder.state === 'recording') recorder.stop();
+    }, 500);
+    renderVoice();
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (AudioContextClass) {
+      try {
+        voice.context = new AudioContextClass();
+        voice.meterSource = voice.context.createMediaStreamSource(stream);
+        const analyser = voice.context.createAnalyser(); analyser.fftSize = 256;
+        voice.meterSource.connect(analyser);
+        const data = new Uint8Array(analyser.fftSize);
+        const draw = () => {
+          if (voice.phase !== 'recording') return;
+          analyser.getByteTimeDomainData(data);
+          const level = Math.sqrt(data.reduce((sum, value) => sum + ((value - 128) / 128) ** 2, 0) / data.length);
+          voice.hasSignal ||= level > .01;
+          $('#voicePanel').style.setProperty('--voice-level', `${Math.min(100, Math.max(4, level * 600))}%`);
+          if (voice.seconds >= 5 && !voice.hasSignal) $('#voiceStatus').textContent = 'Som muito baixo. Confira seu microfone';
+          else $('#voiceStatus').textContent = 'Gravando sua mensagem';
+          voice.meterFrame = requestAnimationFrame(draw);
+        };
+        draw();
+      } catch { /* Recording remains usable if metering is unavailable. */ }
+    }
   } catch (error) {
-    voiceStream?.getTracks().forEach((track) => track.stop()); voiceStream = null;
-    toast(error.name === 'NotAllowedError' ? 'Permita o acesso ao microfone para gravar áudio.' : 'Não foi possível iniciar a gravação.', 'error');
+    clearRecordedAudio();
+    toast(error.name === 'NotAllowedError' ? 'Permita o microfone nas configurações do navegador ou escolha um arquivo de áudio.' : 'Não consegui acessar o microfone. Você pode escolher um arquivo de áudio.', 'error');
   }
+}
+
+function stopVoiceRecording() {
+  if (voice.recorder?.state === 'recording') voice.recorder.stop();
+}
+
+function setupComposerViewport() {
+  const sync = () => {
+    const viewport = window.visualViewport;
+    document.documentElement.style.setProperty('--app-height', `${viewport?.height || window.innerHeight}px`);
+    document.documentElement.style.setProperty('--viewport-top', `${viewport?.offsetTop || 0}px`);
+  };
+  window.visualViewport?.addEventListener('resize', sync);
+  window.visualViewport?.addEventListener('scroll', sync);
+  window.addEventListener('resize', sync);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && voice.phase === 'recording') voice.recorder?.stop();
+  });
+  sync();
 }
 
 function getSelectedModel() { return state.models.find((model) => model.id === state.modelId) || state.models.find((model) => model.isDefault) || state.models[0] || null; }
@@ -534,6 +595,7 @@ function populateModels() {
   if (!state.models.some((model) => model.id === state.modelId)) state.modelId = getSelectedModel()?.id || '';
   select.value = state.modelId;
   updateEfforts();
+  updateComposerControls();
 }
 
 function updateEfforts() {
@@ -549,7 +611,7 @@ function updateEfforts() {
     option.textContent = effortLabel(value);
     select.append(option);
   });
-  if (!supported.some((item) => (item.reasoningEffort || item) === state.effort)) state.effort = model.defaultReasoningEffort || supported[0]?.reasoningEffort || 'medium';
+  if (!supported.some((item) => (item.reasoningEffort || item) === state.effort)) state.effort = model.defaultReasoningEffort || (supported[0]?.reasoningEffort || supported[0]) || '';
   select.value = state.effort;
   select.title = supported.find((item) => (item.reasoningEffort || item) === state.effort)?.description || `Raciocínio ${effortLabel(state.effort).toLowerCase()}`;
 }
@@ -1104,21 +1166,26 @@ function updateComposerControls() {
   if (send) {
     send.title = state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem';
     send.setAttribute('aria-label', state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem');
-    send.disabled = state.sending || !hasDraft;
+    send.disabled = state.sending || voice.phase !== 'idle' || !hasDraft;
+    $('#sendLabel').textContent = state.sending ? 'Enviando…' : state.busy ? 'Fila' : 'Enviar';
+    send.classList.toggle('queue-mode', state.busy);
   }
   if ($('#attachImage')) $('#attachImage').disabled = state.sending;
   if ($('#steerButton')) {
     $('#steerButton').classList.toggle('hidden', !state.busy || !state.selectedThreadId);
-    $('#steerButton').disabled = state.sending || !hasDraft;
+    $('#steerButton').disabled = state.sending || voice.phase !== 'idle' || !hasDraft;
   }
   if ($('#stopTurn')) {
     $('#stopTurn').classList.toggle('hidden', !state.busy || !state.selectedThreadId);
     $('#stopTurn').disabled = state.interrupting;
     $('.stop-button-label', $('#stopTurn')).textContent = state.interrupting ? 'Parando…' : 'Parar';
   }
-  if ($('#composerHint')) $('#composerHint').textContent = $('#voiceInput')?.classList.contains('listening')
-    ? 'Ouvindo… toque no microfone para concluir'
-    : (state.busy ? 'Enter adiciona à fila · Shift+Enter cria uma linha' : 'Enter envia · Shift+Enter cria uma linha');
+  if ($('#composerHint')) $('#composerHint').textContent = voice.phase === 'recording'
+    ? 'Gravando · até 3 minutos'
+    : state.busy ? 'Em execução · sua próxima mensagem entra na fila'
+    : touchComposer() ? 'Escreva ou grave sua mensagem' : 'Enter envia · Shift+Enter cria uma linha';
+  if ($('#composerFootnote')) $('#composerFootnote').textContent = voice.phase === 'ready' ? 'O áudio fica aqui até você transcrever ou descartar.' : voice.phase === 'transcribing' ? 'O áudio é processado na VPS. Ao terminar, revise o texto antes de enviar.' : state.busy ? 'Use Orientar agora para enviar uma instrução à execução atual.' : 'Grave, transcreva e revise antes de enviar.';
+
 }
 
 function setBusy(busy, detail = '') {
@@ -2011,11 +2078,7 @@ async function addFiles(files) {
 async function submitMessage(event) {
   event?.preventDefault();
   if (state.sending) return;
-  if (voiceRecognition) {
-    voiceSubmitAfterStop = true;
-    voiceRecognition.stop();
-    return;
-  }
+  if (voice.phase !== 'idle') { toast('Conclua a transcrição ou descarte o áudio antes de enviar.', 'error'); return; }
   const textarea = $('#messageInput');
   const text = textarea.value.trim();
   if (!text && !state.files.length) return;
@@ -2049,12 +2112,12 @@ async function submitMessage(event) {
     state.sending = false;
     updateComposerControls();
     textarea.dispatchEvent(new Event('input'));
-    textarea.focus();
+    if (!touchComposer()) textarea.focus();
   }
 }
 
 async function steerMessage() {
-  if (state.sending || !state.selectedThreadId) return;
+  if (state.sending || voice.phase !== 'idle' || !state.selectedThreadId) return;
   const textarea = $('#messageInput');
   const text = textarea.value.trim();
   if (!text && !state.files.length) return;
@@ -2083,6 +2146,7 @@ function closeSidebar() { $('#sidebar').classList.remove('open'); if (!$('#inspe
 
 function bindEvents() {
   setupInspectorResize();
+  setupComposerViewport();
   $('#closeImagePreview').addEventListener('click', () => $('#imagePreviewDialog').close());
   $('#imagePreviewDialog').addEventListener('click', (event) => {
     if (event.target === $('#imagePreviewDialog')) $('#imagePreviewDialog').close();
@@ -2101,9 +2165,28 @@ function bindEvents() {
   });
   $('#composerForm').addEventListener('submit', submitMessage);
   $('#voiceInput').addEventListener('click', startVoiceRecording);
+  $('#stopRecording').addEventListener('click', stopVoiceRecording);
+  $('#discardAudio').addEventListener('click', clearRecordedAudio);
+  $('#transcribeAudio').addEventListener('click', transcribeRecordedAudio);
+  $('#attachAudio').addEventListener('click', () => $('#audioInput').click());
+  $('#audioInput').addEventListener('change', (event) => {
+    const file = event.target.files?.[0]; event.target.value = '';
+    if (!file || voice.phase !== 'idle') return;
+    const extension = file.name.split('.').pop().toLowerCase();
+    const types = { m4a: 'audio/mp4', mp3: 'audio/mpeg', wav: 'audio/wav', webm: 'audio/webm', ogg: 'audio/ogg', aac: 'audio/aac' };
+    if (!types[extension] && !file.type.startsWith('audio/')) { toast('Escolha um arquivo de áudio.', 'error'); return; }
+    voice.cancelled = false; voice.generation += 1;
+    showRecordedAudio(new Blob([file], { type: types[extension] || file.type }));
+  });
+  $('#voicePlayer').addEventListener('loadedmetadata', () => { const duration = $('#voicePlayer').duration; if (Number.isFinite(duration)) { voice.seconds = Math.round(duration); $('#voiceTimer').textContent = voiceTime(voice.seconds); } });
+  $('#downloadAudio').addEventListener('click', () => {
+    const link = document.createElement('a'); link.href = voice.url;
+    const extension = voice.blob.type.includes('mp4') ? 'm4a' : voice.blob.type.includes('mpeg') ? 'mp3' : voice.blob.type.split('/')[1]?.split(';')[0] || 'webm';
+    link.download = `mensagem-de-voz.${extension}`; link.click();
+  });
   $('#messageInput').addEventListener('input', (event) => { event.target.style.height = 'auto'; event.target.style.height = `${Math.min(event.target.scrollHeight, 180)}px`; updateComposerControls(); });
   $('#messageInput').addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); submitMessage(event); }
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && (!touchComposer() || event.ctrlKey || event.metaKey)) { event.preventDefault(); submitMessage(event); }
   });
   $('#messageInput').addEventListener('paste', async (event) => {
     let files = [...(event.clipboardData?.items || [])]
@@ -2121,7 +2204,7 @@ function bindEvents() {
     await addFiles(files);
   });
   $('#steerButton').addEventListener('click', steerMessage);
-  $('#modelSelect').addEventListener('change', () => { state.modelId = $('#modelSelect').value; localStorage.setItem('codex-model', state.modelId); updateEfforts(); });
+  $('#modelSelect').addEventListener('change', () => { state.modelId = $('#modelSelect').value; localStorage.setItem('codex-model', state.modelId); updateEfforts(); localStorage.setItem('codex-effort', state.effort); updateComposerControls(); });
   $('#effortSelect').addEventListener('change', () => { state.effort = $('#effortSelect').value; localStorage.setItem('codex-effort', state.effort); });
   $('#cwdControl').addEventListener('click', () => { $('#cwdInput').value = state.cwd; $('#pathDialog').showModal(); });
   $('#pathForm').addEventListener('submit', (event) => {

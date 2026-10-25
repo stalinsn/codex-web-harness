@@ -97,3 +97,19 @@ Imagens anexadas no rascunho, nas mensagens e na fila podem ser abertas em uma p
 ## Licença
 
 MIT. Consulte [LICENSE](LICENSE).
+
+## Entrada de prompt e voz local
+
+O compositor oferece envio explícito, imagens, gravação e importação de áudio. No celular, Enter cria uma linha; no desktop, Enter envia e Shift+Enter cria uma linha. Ctrl/Cmd+Enter envia também no celular com teclado físico. Modelo e esforço aplicam-se à próxima mensagem; durante uma execução, Enviar passa a adicionar à fila, e Orientar agora redireciona o turno atual.
+
+A voz segue **gravar → ouvir → transcrever → revisar → enviar**. O reconhecimento é feito sobre o arquivo completo na VPS, sem Web Speech e sem chave de API. A transcrição nunca envia o prompt automaticamente. Em caso de falha, a gravação continua disponível para repetir, baixar ou descartar. O áudio pode ser salvo pelo usuário antes da transcrição; arquivos temporários no servidor são apagados ao concluir ou cancelar.
+
+Para instalar o modelo multilíngue Whisper small e suas dependências Python isoladas:
+
+```bash
+bash scripts/setup-voice.sh
+```
+
+Requer Python 3.9+ com `venv`, acesso à internet para a instalação e aproximadamente 830 MiB de disco para ambiente e modelo. O processamento aceita até 3 minutos e 12 MiB por áudio, usa um processo de prioridade reduzida com uma thread de inferência por vez e libera a memória ao terminar. O limite de memória virtual é 2,5 GiB e o limite de processamento é 5 minutos. O resultado permanece na memória do servidor por até 10 minutos para permitir a consulta do navegador; não é escrito no histórico antes do envio pelo usuário.
+
+Os caminhos padrão são `~/.local/venvs/harness-voice/bin/python` e `~/.cache/harness-voice/small`. Para personalizar no serviço, use `CODEX_VOICE_PYTHON` e `CODEX_VOICE_MODEL`. As rotas `/api/voice` e `/api/voice/transcriptions` exigem a mesma sessão autenticada do chat. A transcrição local pode demorar, especialmente durante outras tarefas da VPS, e deve ser revisada antes de enviar comandos.

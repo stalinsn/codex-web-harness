@@ -10,6 +10,7 @@ import { isIP } from 'node:net';
 import readline from 'node:readline';
 import { promisify } from 'node:util';
 import { AuthError, AuthManager } from './auth.mjs';
+import { voiceStatus, startTranscription, getTranscription, cancelTranscription } from './transcription.mjs';
 
 const HOME_DIR = process.env.HOME || homedir();
 const HOST = process.env.CODEX_UI_HOST || '127.0.0.1';
@@ -663,6 +664,13 @@ async function getVpsHealth(force = false) {
 }
 
 async function handleApi(req, res, pathName, url) {
+  if (req.method === 'GET' && pathName === '/api/voice') return json(res, 200, await voiceStatus());
+  if (req.method === 'POST' && pathName === '/api/voice/transcriptions') {
+    return json(res, 202, await startTranscription(await readBody(req, 17 * 1024 * 1024)));
+  }
+  const voiceMatch = pathName.match(/^\/api\/voice\/transcriptions\/([a-f0-9-]{36})$/);
+  if (voiceMatch && req.method === 'GET') return json(res, 200, getTranscription(voiceMatch[1]));
+  if (voiceMatch && req.method === 'DELETE') return json(res, 200, cancelTranscription(voiceMatch[1]));
   if (req.method === 'GET' && pathName === '/api/server-health') {
     return json(res, 200, await getVpsHealth(url.searchParams.get('refresh') === 'true'));
   }
