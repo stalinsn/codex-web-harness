@@ -1,8 +1,8 @@
-const CACHE = 'codex-web-harness-shell-v18';
+const CACHE = 'codex-web-harness-shell-v19';
 const SHELL = [
   '/codex-agent/',
-  '/codex-agent/styles.prompt-20261025.css',
-  '/codex-agent/app.progress-fix-20261025.js',
+  '/codex-agent/styles.queue-cancel-20261025.css',
+  '/codex-agent/app.queue-cancel-20261025.js',
   '/codex-agent/manifest.webmanifest',
   '/codex-agent/icon.svg',
 ];

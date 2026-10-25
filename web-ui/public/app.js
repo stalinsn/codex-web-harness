@@ -16,6 +16,8 @@ const state = {
 const authUi = { mode: 'login', step: 'credentials', challengeId: '', setupRequired: false, countdown: null, started: false };
 let vpsHealthRequest = null;
 let executionSyncRequest = null;
+const queueActions = new Map();
+let queueRefreshSequence = 0;
 const voice = { phase: 'idle', recorder: null, stream: null, chunks: [], blob: null, url: '', timer: null, startedAt: 0, seconds: 0, request: null, jobId: null, cancelled: false, context: null, meterSource: null, meterFrame: null, hasSignal: false, generation: 0 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -197,7 +199,7 @@ async function api(path, options = {}) {
   if (options.body != null) headers.set('Content-Type', 'application/json');
   const response = await fetch(`${PREFIX}${path}`, { credentials: 'same-origin', cache: 'no-store', ...options, headers });
   const data = response.status === 204 ? {} : await response.json().catch(() => ({}));
-  if (!response.ok) { const error = new Error(data.error || `Falha na solicitação (${response.status}).`); error.data = data; throw error; }
+  if (!response.ok) { const error = new Error(data.error || `Falha na solicitação (${response.status}).`); error.data = data; error.status = response.status; throw error; }
   return data;
 }
 
@@ -1197,7 +1199,7 @@ function setBusy(busy, detail = '') {
   state.busy = Boolean(busy);
   const statusLabel = $('#threadExecutionState');
   if (statusLabel) statusLabel.textContent = state.busy ? 'Em execução' : 'Pronta para continuar';
-  if (changed) renderThreads(state.threads, $('#threadSearch').value.trim());
+  if (changed) { renderThreads(state.threads, $('#threadSearch').value.trim()); renderQueue(); }
   $('#runningIndicator').classList.toggle('hidden', !state.busy);
   if (detail) $('#runningText').textContent = detail;
   if (state.busy) {
@@ -2035,38 +2037,73 @@ function renderQueue() {
     const actions = document.createElement('div'); actions.className = 'queued-actions';
     const steer = document.createElement('button'); steer.type = 'button'; steer.className = 'queue-action queue-steer'; steer.textContent = 'Orientar agora'; steer.title = 'Tirar da fila e enviar como orientação para a execução atual';
     steer.hidden = Boolean(item.localOnly);
-    steer.addEventListener('click', async () => {
-      steer.disabled = true;
+    steer.addEventListener('click', () => withQueueAction(item, threadId, 'steer', async () => {
       try {
         await api(`/api/threads/${encodeURIComponent(threadId)}/queue/${encodeURIComponent(item.id)}`, { method: 'POST' });
         toast('Mensagem enviada como orientação.');
         await refreshQueue(threadId);
       } catch (error) {
-        toast(error.message, 'error');
         if (error.data?.recoverableItem) {
           const recovered = { ...error.data.recoverableItem, id: `local-recovery-${Date.now()}`, localOnly: true, threadId };
           state.recoveredQueueItems = [...state.recoveredQueueItems.filter((queued) => queued.id !== item.id), recovered];
-          state.queueItems = [recovered, ...state.queueItems.filter((queued) => queued.id !== item.id)];
-          renderQueue();
+          if (state.selectedThreadId === threadId) state.queueItems = [recovered, ...state.queueItems.filter((queued) => queued.id !== item.id)];
         } else refreshQueue(threadId).catch(() => {});
+        throw error;
       }
-      finally { steer.disabled = false; }
-    });
+    }));
     const restore = document.createElement('button'); restore.type = 'button'; restore.className = 'queue-action queue-restore'; restore.textContent = 'Voltar ao rascunho'; restore.title = 'Tirar da fila e devolver ao campo de mensagem';
-    restore.addEventListener('click', async () => {
-      restore.disabled = true;
-      try {
-        await restoreQueueItem(item, threadId);
-        toast('Mensagem devolvida ao rascunho.');
-      } catch (error) { toast(error.message, 'error'); }
-      finally { restore.disabled = false; }
-    });
-    actions.append(steer, restore);
+    restore.addEventListener('click', () => withQueueAction(item, threadId, 'restore', async () => {
+      await restoreQueueItem(item, threadId);
+      toast('Mensagem devolvida ao rascunho.');
+    }));
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'queue-action queue-cancel'; cancel.textContent = 'Cancelar'; cancel.title = 'Remover esta mensagem da fila'; cancel.setAttribute('aria-label', `Cancelar mensagem ${index + 1} da fila`);
+    cancel.addEventListener('click', () => withQueueAction(item, threadId, 'cancel', async () => {
+      const result = await cancelQueueItem(item, threadId);
+      toast(result.alreadyGone ? 'Esta mensagem já saiu da fila. A lista foi atualizada.' : 'Mensagem removida da fila.');
+    }));
+    actions.append(steer, restore, cancel);
+    const pending = queueActions.get(`${threadId}:${item.id}`);
+    for (const button of actions.children) button.disabled = Boolean(pending);
+    if (!pending && !state.busy) { steer.disabled = true; steer.title = 'Disponível durante uma execução ativa'; }
+    if (pending === 'cancel') cancel.textContent = 'Cancelando…';
+    if (pending === 'restore') restore.textContent = 'Restaurando…';
+    if (pending === 'steer') steer.textContent = 'Enviando…';
     row.append(position, text);
     if (imagePreviews.isConnected || imagePreviews.children.length) row.append(imagePreviews);
     row.append(actions); list.append(row);
   });
   installIcons();
+}
+
+async function withQueueAction(item, threadId, action, callback) {
+  const key = `${threadId}:${item.id}`;
+  if (queueActions.has(key)) return;
+  queueActions.set(key, action);
+  queueRefreshSequence += 1;
+  renderQueue();
+  try { await callback(); }
+  catch (error) { toast(error.message || 'Não consegui atualizar a fila. Tente novamente.', 'error'); }
+  finally { queueActions.delete(key); renderQueue(); }
+}
+
+async function cancelQueueItem(item, threadId) {
+  let alreadyGone = false;
+  if (!item.localOnly) {
+    try { await api(`/api/threads/${encodeURIComponent(threadId)}/queue/${encodeURIComponent(item.id)}`, { method: 'DELETE' }); }
+    catch (error) {
+      if (error.status !== 404) throw error;
+      alreadyGone = true;
+      // Already consumed or removed by another tab: reconcile the queue below.
+    }
+  }
+  queueRefreshSequence += 1;
+  if (state.selectedThreadId === threadId) {
+    state.queueItems = state.queueItems.filter((queued) => queued.id !== item.id);
+  }
+  state.recoveredQueueItems = state.recoveredQueueItems.filter((queued) => queued.id !== item.id);
+  renderQueue();
+  if (!item.localOnly) refreshQueue(threadId).catch(() => {});
+  return { alreadyGone };
 }
 
 async function restoreQueueItem(item, threadId) {
@@ -2108,8 +2145,9 @@ async function restoreQueueItem(item, threadId) {
 
 async function refreshQueue(threadId = state.selectedThreadId) {
   if (!threadId) { state.queueItems = []; renderQueue(); return; }
+  const sequence = ++queueRefreshSequence;
   const data = await api(`/api/threads/${encodeURIComponent(threadId)}/queue`);
-  if (threadId !== state.selectedThreadId) return;
+  if (threadId !== state.selectedThreadId || sequence !== queueRefreshSequence) return;
   const recoverable = state.recoveredQueueItems.filter((item) => item.threadId === threadId);
   state.queueItems = [...(data.items || []), ...recoverable];
   renderQueue();
