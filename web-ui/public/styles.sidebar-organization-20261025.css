@@ -1,8 +1,0 @@
-.unassigned-tree-node > .project-tree-row > .project-item .icon { color: #aeb1bd; }
-.unassigned-tree-node .project-tree-toggle[aria-expanded="true"] .icon { transform: rotate(180deg); }
-.thread-row.has-thread-color .thread-item > .icon { color: var(--thread-color); }
-.thread-project-tag.thread-unassigned-tag.has-thread-color {
-  color: var(--thread-color);
-  border-color: color-mix(in srgb, var(--thread-color) 48%, transparent);
-  background: color-mix(in srgb, var(--thread-color) 12%, #25262b);
-}

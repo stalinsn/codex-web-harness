@@ -1,15 +1,7 @@
-const CACHE = 'codex-web-harness-shell-v32';
+const CACHE = 'codex-web-harness-shell-v33';
 const SHELL = [
   '/codex-agent/',
   '/codex-agent/styles.css',
-  '/codex-agent/styles.session-20261025.css',
-  '/codex-agent/styles.collaboration-20261025.css',
-  '/codex-agent/styles.sidebar-groups-20261025.css',
-  '/codex-agent/styles.history-lazy-20261025.css',
-  '/codex-agent/styles.sidebar-organization-20261025.css',
-  '/codex-agent/styles.activity-width-20261025.css',
-  '/codex-agent/styles.rate-limit-20261025.css',
-  '/codex-agent/styles.audio-flow-20261025.css',
   '/codex-agent/app.js',
   '/codex-agent/manifest.webmanifest',
   '/codex-agent/icon.svg',

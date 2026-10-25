@@ -1,3 +1,0 @@
-.history-load-older { min-height: 32px; align-self: center; padding: 6px 12px; color: #bfc4e7; font-size: 11px; border: 1px solid #3e4255; border-radius: 8px; background: #23252d; cursor: pointer; }
-.history-load-older:hover:not(:disabled) { color: #eff0ff; border-color: #5a5f7a; background: #2b2d38; }
-.history-load-older:disabled { color: #9294a0; cursor: wait; }
