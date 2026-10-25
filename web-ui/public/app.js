@@ -52,7 +52,7 @@ let quotaResetTimer = null;
 let quotaPollTimer = null;
 let scheduledQuotaResetAt = 0;
 const completionSound = { context: null, playedTurnIds: new Set() };
-const voice = { phase: 'idle', recorder: null, stream: null, chunks: [], blob: null, url: '', timer: null, startedAt: 0, seconds: 0, request: null, jobId: null, cancelled: false, context: null, meterSource: null, meterFrame: null, hasSignal: false, generation: 0, transcriptInserted: false, autoSend: false };
+const voice = { phase: 'idle', recorder: null, stream: null, chunks: [], blob: null, url: '', timer: null, startedAt: 0, seconds: 0, request: null, jobId: null, cancelled: false, context: null, meterSource: null, meterFrame: null, hasSignal: false, generation: 0, transcriptInserted: false };
 
 if (!state.draftQueueGroupId) {
   state.draftQueueGroupId = randomKey();
@@ -707,29 +707,31 @@ function renderVoice(error = '') {
   const panel = $('#voicePanel');
   $('#composerForm').classList.toggle('has-voice', voice.phase !== 'idle');
   const recording = voice.phase === 'recording';
+  const hasPreview = Boolean(voice.blob) && !recording;
   panel.hidden = voice.phase === 'idle';
   panel.classList.toggle('is-recording', recording);
   panel.classList.toggle('is-transcribing', voice.phase === 'transcribing');
-  $('#voiceStatus').textContent = ({ requesting: 'Liberando microfone…', recording: 'Gravando sua mensagem', ready: 'Ouça e transcreva para revisar', preparing: 'Preparando prévia do áudio…', transcribing: voice.autoSend ? 'Transcrevendo para enviar…' : 'Transcrevendo para revisar…' })[voice.phase] || '';
+  $('#voiceStatus').textContent = ({ requesting: 'Liberando microfone…', recording: 'Gravando · toque em Concluir para ouvir', preparing: 'Preparando prévia do áudio…', transcribing: 'Transcrevendo o áudio…' })[voice.phase]
+    || (voice.transcriptInserted ? 'Transcrição pronta · revise o texto antes de enviar' : voice.phase === 'ready' ? 'Prévia pronta · ouça antes de enviar' : '');
   $('#voiceTimer').textContent = voiceTime(voice.seconds);
-  $('#voicePlayer').hidden = !voice.blob || recording;
-  $('#stopRecording').hidden = !recording;
-  $('#transcribeAudio').hidden = !voice.blob || recording;
-  $('#transcribeAudio').disabled = voice.phase === 'transcribing';
+  $('#voicePlayerWrap').hidden = !hasPreview;
+  $('#transcribeAudio').hidden = !hasPreview || voice.transcriptInserted;
+  $('#transcribeAudio').disabled = voice.phase !== 'ready' || state.sending;
   $('#transcribeAudio').textContent = voice.phase === 'transcribing' ? 'Transcrevendo…' : 'Transcrever para revisar';
-  $('#sendAudio').hidden = !voice.blob || recording;
-  $('#sendAudio').disabled = voice.phase !== 'ready' || state.sending;
-  $('#sendAudio').textContent = state.busy || getEffectiveRateLimitBlock() ? 'Áudio à fila' : 'Enviar áudio';
-  $('#playAudio').hidden = !voice.blob || recording;
-  $('#downloadAudio').hidden = !voice.blob || recording;
+  $('#discardAudio').hidden = !voice.blob;
+  $('#discardAudio').disabled = state.sending && voice.phase !== 'transcribing';
   $('#discardAudio').textContent = voice.phase === 'transcribing' ? 'Cancelar transcrição' : 'Descartar';
+  $('#discardAudio').setAttribute('aria-label', voice.phase === 'transcribing' ? 'Cancelar transcrição' : 'Descartar gravação');
   $('#voiceError').hidden = !error;
   $('#voiceError').textContent = error;
   $('#voiceInput').classList.toggle('listening', recording);
+  $('#voiceInput').classList.toggle('hidden', voice.phase !== 'idle' && !recording);
   $('#voiceInput').setAttribute('aria-pressed', String(recording));
+  $('#voiceInput').title = recording ? 'Concluir gravação' : 'Gravar áudio';
+  $('#voiceInput').setAttribute('aria-label', recording ? 'Concluir gravação' : 'Gravar áudio');
+  $('#voiceInput .icon').innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${recording ? icons.stop : icons.microphone}</svg>`;
   $('#voiceInput').disabled = voice.phase !== 'idle' && voice.phase !== 'recording';
   $('#voiceButtonLabel').textContent = recording ? 'Concluir' : 'Gravar';
-  $('#messageInput').disabled = voice.phase === 'transcribing' && voice.autoSend;
   updateComposerControls();
 }
 
@@ -756,7 +758,7 @@ function clearRecordedAudio() {
   releaseMicrophone(); voice.recorder = null;
   $('#voicePlayer').pause(); $('#voicePlayer').removeAttribute('src'); $('#voicePlayer').load();
   if (voice.url) URL.revokeObjectURL(voice.url);
-  voice.url = ''; voice.blob = null; voice.chunks = []; voice.phase = 'idle'; voice.seconds = 0; voice.transcriptInserted = false; voice.autoSend = false;
+  voice.url = ''; voice.blob = null; voice.chunks = []; voice.phase = 'idle'; voice.seconds = 0; voice.transcriptInserted = false;
   renderVoice();
 }
 
@@ -764,7 +766,7 @@ function showRecordedAudio(blob) {
   if (!blob.size) { clearRecordedAudio(); toast('O áudio ficou vazio. Tente gravar novamente.', 'error'); return; }
   if (blob.size > 12 * 1024 * 1024) { clearRecordedAudio(); toast('O limite é de 12 MB por áudio.', 'error'); return; }
   if (voice.url) URL.revokeObjectURL(voice.url);
-  voice.blob = blob; voice.url = URL.createObjectURL(blob); voice.phase = 'ready'; voice.transcriptInserted = false; voice.autoSend = false;
+  voice.blob = blob; voice.url = URL.createObjectURL(blob); voice.phase = 'ready'; voice.transcriptInserted = false;
   const player = $('#voicePlayer'); player.src = voice.url; player.muted = false; player.volume = 1; player.load();
   renderVoice();
 }
@@ -798,36 +800,42 @@ async function prepareVoicePreview(blob) {
   }
 }
 
-async function sendVoiceTranscript() {
-  voice.phase = 'ready'; voice.autoSend = false; renderVoice();
-  if (!voice.attachedFile || !state.files.includes(voice.attachedFile)) {
-    if (state.files.length >= 8 || state.files.reduce((total, file) => total + (file.size || 0), 0) + voice.blob.size > 24 * 1024 * 1024) {
-      renderVoice('Remova um anexo antes de enviar a gravação. O texto e o áudio foram mantidos.');
-      return;
+async function sendVoiceRecording() {
+  if (!voice.blob || voice.phase !== 'ready' || state.sending) return false;
+  const generation = voice.generation;
+  $('#voicePlayer').pause();
+  try {
+    if (!voice.attachedFile || !state.files.includes(voice.attachedFile)) {
+      if (state.files.length >= 8) throw new Error('Remova um anexo antes de enviar a gravação.');
+      if (state.files.reduce((total, file) => total + (file.size || 0), 0) + voice.blob.size > 24 * 1024 * 1024) throw new Error('O total dos anexos ultrapassa 24 MB. Remova um anexo antes de enviar a gravação.');
+      const blob = voice.blob;
+      voice.phase = 'preparing'; renderVoice();
+      const dataUrl = await blobDataUrl(blob);
+      if (generation !== voice.generation) return false;
+      const extension = blob.type.includes('mp4') ? 'm4a' : blob.type.includes('mpeg') ? 'mp3' : blob.type.includes('wav') ? 'wav' : blob.type.includes('ogg') ? 'ogg' : 'webm';
+      voice.attachedFile = { name: `gravacao-${Date.now()}.${extension}`, mime: blob.type || 'audio/webm', isImage: false, size: blob.size, dataUrl, data: String(dataUrl).split(',')[1] };
+      state.files.push(voice.attachedFile);
     }
-    const generation = voice.generation;
-    const blob = voice.blob;
-    voice.phase = 'preparing'; renderVoice();
-    let dataUrl;
-    try { dataUrl = await blobDataUrl(blob); }
-    catch { if (generation === voice.generation) { voice.phase = 'ready'; renderVoice('Não consegui preparar o áudio para enviar. Tente novamente.'); } return; }
-    if (generation !== voice.generation) return;
-    const extension = blob.type.includes('mp4') ? 'm4a' : blob.type.includes('wav') ? 'wav' : blob.type.includes('ogg') ? 'ogg' : 'webm';
-    voice.attachedFile = { name: `gravacao-${Date.now()}.${extension}`, mime: blob.type, isImage: false, size: blob.size, dataUrl, data: String(dataUrl).split(',')[1] };
-    state.files.push(voice.attachedFile);
-    renderAttachments();
+    voice.phase = 'ready'; renderVoice();
+    const sent = await submitMessage(undefined, { allowVoice: true });
+    if (sent) clearRecordedAudio();
+    else renderVoice('Não consegui enviar. A gravação continua aqui para ouvir ou tentar novamente.');
+    return sent;
+  } catch (error) {
+    if (generation === voice.generation) { voice.phase = 'ready'; renderVoice(error.message || 'Não consegui preparar a gravação para envio.'); }
+    return false;
   }
-  voice.phase = 'ready'; renderVoice();
-  const sent = await submitMessage(undefined, { allowVoice: true });
-  if (sent) clearRecordedAudio();
-  else renderVoice('Não consegui enviar. O texto e a gravação foram mantidos para tentar novamente.');
 }
 
-async function transcribeRecordedAudio({ send = false } = {}) {
+async function transcribeRecordedAudio() {
   if (!voice.blob || voice.phase !== 'ready' || state.sending) return;
-  if (voice.transcriptInserted) { if (send) await sendVoiceTranscript(); else clearRecordedAudio(); return; }
+  if (voice.transcriptInserted) return;
+  if (voice.attachedFile && state.files.includes(voice.attachedFile)) {
+    state.files = state.files.filter((file) => file !== voice.attachedFile);
+    voice.attachedFile = null;
+    renderAttachments();
+  }
   const targetThreadId = state.selectedThreadId;
-  voice.autoSend = send;
   $('#voicePlayer').pause();
   const generation = voice.generation;
   voice.phase = 'transcribing'; voice.request = new AbortController();
@@ -851,12 +859,11 @@ async function transcribeRecordedAudio({ send = false } = {}) {
         const textarea = $('#messageInput');
         const draft = textarea.value.trimEnd();
         textarea.value = `${draft}${draft ? '\n\n' : ''}${result.text.trim()}`;
-        voice.jobId = null; voice.transcriptInserted = true;
-        if (!send) clearRecordedAudio();
+        voice.jobId = null; voice.request = null; voice.transcriptInserted = true; voice.phase = 'ready';
+        renderVoice();
         textarea.dispatchEvent(new Event('input', { bubbles: true }));
         if (!touchComposer()) textarea.focus();
-        if (send) await sendVoiceTranscript();
-        else toast('Transcrição pronta. Revise o texto e toque em Enviar.');
+        toast('Transcrição pronta. Revise o texto e toque em Enviar texto.');
         return;
       }
       await new Promise((resolve, reject) => {
@@ -886,7 +893,14 @@ async function startVoiceRecording() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
     if (voice.cancelled || generation !== voice.generation) { stream.getTracks().forEach((track) => track.stop()); return; }
     voice.stream = stream;
-    const mimeType = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm', 'audio/ogg;codecs=opus'].find((type) => MediaRecorder.isTypeSupported(type));
+    const playableRecorderTypes = [
+      { type: 'audio/mp4', playback: 'audio/mp4' },
+      { type: 'audio/webm;codecs=opus', playback: 'audio/webm' },
+      { type: 'audio/webm', playback: 'audio/webm' },
+      { type: 'audio/ogg;codecs=opus', playback: 'audio/ogg' },
+    ];
+    const mimeType = playableRecorderTypes.find(({ type, playback }) => MediaRecorder.isTypeSupported(type) && $('#voicePlayer').canPlayType(playback))?.type
+      || playableRecorderTypes.find(({ type }) => MediaRecorder.isTypeSupported(type))?.type;
     const recorder = new MediaRecorder(stream, { ...(mimeType ? { mimeType } : {}), audioBitsPerSecond: 64000 });
     voice.recorder = recorder; voice.chunks = [];
     recorder.ondataavailable = (event) => { if (event.data.size && generation === voice.generation) voice.chunks.push(event.data); };
@@ -902,7 +916,7 @@ async function startVoiceRecording() {
     voice.timer = setInterval(() => {
       voice.seconds = Math.floor((Date.now() - voice.startedAt) / 1000);
       $('#voiceTimer').textContent = `${voiceTime(voice.seconds)} / 3:00`;
-      if (voice.seconds >= 180 && recorder.state === 'recording') recorder.stop();
+      if (voice.seconds >= 180 && recorder.state === 'recording') stopVoiceRecording();
     }, 500);
     renderVoice();
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
@@ -933,7 +947,11 @@ async function startVoiceRecording() {
 }
 
 function stopVoiceRecording() {
-  if (voice.recorder?.state === 'recording') voice.recorder.stop();
+  if (voice.recorder?.state === 'recording') {
+    voice.phase = 'preparing';
+    renderVoice();
+    voice.recorder.stop();
+  }
 }
 
 function setupComposerViewport() {
@@ -946,7 +964,7 @@ function setupComposerViewport() {
   window.visualViewport?.addEventListener('scroll', sync);
   window.addEventListener('resize', sync);
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden && voice.phase === 'recording') voice.recorder?.stop();
+    if (document.hidden && voice.phase === 'recording') stopVoiceRecording();
   });
   sync();
 }
@@ -1816,15 +1834,20 @@ function updateComposerControls() {
   if (modelSelect) modelSelect.disabled = !state.models.length;
   if (effortSelect) effortSelect.disabled = !getSelectedModel()?.supportedReasoningEfforts?.length;
   if (send) {
-    send.title = limitBlocked ? 'Guardar mensagem na fila até o limite liberar' : state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem';
+    const transcriptReady = voice.phase === 'ready' && voice.transcriptInserted && Boolean($('#messageInput')?.value.trim());
+    const sendingAudio = voice.phase === 'ready' && !transcriptReady;
+    const voiceLabel = transcriptReady ? 'Enviar texto' : 'Enviar áudio';
+    send.title = voice.phase === 'ready'
+      ? limitBlocked ? `Guardar ${transcriptReady ? 'texto' : 'áudio'} na fila até o limite liberar` : voiceLabel
+      : state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem';
     send.setAttribute('aria-label', limitBlocked ? 'Guardar mensagem na fila até o limite liberar' : state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem');
     send.disabled = state.sending || !['idle', 'ready'].includes(voice.phase) || (!hasDraft && !voice.blob);
-    $('#sendLabel').textContent = state.sending ? 'Enviando…' : (state.busy || limitBlocked) ? 'Fila' : 'Enviar';
-    if (voice.phase === 'ready' && !state.sending) { $('#sendLabel').textContent = (state.busy || limitBlocked) ? 'Áudio à fila' : 'Enviar áudio'; send.title = limitBlocked ? 'Guardar a gravação na fila até o limite liberar' : 'Transcrever na VPS e enviar a mensagem'; send.setAttribute('aria-label', send.title); }
+    $('#sendLabel').textContent = state.sending ? 'Enviando…' : (state.busy || limitBlocked) ? (voice.phase === 'ready' ? `${transcriptReady ? 'Texto' : 'Áudio'} à fila` : 'Fila') : voice.phase === 'ready' ? voiceLabel : 'Enviar';
+    if (voice.phase === 'ready' && !state.sending) send.setAttribute('aria-label', send.title);
     send.classList.toggle('queue-mode', state.busy || limitBlocked);
+    send.classList.toggle('audio-mode', sendingAudio);
   }
   if ($('#attachImage')) $('#attachImage').disabled = state.sending;
-  if ($('#sendAudio')) { $('#sendAudio').disabled = state.sending || voice.phase !== 'ready'; $('#sendAudio').textContent = state.busy || limitBlocked ? 'Áudio à fila' : 'Enviar áudio'; }
   if ($('#transcribeAudio')) $('#transcribeAudio').disabled = state.sending || voice.phase !== 'ready';
   if ($('#discardAudio')) $('#discardAudio').disabled = state.sending;
   if ($('#steerButton')) {
@@ -1839,9 +1862,10 @@ function updateComposerControls() {
   if ($('#composerHint')) $('#composerHint').textContent = voice.phase === 'recording'
     ? 'Gravando · até 3 minutos'
     : limitBlocked ? `Limite de uso atingido${limitBlock.resetAt ? ` · libera ${formatCountdown(limitBlock.resetAt)}` : ''} · envios entram na fila`
+    : voice.phase === 'ready' ? voice.transcriptInserted ? 'Revise sua transcrição e toque em Enviar texto' : 'Prévia pronta · ouça e toque em Enviar áudio'
     : state.busy ? 'Em execução · sua próxima mensagem entra na fila'
     : touchComposer() ? 'Escreva ou grave sua mensagem' : 'Enter envia · Shift+Enter cria uma linha';
-  if ($('#composerFootnote')) $('#composerFootnote').textContent = limitBlocked ? 'As mensagens e anexos ficam salvos na fila deste navegador e serão tentados quando o limite liberar.' : voice.phase === 'ready' ? 'O áudio fica aqui até você transcrever ou descartar.' : voice.phase === 'transcribing' ? 'O áudio é processado na VPS. Ao terminar, revise o texto antes de enviar.' : state.busy ? 'Use Orientar agora para enviar uma instrução à execução atual.' : 'Grave, transcreva e revise antes de enviar.';
+  if ($('#composerFootnote')) $('#composerFootnote').textContent = limitBlocked ? 'As mensagens e anexos ficam salvos na fila deste navegador e serão tentados quando o limite liberar.' : voice.phase === 'ready' ? voice.transcriptInserted ? 'Revise o texto acima e toque em Enviar texto.' : 'Ouça a prévia. Enviar áudio manda a gravação; Transcrever coloca o texto para revisão.' : voice.phase === 'transcribing' ? 'O áudio é processado na VPS. O player continua disponível e o texto aparece aqui ao terminar.' : state.busy ? 'Use Orientar agora para enviar uma instrução à execução atual.' : 'Grave, ouça e envie sua mensagem de voz.';
 
 }
 
@@ -3306,7 +3330,15 @@ function maybeDrainDeferredQueue() {
 async function submitMessage(event, { allowVoice = false } = {}) {
   event?.preventDefault();
   if (state.sending) return;
-  if (voice.phase === 'ready' && !allowVoice) return transcribeRecordedAudio({ send: true });
+  if (voice.phase === 'ready' && !allowVoice) {
+    if (voice.transcriptInserted && $('#messageInput').value.trim()) {
+      const sent = await submitMessage(event, { allowVoice: true });
+      if (sent) clearRecordedAudio();
+      return sent;
+    }
+    voice.transcriptInserted = false;
+    return sendVoiceRecording();
+  }
   if (voice.phase !== 'idle' && !allowVoice) { toast('Conclua a gravação antes de enviar.', 'error'); return false; }
   const textarea = $('#messageInput');
   const text = textarea.value.trim();
@@ -3425,18 +3457,9 @@ function bindEvents() {
   });
   $('#composerForm').addEventListener('submit', submitMessage);
   $('#voiceInput').addEventListener('click', startVoiceRecording);
-  $('#stopRecording').addEventListener('click', stopVoiceRecording);
   $('#discardAudio').addEventListener('click', clearRecordedAudio);
   $('#transcribeAudio').addEventListener('click', () => transcribeRecordedAudio());
-  $('#sendAudio').addEventListener('click', () => transcribeRecordedAudio({ send: true }));
-  $('#playAudio').addEventListener('click', async () => {
-    const player = $('#voicePlayer');
-    try { if (player.paused) { player.muted = false; player.volume = 1; await player.play(); } else player.pause(); }
-    catch { renderVoice('Não consegui reproduzir neste navegador. Use Salvar áudio para ouvir no aparelho.'); }
-  });
-  $('#voicePlayer').addEventListener('play', () => { $('#playAudio').textContent = 'Pausar'; });
-  $('#voicePlayer').addEventListener('pause', () => { $('#playAudio').textContent = 'Ouvir'; });
-  $('#voicePlayer').addEventListener('error', () => { if (voice.blob) renderVoice('Não foi possível abrir a prévia. Use Salvar áudio para ouvir no aparelho.'); });
+  $('#voicePlayer').addEventListener('error', () => { if (voice.blob) renderVoice('A prévia não é compatível com este navegador. Você ainda pode enviar o arquivo ou tentar transcrevê-lo.'); });
   $('#audioInput').addEventListener('change', (event) => {
     const file = event.target.files?.[0]; event.target.value = '';
     if (!file || voice.phase !== 'idle') return;
@@ -3447,11 +3470,6 @@ function bindEvents() {
     prepareVoicePreview(new Blob([file], { type: types[extension] || file.type }));
   });
   $('#voicePlayer').addEventListener('loadedmetadata', () => { const duration = $('#voicePlayer').duration; if (Number.isFinite(duration)) { voice.seconds = Math.round(duration); $('#voiceTimer').textContent = voiceTime(voice.seconds); } });
-  $('#downloadAudio').addEventListener('click', () => {
-    const link = document.createElement('a'); link.href = voice.url;
-    const extension = voice.blob.type.includes('mp4') ? 'm4a' : voice.blob.type.includes('mpeg') ? 'mp3' : voice.blob.type.split('/')[1]?.split(';')[0] || 'webm';
-    link.download = `mensagem-de-voz.${extension}`; link.click();
-  });
   $('#messageInput').addEventListener('input', (event) => { event.target.style.height = 'auto'; event.target.style.height = `${Math.min(event.target.scrollHeight, 180)}px`; updateComposerControls(); });
   $('#messageInput').addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && (!touchComposer() || event.ctrlKey || event.metaKey)) { event.preventDefault(); submitMessage(event); }
