@@ -21,6 +21,7 @@ const state = {
   models: [], threads: [], projects: [], selectedProjectId: localStorage.getItem('codex-project') || '', selectedThreadId: null, selectedThread: null,
   expandedProjectId: localStorage.getItem('codex-expanded-project') || '', projectColors: loadProjectColors(), agentThreads: new Map(),
   cwd: localStorage.getItem('codex-cwd') || '', defaultCwd: '', projectsRoot: '', activeThreadProjectId: '', archivedView: false, loadingThreadId: null,
+  historyThreadId: '', historyTurns: [], historyNextCursor: null, historyLoadedOlder: false, historyLoadingOlder: false,
   modelId: localStorage.getItem('codex-model') || '', effort: localStorage.getItem('codex-effort') || '',
   files: [], busy: false, sending: false, interrupting: false, account: null, rateLimits: null, usage: null, contextUsage: null,
   queueItems: [], recoveredQueueItems: [], turnStartedAtMs: null, turnTimer: null,
@@ -1604,6 +1605,8 @@ function makeMessage(role, { text = '', images = [], files = [], time = null, id
     preview.setAttribute('aria-label', `Ampliar ${image.name || 'imagem anexada'}`);
     const img = document.createElement('img');
     img.alt = image.name || 'Imagem anexada';
+    img.loading = 'lazy';
+    img.decoding = 'async';
     if (image.url) img.src = image.url;
     else if (image.dataUrl) img.src = image.dataUrl;
     else img.alt = 'Imagem anexada';
@@ -2016,6 +2019,16 @@ function renderTurnHistory(turns, threadId) {
   state.progressSegments.clear();
   state.userMessageIds.clear();
   $('#messages').replaceChildren();
+  if (state.historyThreadId === threadId && state.historyNextCursor) {
+    const loadOlder = document.createElement('button');
+    loadOlder.type = 'button';
+    loadOlder.id = 'loadOlderHistory';
+    loadOlder.className = 'history-load-older';
+    loadOlder.textContent = state.historyLoadingOlder ? 'Carregando mensagens anteriores…' : 'Carregar mensagens anteriores';
+    loadOlder.disabled = state.historyLoadingOlder;
+    loadOlder.addEventListener('click', loadOlderHistory);
+    $('#messages').append(loadOlder);
+  }
   let count = 0;
   for (const turn of turns || []) {
     const items = turn.items || [];
@@ -2273,10 +2286,7 @@ function connectEvents() {
       const isSelected = event.data.threadId === state.selectedThreadId;
       const superseded = isSelected && state.activeTurnId && turnId && state.activeTurnId !== turnId;
       if (!superseded && event.data.turn?.status !== 'interrupted') playCompletionSound(turnId);
-      if (turnId) {
-        state.completedTurnIds.add(turnId);
-        if (state.completedTurnIds.size > 200) state.completedTurnIds.delete(state.completedTurnIds.values().next().value);
-      }
+      rememberCompletedTurn(turnId);
       if (event.data.threadId && !superseded) {
         state.activeThreadIds.delete(event.data.threadId);
         renderThreads(state.threads, $('#threadSearch').value.trim());
@@ -2348,6 +2358,25 @@ async function bootstrap() {
 
 function turnStatus(turn) { return typeof turn?.status === 'string' ? turn.status : turn?.status?.type; }
 
+function rememberCompletedTurn(turnId) {
+  if (!turnId) return;
+  state.completedTurnIds.add(turnId);
+  if (state.completedTurnIds.size > 200) state.completedTurnIds.delete(state.completedTurnIds.values().next().value);
+}
+
+function mergeLatestHistoryTurns(existing, incoming) {
+  const updates = new Map((incoming || []).filter((turn) => turn.id).map((turn) => [turn.id, turn]));
+  const merged = (existing || []).map((turn) => updates.get(turn.id) || turn);
+  const known = new Set(merged.map((turn) => turn.id).filter(Boolean));
+  for (const turn of incoming || []) {
+    if (!turn.id || !known.has(turn.id)) {
+      merged.push(turn);
+      if (turn.id) known.add(turn.id);
+    }
+  }
+  return merged;
+}
+
 function executionFromHistory(data) {
   const latest = (data.turns || []).at(-1);
   const status = turnStatus(latest);
@@ -2367,6 +2396,18 @@ async function loadThreadHistory(threadId, { background = false } = {}) {
   const revision = state.executionRevision;
   const data = await api(`/api/threads/${encodeURIComponent(threadId)}/history`);
   if (state.selectedThreadId !== threadId || (background && revision !== state.executionRevision)) return null;
+  const incomingTurns = data.turns || [];
+  if (state.historyThreadId === threadId) {
+    state.historyTurns = mergeLatestHistoryTurns(state.historyTurns, incomingTurns);
+    if (!state.historyLoadedOlder) state.historyNextCursor = data.nextCursor || null;
+  } else {
+    state.historyThreadId = threadId;
+    state.historyTurns = incomingTurns;
+    state.historyNextCursor = data.nextCursor || null;
+    state.historyLoadedOlder = false;
+    state.historyLoadingOlder = false;
+    state.agentThreads.clear();
+  }
   state.selectedThreadId = threadId;
   const row = state.threads.find((item) => item.id === threadId);
   const thread = data.thread || { id: threadId };
@@ -2376,8 +2417,8 @@ async function loadThreadHistory(threadId, { background = false } = {}) {
   const execution = executionFromHistory(data);
   const active = execution.active;
   state.activeTurnId = execution.turn?.id || null;
-  for (const turn of data.turns || []) if (['completed', 'failed', 'interrupted'].includes(turnStatus(turn)) && turn.id) state.completedTurnIds.add(turn.id);
-  renderTurnHistory(data.turns || [], threadId);
+  for (const turn of incomingTurns) if (['completed', 'failed', 'interrupted'].includes(turnStatus(turn))) rememberCompletedTurn(turn.id);
+  renderTurnHistory(state.historyTurns, threadId);
   if (active) state.activeThreadIds.add(threadId);
   else state.activeThreadIds.delete(threadId);
   renderThreads(state.threads, $('#threadSearch').value.trim());
@@ -2388,6 +2429,43 @@ async function loadThreadHistory(threadId, { background = false } = {}) {
   state.pendingApprovals.forEach((request) => { if (request.params?.threadId === threadId) addApproval(request); });
   if (window.innerWidth <= 680) closeSidebar();
   return data;
+}
+
+async function loadOlderHistory() {
+  const threadId = state.selectedThreadId;
+  const cursor = state.historyNextCursor;
+  if (!threadId || !cursor || state.historyLoadingOlder) return;
+  const messages = $('#messages');
+  const previousHeight = messages.scrollHeight;
+  const previousTop = messages.scrollTop;
+  state.historyLoadingOlder = true;
+  const button = $('#loadOlderHistory');
+  if (button) { button.disabled = true; button.textContent = 'Carregando mensagens anteriores…'; }
+  const params = new URLSearchParams({ cursor });
+  try {
+    const data = await api(`/api/threads/${encodeURIComponent(threadId)}/history?${params}`);
+    if (state.selectedThreadId !== threadId || state.historyNextCursor !== cursor) return;
+    const olderTurns = data.turns || [];
+    const known = new Set(state.historyTurns.map((turn) => turn.id).filter(Boolean));
+    const newOlderTurns = olderTurns.filter((turn) => !turn.id || !known.has(turn.id));
+    state.historyTurns = [...newOlderTurns, ...state.historyTurns];
+    state.historyNextCursor = data.nextCursor && data.nextCursor !== cursor ? data.nextCursor : null;
+    state.historyLoadedOlder = true;
+    state.historyLoadingOlder = false;
+    state.followLatest = false;
+    for (const turn of olderTurns) if (['completed', 'failed', 'interrupted'].includes(turnStatus(turn))) rememberCompletedTurn(turn.id);
+    renderTurnHistory(state.historyTurns, threadId);
+    messages.scrollTop = previousTop + Math.max(0, messages.scrollHeight - previousHeight);
+  } catch (error) {
+    if (state.selectedThreadId === threadId) toast(error.message || 'Não consegui carregar as mensagens anteriores.', 'error');
+  } finally {
+    state.historyLoadingOlder = false;
+    const currentButton = $('#loadOlderHistory');
+    if (currentButton) {
+      currentButton.disabled = false;
+      currentButton.textContent = 'Carregar mensagens anteriores';
+    }
+  }
 }
 
 function showThreadLoading() {
@@ -2419,6 +2497,15 @@ function showThreadLoadError(threadId, error) {
 
 async function openThread(threadId) {
   if (!threadId || state.loadingThreadId === threadId) return;
+  if (state.historyThreadId && state.historyThreadId !== threadId) {
+    state.historyThreadId = '';
+    state.historyTurns = [];
+    state.historyNextCursor = null;
+    state.historyLoadedOlder = false;
+    state.historyLoadingOlder = false;
+    state.agentThreads.clear();
+    state.streamedMessages.clear(); state.activityCards.clear(); state.commandGroups.clear(); state.reasoningGroups.clear(); state.turnIntermediates.clear(); state.progressSegments.clear(); state.userMessageIds.clear();
+  }
   state.selectedThreadId = threadId;
   state.loadingThreadId = threadId;
   const summary = state.threads.find((item) => item.id === threadId);
@@ -2465,6 +2552,7 @@ function newChat() {
   state.selectedThread = null;
   state.activeThreadProjectId = '';
   state.loadingThreadId = null;
+  state.historyThreadId = ''; state.historyTurns = []; state.historyNextCursor = null; state.historyLoadedOlder = false; state.historyLoadingOlder = false; state.agentThreads.clear();
   state.streamedMessages.clear(); state.activityCards.clear(); state.commandGroups.clear(); state.reasoningGroups.clear(); state.turnIntermediates.clear(); state.userMessageIds.clear();
   state.activeTurnId = null; state.progressSegments.clear();
   state.queueItems = []; renderQueue();

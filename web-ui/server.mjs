@@ -884,7 +884,10 @@ async function handleApi(req, res, pathName, url) {
         if (!/already has an active writer/i.test(error.message)) throw error;
       }
     }
-    const result = await rpc('thread/turns/list', { threadId, limit: 100, sortDirection: 'desc', itemsView: 'full' });
+    const params = { threadId, limit: 20, sortDirection: 'desc', itemsView: 'full' };
+    const cursor = url.searchParams.get('cursor');
+    if (cursor) params.cursor = cursor;
+    const result = await rpc('thread/turns/list', params);
     const thread = await rpc('thread/read', { threadId });
     return json(res, 200, { thread: thread.thread, turns: [...(result.data || [])].reverse(), nextCursor: result.nextCursor || null });
   }
