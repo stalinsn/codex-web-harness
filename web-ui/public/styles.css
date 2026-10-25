@@ -292,6 +292,11 @@ kbd { margin-left: auto; padding: 2px 5px; color: #898a94; font-size: 10px; bord
 .composer-icon.listening { color: #ff9c9c; background: #43282d; box-shadow: 0 0 0 2px #ff777733; animation: voice-pulse 1.2s ease-in-out infinite; }
 .composer-icon.listening:hover { color: #ffd5d5; background: #563139; }
 @keyframes voice-pulse { 50% { box-shadow: 0 0 0 5px #ff777311; } }
+.voice-review { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 8px; padding: 9px; border: 1px solid #424553; border-radius: 9px; background: #202127; }
+.voice-review audio { width: min(260px, 100%); height: 36px; }
+.voice-review-action, .voice-review-discard { min-height: 36px; padding: 0 12px; color: #e2e5ff; font-size: 11px; border: 1px solid #4c5273; border-radius: 7px; background: #303348; cursor: pointer; }
+.voice-review-discard { color: #c6c6ce; border-color: #414249; background: #292a30; }
+.voice-review-action:disabled { opacity: .55; cursor: wait; }
 .cwd-control { display: flex; align-items: center; min-width: 0; max-width: 195px; gap: 6px; padding: 6px 8px; color: #aeb0b9; font-family: 'IBM Plex Mono', monospace; font-size: 9px; border: 1px solid #3a3b42; border-radius: 7px; background: #1c1d21; cursor: pointer; }
 .cwd-control:hover { color: #eff0f4; border-color: #595b64; }
 .cwd-control span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -551,19 +556,19 @@ body.resizing-inspector { cursor: col-resize; user-select: none; }
   .composer-topline { min-height: 23px; margin-right: 1px; font-size: 8px; }
   .steer-button { min-height: 25px; padding: 0 7px; font-size: 9px; }
   .composer textarea { min-height: 35px; max-height: 130px; padding-bottom: 6px; font-size: 13px; }
-  .composer-bottom { align-items: flex-end; gap: 3px; }
+  .composer-bottom { align-items: stretch; flex-direction: column; gap: 6px; }
   .composer-tools { gap: 2px; }
-  .composer-controls { gap: 1px; }
+  .composer-controls { width: 100%; justify-content: flex-end; gap: 6px; }
   .cwd-control { max-width: 112px; padding: 6px; font-size: 8px; }
   .cwd-control .icon:first-child { display: none; }
-  .select-wrap { gap: 3px; padding-right: 14px; padding-left: 5px; }
-  .select-wrap select { max-width: 84px; font-size: 9px; }
-  .model-wrap select { max-width: 87px; }
-  .effort-wrap select { max-width: 63px; }
-  .effort-glyph { display: none; }
-  .select-wrap > .icon { right: 3px; width: 10px; height: 10px; }
-  .composer-icon { width: 28px; height: 29px; }
-  .send-button { width: 29px; height: 29px; }
+  .select-wrap { min-height: 38px; flex: 1 1 0; gap: 4px; padding-right: 19px; padding-left: 9px; border-color: #41434c; background: #1d1e22; }
+  .select-wrap select { max-width: none; min-height: 36px; font-size: 11px; }
+  .model-wrap select { max-width: none; }
+  .effort-wrap select { max-width: none; }
+  .effort-glyph { display: inline; }
+  .select-wrap > .icon { right: 5px; width: 12px; height: 12px; }
+  .composer-icon { width: 36px; height: 36px; }
+  .send-button { width: 36px; height: 36px; }
   .composer-footnote { margin: 5px 3px 0; font-size: 8px; }
   .queue-panel { max-height: 150px; margin-bottom: 6px; }
   .queue-list { max-height: 112px; }
@@ -574,10 +579,7 @@ body.resizing-inspector { cursor: col-resize; user-select: none; }
 }
 @media (max-width: 370px) {
   .cwd-control { max-width: 95px; }
-  .select-wrap select { max-width: 72px; }
-  .model-wrap select { max-width: 74px; }
-  .effort-wrap select { max-width: 56px; }
-  .composer-icon { width: 26px; }
+  .composer-icon { width: 34px; }
 }
 
 [hidden] { display: none !important; }

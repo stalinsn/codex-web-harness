@@ -14,9 +14,11 @@ const state = {
 };
 const authUi = { mode: 'login', step: 'credentials', challengeId: '', setupRequired: false, countdown: null, started: false };
 let vpsHealthRequest = null;
-let voiceRecognition = null;
-let voiceBaseText = '';
-let voiceSubmitAfterStop = false;
+let voiceRecorder = null;
+let voiceStream = null;
+let voiceChunks = [];
+let voiceObjectUrl = '';
+let recordedAudioBlob = null;
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -401,74 +403,120 @@ function toast(message, kind = '') {
   setTimeout(() => node.remove(), 4200);
 }
 
-function setVoiceListening(listening) {
+function setVoiceRecording(recording) {
   const button = $('#voiceInput');
-  button.classList.toggle('listening', listening);
-  button.setAttribute('aria-pressed', String(listening));
-  button.title = listening ? 'Parar ditado por voz' : 'Ditar mensagem por voz';
+  button.classList.toggle('listening', recording);
+  button.title = recording ? 'Parar gravação' : 'Gravar áudio';
   button.setAttribute('aria-label', button.title);
-  $('#composerHint').textContent = listening
-    ? 'Ouvindo… toque no microfone para concluir'
-    : (state.busy ? 'Enter adiciona à fila · Shift+Enter cria uma linha' : 'Enter envia · Shift+Enter cria uma linha');
+  $('#composerHint').textContent = recording ? 'Gravando áudio… toque no botão para parar' : (state.busy ? 'Enter adiciona à fila · Shift+Enter cria uma linha' : 'Enter envia · Shift+Enter cria uma linha');
 }
 
-function startVoiceDictation() {
-  if (voiceRecognition) {
-    voiceRecognition.stop();
-    return;
-  }
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) {
-    $('#messageInput').focus();
-    toast('Ditado pelo navegador indisponível. No celular, use o microfone do teclado para ditar no campo.');
-    return;
-  }
+function clearRecordedAudio() {
+  if (voiceObjectUrl) URL.revokeObjectURL(voiceObjectUrl);
+  voiceObjectUrl = '';
+  recordedAudioBlob = null;
+  $('#voiceReview')?.remove();
+}
 
-  const recognition = new SpeechRecognition();
-  voiceRecognition = recognition;
-  const textarea = $('#messageInput');
-  voiceBaseText = textarea.value.trimEnd();
-  let separator = voiceBaseText ? ' ' : '';
-  if (textarea.value && !voiceBaseText) separator = '';
-  recognition.lang = 'pt-BR';
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.maxAlternatives = 1;
-  recognition.onstart = () => setVoiceListening(true);
-  recognition.onresult = (event) => {
-    const finalText = [];
-    const interimText = [];
-    for (let index = 0; index < event.results.length; index += 1) {
-      const result = event.results[index];
-      const transcript = result[0]?.transcript || '';
-      (result.isFinal ? finalText : interimText).push(transcript);
-    }
-    const recognized = `${finalText.join('')}${interimText.join('')}`;
-    textarea.value = `${voiceBaseText}${separator}${recognized}`;
-    textarea.dispatchEvent(new Event('input', { bubbles: true }));
-  };
-  recognition.onerror = (event) => {
-    const messages = {
-      'not-allowed': 'Permita o acesso ao microfone no navegador para usar o ditado.',
-      'service-not-allowed': 'O serviço de reconhecimento de voz não está disponível neste navegador.',
-      'audio-capture': 'Não encontrei um microfone disponível.',
-      network: 'O serviço de voz do navegador não está acessível.',
-      'language-not-supported': 'O navegador não oferece transcrição em português.',
-    };
-    if (event.error !== 'no-speech' && event.error !== 'aborted') toast(messages[event.error] || 'Não foi possível transcrever a fala.', 'error');
-  };
-  recognition.onend = () => {
-    if (voiceRecognition === recognition) voiceRecognition = null;
-    setVoiceListening(false);
-    if (voiceSubmitAfterStop) { voiceSubmitAfterStop = false; submitMessage(); }
-  };
+function showRecordedAudio(blob) {
+  clearRecordedAudio();
+  recordedAudioBlob = blob;
+  voiceObjectUrl = URL.createObjectURL(blob);
+  const review = document.createElement('div');
+  review.className = 'voice-review';
+  review.id = 'voiceReview';
+  const player = document.createElement('audio');
+  player.controls = true;
+  player.src = voiceObjectUrl;
+  player.setAttribute('aria-label', 'Ouvir áudio gravado');
+  const transcribe = document.createElement('button');
+  transcribe.type = 'button'; transcribe.className = 'voice-review-action'; transcribe.textContent = 'Transcrever'; transcribe.addEventListener('click', transcribeRecordedAudio);
+  const discard = document.createElement('button');
+  discard.type = 'button'; discard.className = 'voice-review-discard'; discard.textContent = 'Descartar'; discard.addEventListener('click', clearRecordedAudio);
+  review.append(player, transcribe, discard);
+  $('#attachmentStrip').after(review);
+}
+
+async function transcribeRecordedAudio() {
+  if (!recordedAudioBlob) return;
+  const button = $('#voiceReview .voice-review-action');
+  button.disabled = true; button.textContent = 'Transcrevendo…';
+  let stream = null;
+  let recorder = null;
+  let recognition = null;
   try {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) throw new Error('Este navegador não oferece transcrição de áudio. Você ainda pode ouvir o áudio e usar o microfone do teclado para ditar.');
+    // Replay the saved recording into a fresh microphone stream only after explicit consent.
+    // This avoids continuous/interim results which some mobile engines duplicate.
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error('A transcrição deste áudio não é compatível com este navegador. Você ainda pode ouvir a gravação e usar o microfone do teclado.');
+    const context = new AudioContextClass();
+    const decoded = await context.decodeAudioData(await recordedAudioBlob.arrayBuffer());
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const audio = context.createBufferSource();
+    const destination = context.createMediaStreamDestination();
+    audio.buffer = decoded; audio.connect(destination);
+    for (const track of destination.stream.getAudioTracks()) stream.addTrack(track);
+    recorder = new MediaRecorder(stream, MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? { mimeType: 'audio/webm;codecs=opus' } : undefined);
+    const chunks = [];
+    recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+    const recorded = new Promise((resolve, reject) => {
+      recorder.onerror = () => reject(new Error('Falha ao preparar o áudio para transcrição.'));
+      recorder.onstop = () => resolve(new Blob(chunks, { type: chunks[0]?.type || 'audio/webm' }));
+    });
+    const audioDone = new Promise((resolve) => { audio.onended = resolve; });
+    recorder.start(250);
+    const transcriptResult = new Promise((resolve, reject) => {
+      recognition = new SpeechRecognition();
+      recognition.lang = 'pt-BR'; recognition.continuous = false; recognition.interimResults = false; recognition.maxAlternatives = 1;
+      recognition.onresult = (event) => resolve(event.results?.[0]?.[0]?.transcript?.trim() || '');
+      recognition.onerror = (event) => reject(new Error(event.error === 'not-allowed' ? 'Permita o acesso ao microfone para transcrever.' : 'Não foi possível transcrever este áudio neste navegador.'));
+      recognition.onend = () => reject(new Error('Não foi possível reconhecer fala no áudio.'));
+    });
     recognition.start();
-    toast('A fala será transcrita pelo navegador. Revise o texto antes de enviar.');
-  } catch {
-    voiceRecognition = null;
-    setVoiceListening(false);
-    toast('Não foi possível iniciar o ditado. Tente novamente.', 'error');
+    audio.start();
+    const [recordedBlob, transcript] = await Promise.all([recorded, transcriptResult]);
+    void recordedBlob; // Consume the browser's capture to keep its stream active during recognition.
+    await audioDone;
+    if (!transcript) throw new Error('Não foi possível reconhecer fala no áudio.');
+    recognition.onend = null;
+    const textarea = $('#messageInput');
+    textarea.value = `${textarea.value.trimEnd()}${textarea.value.trim() ? ' ' : ''}${transcript}`;
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    clearRecordedAudio();
+    textarea.focus();
+    toast('Transcrição adicionada ao campo. Revise antes de enviar.');
+  } catch (error) {
+    button.disabled = false; button.textContent = 'Tentar transcrever';
+    toast(error.message || 'Não foi possível transcrever o áudio.', 'error');
+  } finally {
+    try { if (recorder?.state !== 'inactive') recorder?.stop(); } catch {}
+    try { recognition?.stop(); } catch {}
+    stream?.getTracks().forEach((track) => track.stop());
+  }
+}
+
+async function startVoiceRecording() {
+  if (voiceRecorder?.state === 'recording') { voiceRecorder.stop(); return; }
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) { toast('Gravação de áudio não é compatível com este navegador. Atualize o navegador ou use o microfone do teclado.', 'error'); return; }
+  clearRecordedAudio();
+  try {
+    voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mimeType = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'].find((type) => MediaRecorder.isTypeSupported(type));
+    voiceRecorder = new MediaRecorder(voiceStream, mimeType ? { mimeType } : undefined);
+    voiceChunks = [];
+    voiceRecorder.ondataavailable = (event) => { if (event.data.size) voiceChunks.push(event.data); };
+    voiceRecorder.onstop = () => {
+      voiceStream?.getTracks().forEach((track) => track.stop()); voiceStream = null; voiceRecorder = null;
+      setVoiceRecording(false);
+      if (voiceChunks.length) { showRecordedAudio(new Blob(voiceChunks, { type: voiceChunks[0].type || 'audio/webm' })); toast('Áudio gravado. Ouça e escolha Transcrever quando estiver pronto.'); }
+    };
+    voiceRecorder.start(250);
+    setVoiceRecording(true);
+  } catch (error) {
+    voiceStream?.getTracks().forEach((track) => track.stop()); voiceStream = null;
+    toast(error.name === 'NotAllowedError' ? 'Permita o acesso ao microfone para gravar áudio.' : 'Não foi possível iniciar a gravação.', 'error');
   }
 }
 
@@ -1051,8 +1099,8 @@ function updateComposerControls() {
   const send = $('#sendButton');
   const modelSelect = $('#modelSelect');
   const effortSelect = $('#effortSelect');
-  if (modelSelect) modelSelect.disabled = state.busy || state.sending;
-  if (effortSelect) effortSelect.disabled = state.busy || state.sending;
+  if (modelSelect) modelSelect.disabled = !state.models.length;
+  if (effortSelect) effortSelect.disabled = !getSelectedModel()?.supportedReasoningEfforts?.length;
   if (send) {
     send.title = state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem';
     send.setAttribute('aria-label', state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem');
@@ -2052,7 +2100,7 @@ function bindEvents() {
     catch (error) { button.disabled = false; toast(error.message, 'error'); }
   });
   $('#composerForm').addEventListener('submit', submitMessage);
-  $('#voiceInput').addEventListener('click', startVoiceDictation);
+  $('#voiceInput').addEventListener('click', startVoiceRecording);
   $('#messageInput').addEventListener('input', (event) => { event.target.style.height = 'auto'; event.target.style.height = `${Math.min(event.target.scrollHeight, 180)}px`; updateComposerControls(); });
   $('#messageInput').addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); submitMessage(event); }
