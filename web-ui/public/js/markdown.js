@@ -71,7 +71,7 @@ export function markdown(text) {
       index -= 1;
       continue;
     }
-    // eslint-disable-next-line no-control-regex -- NUL marks a stashed code block.
+    // NUL characters mark stashed code blocks.
     const code = line.match(/^\u0000(\d+)\u0000$/);
     const heading = line.match(/^(#{1,3})\s+(.*)$/);
     const bullet = line.match(/^\s*[-*+]\s+(.*)$/);

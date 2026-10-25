@@ -31,7 +31,7 @@ Clone o repositório em uma pasta administrada pelo usuário que executará o Co
 ```bash
 git clone https://github.com/stalinsn/codex-web-harness.git
 cd codex-web-harness/web-ui
-npm ci
+npm ci --omit=dev
 ```
 
 Instale e autentique o Codex CLI para esse mesmo usuário. A CLI e o harness precisam compartilhar `HOME` e `CODEX_HOME`; não copie credenciais Codex de outra pessoa ou de outro ambiente.
@@ -82,8 +82,23 @@ O Codex CLI pode executar comandos e acessar arquivos conforme a identidade Unix
 ```bash
 cd web-ui
 npm ci
-npm start
+npm run dev      # recarrega os arquivos de public/ a cada carregamento da página
+npm run check    # ESLint + testes (node:test)
 ```
+
+Estrutura:
+
+| Caminho | Conteúdo |
+| --- | --- |
+| `web-ui/server.mjs` | Ponto de entrada: monta os serviços e inicia o HTTP. |
+| `web-ui/src/codex/` | `CodexAppServer`: processo `codex app-server`, JSON-RPC, caches da conta. |
+| `web-ui/src/routes/` | Rotas da API (auth, sistema, projetos, conversas, turnos). |
+| `web-ui/src/http/` | Roteador, respostas JSON, cabeçalhos de segurança e arquivos estáticos com hash. |
+| `web-ui/src/` | Projetos, anexos, saúde da VPS, autenticação e transcrição de voz. |
+| `web-ui/public/js/` | Cliente em módulos ES nativos, sem etapa de build. |
+| `web-ui/test/` | Testes unitários. |
+
+Os arquivos de `public/` são servidos da memória com URLs versionadas por hash de conteúdo, cache imutável e compressão brotli/gzip; um novo deploy (reinício do serviço) gera novos hashes e atualiza o service worker automaticamente.
 
 O processo precisa de uma configuração privada válida em `CODEX_HOME/web-auth.json` e de uma sessão Codex CLI autenticada para carregar o app-server. Não execute `npm run setup-auth` em uma instalação existente, pois o assistente se recusa a substituir a configuração.
 
