@@ -229,7 +229,7 @@
             <label class="rotation-check"><input id="autoContinue" type="checkbox" /> <span>Continuar automaticamente na próxima conta da fila quando o chat atingir o limite</span></label>
             <p class="muted-note">O uso em % só é informado pelo Codex e pelo Claude Code; nas demais contas a troca acontece quando a CLI avisa que o limite acabou.</p>
           </details>
-          <button class="secondary-button wide-button" id="addAccount" type="button"><span class="icon" data-icon="plus"></span> Adicionar conta</button>
+          <button class="secondary-button wide-button" id="addAccount" type="button"><span class="icon" data-icon="plus"></span> Conectar nova conta</button>
         </section>
         <section class="inspector-card tasks-card" aria-label="Execuções contínuas">
           <div class="card-title-row"><div><span class="card-icon" data-icon="bolt"></span><strong>Execuções contínuas</strong></div><button class="refresh-mini" id="newTask" aria-label="Nova execução contínua" title="Nova execução contínua"><span class="icon" data-icon="plus"></span></button></div>
@@ -260,37 +260,77 @@
       </aside>
     </div>
 
-    <dialog class="path-dialog account-dialog" id="accountDialog" aria-labelledby="accountDialogTitle">
-      <form id="accountForm" novalidate>
-        <div class="dialog-heading"><div><p class="eyebrow">CONTAS</p><h2 id="accountDialogTitle">Adicionar conta</h2></div></div>
-        <p>Cada conta ganha uma pasta própria na VPS para guardar o login dela. Depois de adicionar, rode o comando de login mostrado aqui no terminal da VPS.</p>
-        <label class="project-field">Provedor
-          <select id="accountProvider" name="provider"></select>
-        </label>
-        <label class="project-field">Identificador
-          <input id="accountId" name="id" type="text" maxlength="40" autocomplete="off" required placeholder="claude-1" pattern="[a-z0-9][a-z0-9-]*" />
-        </label>
+    <dialog class="path-dialog wizard-dialog" id="accountWizard" aria-labelledby="wizardTitle">
+      <div class="dialog-heading wizard-heading">
+        <div><p class="eyebrow">CONTAS</p><h2 id="wizardTitle">Conectar uma conta</h2></div>
+        <button class="icon-button" id="closeWizard" type="button" aria-label="Fechar"><span class="icon" data-icon="close"></span></button>
+      </div>
+      <ol class="wizard-steps" id="wizardSteps" aria-label="Etapas">
+        <li data-step="provider">Provedor</li><li data-step="details">Identificação</li><li data-step="connect">Conexão</li><li data-step="done">Pronto</li>
+      </ol>
+
+      <section class="wizard-step" data-step="provider">
+        <p>Escolha o tipo de conta. A conta principal do Codex (a do chat) continua como está; as novas ganham uma pasta de login própria na VPS.</p>
+        <div class="provider-grid" id="providerGrid"></div>
+      </section>
+
+      <form class="wizard-step" data-step="details" id="wizardDetails" novalidate>
         <label class="project-field">Nome exibido
-          <input id="accountLabel" name="label" type="text" maxlength="60" autocomplete="off" placeholder="Claude · conta pessoal" />
+          <input id="wizardLabel" type="text" maxlength="60" autocomplete="off" placeholder="Claude · conta pessoal" />
+        </label>
+        <label class="project-field">Identificador <small>(letras minúsculas, números e hífens)</small>
+          <input id="wizardId" type="text" maxlength="40" autocomplete="off" required />
         </label>
         <div class="account-dialog-row">
           <label class="project-field">Modelo <small>(opcional)</small>
-            <input id="accountModel" name="model" type="text" maxlength="100" autocomplete="off" placeholder="padrão da CLI" />
+            <input id="wizardModel" type="text" maxlength="100" autocomplete="off" placeholder="padrão da CLI" />
           </label>
           <label class="project-field">Esforço <small>(opcional)</small>
-            <input id="accountEffort" name="effort" type="text" maxlength="30" autocomplete="off" placeholder="high" />
+            <input id="wizardEffort" type="text" maxlength="30" autocomplete="off" placeholder="high" />
           </label>
         </div>
-        <div class="account-login-box" id="accountLoginBox" hidden>
-          <strong>Agora faça o login desta conta na VPS:</strong>
-          <code id="accountLoginCommand"></code>
-          <button class="secondary-button" id="copyLoginCommand" type="button">Copiar comando</button>
-        </div>
         <div class="dialog-actions">
-          <button class="secondary-button" id="cancelAccount" type="button">Fechar</button>
-          <button class="primary-button" id="submitAccount" type="submit">Adicionar</button>
+          <button class="secondary-button" type="button" data-wizard-back>Voltar</button>
+          <button class="primary-button" type="submit" id="wizardCreate">Continuar</button>
         </div>
       </form>
+
+      <section class="wizard-step" data-step="connect">
+        <div class="wizard-cli" id="wizardCli"></div>
+        <p class="wizard-notes" id="wizardNotes"></p>
+        <div class="wizard-flows" id="wizardFlows" role="radiogroup" aria-label="Forma de conexão"></div>
+        <ol class="wizard-flow-steps" id="wizardFlowSteps"></ol>
+        <div class="wizard-start-row"><button class="primary-button" id="wizardStart" type="button">Iniciar conexão</button></div>
+        <div class="wizard-session" id="wizardSession" hidden>
+          <p class="wizard-session-status" id="wizardSessionStatus" role="status" aria-live="polite"></p>
+          <div class="wizard-hints" id="wizardHints"></div>
+          <div class="wizard-terminal" id="wizardTerminal"></div>
+          <form class="wizard-input" id="wizardInputForm">
+            <input id="wizardInput" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Digite ou cole aqui (código, /login…)" />
+            <button class="primary-button" type="submit">Enviar</button>
+          </form>
+          <div class="wizard-keys" id="wizardKeys">
+            <button type="button" data-key="enter">Enter</button><button type="button" data-key="up">↑</button><button type="button" data-key="down">↓</button><button type="button" data-key="tab">Tab</button><button type="button" data-key="esc">Esc</button><button type="button" data-key="ctrlc">Ctrl+C</button><button type="button" class="danger" id="wizardStop">Encerrar</button>
+          </div>
+        </div>
+        <details class="wizard-secret" id="wizardSecret" hidden>
+          <summary id="wizardSecretLabel"></summary>
+          <form class="wizard-input" id="wizardSecretForm">
+            <input id="wizardSecretValue" type="password" autocomplete="off" />
+            <button class="secondary-button" type="submit">Salvar</button>
+          </form>
+        </details>
+      </section>
+
+      <section class="wizard-step wizard-done" data-step="done">
+        <div class="wizard-done-mark" aria-hidden="true">✓</div>
+        <h3 id="wizardDoneTitle">Conta conectada</h3>
+        <p id="wizardDoneText"></p>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="button" id="wizardAnother">Conectar outra</button>
+          <button class="primary-button" type="button" id="wizardFinish">Concluir</button>
+        </div>
+      </section>
     </dialog>
 
     <dialog class="path-dialog task-dialog" id="taskDialog" aria-labelledby="taskDialogTitle">

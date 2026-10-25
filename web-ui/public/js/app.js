@@ -17,6 +17,7 @@ import { prepareCompletionSound } from './sound.js';
 import { state, voice } from './state.js';
 import { bindTaskEvents, refreshTasks } from './tasks.js';
 import { closeThreadMenus, refreshThreadList, renderThreads } from './thread-list.js';
+import { bindWizardEvents } from './wizard.js';
 import { clearRecordedAudio, prepareVoicePreview, renderVoice, startVoiceRecording, touchComposer, transcribeRecordedAudio, voiceTime } from './voice.js';
 
 export async function bootstrap() {
@@ -59,6 +60,7 @@ export async function bootstrap() {
 export function bindEvents() {
   bindAccountEvents();
   bindTaskEvents();
+  bindWizardEvents();
   setupInspectorResize();
   setupComposerViewport();
   $('#closeImagePreview').addEventListener('click', () => $('#imagePreviewDialog').close());

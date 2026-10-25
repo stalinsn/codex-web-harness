@@ -4,6 +4,7 @@ import { $, debounce, escapeHtml, installIcons, toast } from './dom.js';
 import { formatCountdown } from './format.js';
 import { renderRateLimitNotice } from './rate-limit.js';
 import { state } from './state.js';
+import { openWizard } from './wizard.js';
 
 let accountsRequest = null;
 let renderPending = false;
@@ -32,7 +33,7 @@ function statusOf(account) {
   if (!account.enabled) return { tone: 'off', text: 'Desativada' };
   if (account.busyWith) return { tone: 'busy', text: 'Executando uma tarefa' };
   if (account.cooldownUntil) return { tone: 'wait', text: `Limite atingido · libera ${formatCountdown(account.cooldownUntil / 1000)}` };
-  if (account.loggedIn === false) return { tone: 'error', text: account.statusDetail || 'Sem login' };
+  if (account.loggedIn === false) return { tone: 'error', text: 'Não conectada', title: account.statusDetail };
   if (!account.available) return { tone: 'wait', text: account.unavailableReason || 'Indisponível' };
   if (account.loggedIn == null) return { tone: 'unknown', text: 'Login ainda não verificado' };
   return { tone: 'ok', text: 'Disponível' };
@@ -64,17 +65,19 @@ export function renderAccounts() {
             <button type="button" class="account-move" data-action="up" aria-label="Subir na fila" title="Subir na fila" ${index === 0 ? 'disabled' : ''}>↑</button>
             <button type="button" class="account-move" data-action="down" aria-label="Descer na fila" title="Descer na fila" ${index === total - 1 ? 'disabled' : ''}>↓</button>
             <details class="account-menu"><summary aria-label="Ações da conta" title="Ações da conta">⋯</summary><div class="account-menu-items">
+              ${account.primary ? '' : `<button type="button" data-action="connect">${account.loggedIn ? 'Reconectar' : 'Conectar'}</button>`}
               <button type="button" data-action="check">Verificar login</button>
-              ${account.loginCommand ? '<button type="button" data-action="copy-login">Copiar comando de login</button>' : ''}
+              ${account.loginCommand ? '<button type="button" data-action="copy-login">Copiar comando de login (terminal)</button>' : ''}
               ${account.cooldownUntil || account.percent != null ? '<button type="button" data-action="reset">Liberar agora</button>' : ''}
               <button type="button" data-action="toggle">${account.enabled ? 'Desativar' : 'Ativar'}</button>
+              ${account.primary || !account.loggedIn ? '' : '<button type="button" data-action="logout">Sair da conta</button>'}
               ${account.primary ? '' : '<button type="button" data-action="remove" class="danger">Remover</button>'}
             </div></details>
           </div>
         </div>
         <small>${details}</small>
         ${usageMeter(account)}
-        <small class="account-status"><span class="account-dot"></span>${escapeHtml(status.text)}${account.percent != null ? ` · ${Math.round(account.percent)}% usado` : ''}</small>
+        <small class="account-status"><span class="account-dot"></span>${status.tone === 'error' && !account.primary ? `<button type="button" class="account-connect-link" data-action="connect" title="${escapeHtml(status.title || '')}">${escapeHtml(status.text)} · Conectar</button>` : escapeHtml(status.text)}${account.percent != null ? ` · ${Math.round(account.percent)}% usado` : ''}</small>
       </div>
     </li>`;
   }).join('') || '<li class="muted-note">Nenhuma conta cadastrada.</li>';
@@ -109,6 +112,12 @@ async function accountAction(account, action) {
     return toast(checked?.loggedIn ? `${account.label}: login ativo.` : `${account.label}: ${checked?.statusDetail || 'sem login'}.`, checked?.loggedIn ? '' : 'error');
   }
   if (action === 'copy-login') return copyText(account.loginCommand);
+  if (action === 'connect') return openWizard({ accountId: account.id });
+  if (action === 'logout') {
+    if (!window.confirm(`Sair de “${account.label}”? O login salvo desta conta na VPS será apagado; a conta continua na fila, desconectada.`)) return;
+    applyAccounts(await api(`/api/accounts/${id}/logout`, { method: 'POST', body: '{}' }));
+    return toast('Conta desconectada.');
+  }
   if (action === 'reset') return applyAccounts(await api(`/api/accounts/${id}/reset-cooldown`, { method: 'POST', body: '{}' }));
   if (action === 'toggle') return applyAccounts(await api(`/api/accounts/${id}`, { method: 'POST', body: JSON.stringify({ enabled: !account.enabled }) }));
   if (action === 'remove') {
@@ -117,38 +126,6 @@ async function accountAction(account, action) {
     applyAccounts(await api(`/api/accounts/${id}${forget ? '?forget=true' : ''}`, { method: 'DELETE' }));
     return toast('Conta removida.');
   }
-}
-
-function openAccountDialog() {
-  const select = $('#accountProvider');
-  select.innerHTML = state.providers.map((provider) => `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.label)}</option>`).join('');
-  select.value = state.providers.some((provider) => provider.id === 'claude-code') ? 'claude-code' : state.providers[0]?.id || '';
-  for (const field of ['#accountId', '#accountLabel', '#accountModel', '#accountEffort']) $(field).value = '';
-  $('#accountLoginBox').hidden = true;
-  $('#submitAccount').hidden = false;
-  $('#accountDialog').showModal();
-  $('#accountId').focus();
-}
-
-async function submitAccount(event) {
-  event.preventDefault();
-  const button = $('#submitAccount');
-  button.disabled = true;
-  try {
-    const data = await api('/api/accounts', { method: 'POST', body: JSON.stringify({
-      provider: $('#accountProvider').value,
-      id: $('#accountId').value.trim().toLowerCase(),
-      label: $('#accountLabel').value.trim(),
-      model: $('#accountModel').value.trim(),
-      effort: $('#accountEffort').value.trim(),
-    }) });
-    applyAccounts(data);
-    $('#accountLoginCommand').textContent = data.account?.loginCommand || 'Esta CLI não tem um comando de login conhecido; autentique-a com a pasta da conta como HOME.';
-    $('#accountLoginBox').hidden = false;
-    button.hidden = true;
-    toast('Conta adicionada ao fim da fila.');
-  } catch (error) { toast(error.message, 'error'); }
-  finally { button.disabled = false; }
 }
 
 const saveRotation = debounce(async (changes) => {
@@ -180,10 +157,7 @@ export function bindAccountEvents() {
   $('#switchAtPercent').addEventListener('change', () => saveRotation({ switchAtPercent: Number($('#switchAtPercent').value) }));
   $('#proactiveHandoff').addEventListener('change', () => saveRotation({ proactiveHandoff: $('#proactiveHandoff').checked }));
   $('#autoContinue').addEventListener('change', () => saveRotation({ autoContinue: $('#autoContinue').checked }));
-  $('#addAccount').addEventListener('click', openAccountDialog);
-  $('#cancelAccount').addEventListener('click', () => $('#accountDialog').close());
-  $('#accountForm').addEventListener('submit', submitAccount);
-  $('#copyLoginCommand').addEventListener('click', () => copyText($('#accountLoginCommand').textContent));
+  $('#addAccount').addEventListener('click', () => openWizard());
   installIcons($('.accounts-card'));
   setInterval(() => { if (!document.hidden && state.accounts.some((account) => account.cooldownUntil)) renderAccounts(); }, 60_000);
 }

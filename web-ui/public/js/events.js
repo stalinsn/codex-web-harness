@@ -17,6 +17,7 @@ import { playCompletionSound } from './sound.js';
 import { state } from './state.js';
 import { onTaskEvent, onTaskUpdated, refreshTasks } from './tasks.js';
 import { refreshThreadList, renderThreads } from './thread-list.js';
+import { onLoginOutput, onLoginState } from './wizard.js';
 
 function handleCodexNotification(message) {
   const params = message.params || {};
@@ -167,6 +168,8 @@ export function connectEvents() {
     else if (event.type === 'request-resolved') state.pendingApprovals.delete(event.data.requestId);
     else if (event.type === 'account-data') applyAccountData(event.data);
     else if (event.type === 'accounts-changed') refreshAccountsSoon();
+    else if (event.type === 'login-output') onLoginOutput(event.data);
+    else if (event.type === 'login-state') onLoginState(event.data);
     else if (event.type === 'task-updated') onTaskUpdated(event.data);
     else if (event.type === 'task-event') onTaskEvent(event.data);
     else if (event.type === 'handoff-steered') toast(`Conta perto do limite (${Math.round(event.data.percent)}%): pedi ao Codex para salvar o registro de retomada.`);

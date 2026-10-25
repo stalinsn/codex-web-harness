@@ -5,6 +5,7 @@ import readline from 'node:readline';
 import { config } from '../config.mjs';
 import { getParser, looksRateLimited, resetFromText } from './parsers.mjs';
 import { PROVIDERS, expandArgs } from './providers.mjs';
+import { readSecretsSync } from './secrets.mjs';
 
 const KILL_GRACE_MS = 5000;
 
@@ -16,7 +17,7 @@ export function accountEnv(account) {
     PATH: `${join(config.homeDir, '.local', 'bin')}:${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}`,
   };
   if (preset?.isolation?.env) env[preset.isolation.env] = account.dir;
-  return { ...env, ...account.env };
+  return { ...env, ...account.env, ...readSecretsSync(account.dir) };
 }
 
 export function commandFor(account) {
@@ -133,6 +134,7 @@ export function runCliSegment({ account, prompt, cwd, sessionId = '', onEvent = 
 export async function checkCliLogin(account) {
   const preset = PROVIDERS[account.provider];
   const { access } = await import('node:fs/promises');
+  if (preset.status?.secret && readSecretsSync(account.dir)[preset.status.secret]) return { loggedIn: true, detail: 'Token ou chave salvo nesta conta.' };
   if (preset.status?.files?.length) {
     for (const file of preset.status.files) {
       try { await access(join(account.dir, file)); return { loggedIn: true, detail: 'Credenciais encontradas.' }; } catch { /* try next */ }

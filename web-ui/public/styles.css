@@ -1145,14 +1145,65 @@ body.resizing-inspector { cursor: col-resize; user-select: none; }
 .rate-limit-continue:hover { background: #f6d1a6; }
 .rate-limit-continue:disabled { opacity: .6; cursor: wait; }
 
-.account-dialog select, .task-dialog textarea, .task-detail-dialog textarea { width: 100%; margin-top: 6px; padding: 9px 10px; color: var(--text); font: inherit; font-size: 12px; border: 1px solid #44454d; border-radius: 8px; background: #1b1c20; }
+.account-connect-link { padding: 0; color: #f3b0b0; font: inherit; text-align: left; text-decoration: underline; text-underline-offset: 2px; border: 0; background: none; cursor: pointer; }
+
+/* Account connection wizard */
+.wizard-dialog { width: min(760px, calc(100% - 28px)); max-height: calc(100dvh - 32px); overflow: auto; }
+.wizard-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.wizard-steps { display: flex; gap: 6px; margin: 14px 0 4px; padding: 0; list-style: none; counter-reset: wizard; }
+.wizard-steps li { flex: 1; padding: 6px 8px; color: #7d7f89; font-size: 10px; border-top: 2px solid #34353c; counter-increment: wizard; }
+.wizard-steps li::before { content: counter(wizard) '. '; }
+.wizard-steps li.current { color: #e3e5ff; border-top-color: #b8c1ff; }
+.wizard-steps li.complete { color: #9fd8b8; border-top-color: #4f9a72; }
+.wizard-step[hidden] { display: none !important; }
+.provider-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 14px; }
+.provider-card { display: grid; gap: 6px; padding: 14px; color: inherit; font: inherit; text-align: left; border: 1px solid #3a3b43; border-radius: 11px; background: #1b1c20; cursor: pointer; }
+.provider-card:hover, .provider-card:focus-visible { border-color: #8e9cff; outline: 0; background: #20222b; }
+.provider-card strong { color: #eceef6; font-size: 13px; }
+.provider-card span { color: #a9aab3; font-size: 11px; line-height: 1.5; }
+.provider-card small { color: #8b93d6; font-size: 10px; }
+.wizard-cli { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; font-size: 11px; }
+.wizard-cli code { overflow-wrap: anywhere; color: #c9cbd6; font-size: 10px; }
+.wizard-cli small { width: 100%; color: #8f909a; }
+.wizard-pill { padding: 3px 8px; font-size: 10px; font-weight: 600; border-radius: 999px; }
+.wizard-pill.ok { color: #b9f0d1; background: #1f3d2d; }
+.wizard-pill.warn { color: #ffe2b5; background: #4a3720; }
+.wizard-notes:empty { display: none; }
+.wizard-flows { display: grid; gap: 6px; margin: 10px 0; }
+.wizard-flow { display: flex; align-items: center; gap: 8px; padding: 8px 10px; font-size: 12px; border: 1px solid #36373e; border-radius: 8px; background: #1b1c20; cursor: pointer; }
+.wizard-flow input { accent-color: #b7c0ff; }
+.wizard-flow-steps { margin: 10px 0 0; padding-left: 20px; color: #c9cad2; font-size: 12px; line-height: 1.7; }
+.wizard-start-row { display: flex; justify-content: flex-end; margin-top: 12px; }
+.wizard-session { display: grid; gap: 10px; margin-top: 14px; }
+.wizard-session[hidden] { display: none; }
+.wizard-session-status { margin: 0 !important; padding: 9px 11px; color: #d7dcff !important; font-size: 12px !important; border-radius: 8px; background: #1d2030; }
+.wizard-session-status.success { color: #b9f0d1 !important; background: #1a3426; }
+.wizard-session-status.failed, .wizard-session-status.stopped { color: #ffc9c9 !important; background: #3a1d1f; }
+.wizard-hints { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.wizard-hints[hidden] { display: none; }
+.wizard-link { display: inline-flex; align-items: center; text-decoration: none; }
+.wizard-code { padding: 6px 12px; color: #fff; font: 600 15px ui-monospace, monospace; letter-spacing: .12em; border: 1px dashed #8e9cff; border-radius: 8px; background: #23263a; cursor: copy; }
+.wizard-terminal { max-height: 420px; overflow: auto; padding: 8px; border: 1px solid #2e2f36; border-radius: 9px; background: #121317; }
+.wizard-terminal .xterm { padding: 0; }
+.wizard-input { display: flex; gap: 8px; }
+.wizard-input[hidden] { display: none; }
+.wizard-input input { flex: 1; min-width: 0; height: 36px; padding: 0 10px; color: var(--text); font: 12px ui-monospace, monospace; border: 1px solid #44454d; border-radius: 8px; background: #17181b; }
+.wizard-keys { display: flex; flex-wrap: wrap; gap: 6px; }
+.wizard-keys[hidden] { display: none; }
+.wizard-keys button { min-width: 44px; height: 32px; padding: 0 10px; color: #d6d7de; font-size: 11px; border: 1px solid #3c3d45; border-radius: 7px; background: #24252b; cursor: pointer; }
+.wizard-keys button.danger { margin-left: auto; color: #f0a0a0; }
+.wizard-secret { margin-top: 14px; font-size: 11px; }
+.wizard-secret summary { color: #b9bccb; cursor: pointer; }
+.wizard-secret form { margin-top: 8px; }
+.wizard-done { padding: 18px 0 4px; text-align: center; }
+.wizard-done-mark { display: grid; width: 54px; height: 54px; margin: 0 auto 10px; place-items: center; color: #b9f0d1; font-size: 26px; border-radius: 50%; background: #1f3d2d; }
+.wizard-done h3 { margin: 0; font-size: 16px; }
+.wizard-done .dialog-actions { justify-content: center; }
+
+.task-dialog textarea, .task-detail-dialog textarea { width: 100%; margin-top: 6px; padding: 9px 10px; color: var(--text); font: inherit; font-size: 12px; border: 1px solid #44454d; border-radius: 8px; background: #1b1c20; }
 .task-dialog textarea, .task-detail-dialog textarea { resize: vertical; line-height: 1.5; }
 .account-dialog-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .project-field small { color: #7f818b; font-weight: 400; }
-.account-login-box { display: grid; gap: 8px; margin-top: 14px; padding: 12px; border: 1px solid #4a5390; border-radius: 10px; background: #1d2030; }
-.account-login-box strong { color: #d7dcff; font-size: 11px; }
-.account-login-box code { overflow-wrap: anywhere; padding: 8px; color: #e9ebff; font-size: 11px; line-height: 1.5; border-radius: 6px; background: #13141b; }
-.account-login-box button { justify-self: start; }
 
 .task-dialog { width: min(560px, calc(100% - 28px)); }
 .task-detail-dialog { width: min(720px, calc(100% - 28px)); max-height: calc(100dvh - 32px); overflow: auto; }
@@ -1181,5 +1232,7 @@ body.resizing-inspector { cursor: col-resize; user-select: none; }
 
 @media (max-width: 680px) {
   .account-dialog-row { grid-template-columns: 1fr; }
-  .task-detail-dialog { width: calc(100% - 16px); padding: 16px; }
+  .task-detail-dialog, .wizard-dialog { width: calc(100% - 16px); padding: 16px; }
+  .wizard-steps li { padding: 6px 2px; font-size: 9px; }
+  .wizard-terminal { max-height: 300px; }
 }

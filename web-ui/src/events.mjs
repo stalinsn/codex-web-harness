@@ -7,10 +7,13 @@ export class EventHub {
   #history = [];
   #sequence = 1;
 
-  emit(type, data = {}) {
+  /** `replay: false` skips the reconnect buffer (high-volume streams such as terminal output). */
+  emit(type, data = {}, { replay = true } = {}) {
     const event = { id: this.#sequence++, type, data, at: new Date().toISOString() };
-    this.#history.push(event);
-    if (this.#history.length > HISTORY_SIZE) this.#history.shift();
+    if (replay) {
+      this.#history.push(event);
+      if (this.#history.length > HISTORY_SIZE) this.#history.shift();
+    }
     const frame = toFrame(event);
     for (const res of this.#clients) res.write(frame);
   }

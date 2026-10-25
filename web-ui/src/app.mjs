@@ -12,9 +12,9 @@ import { registerTaskRoutes } from './routes/tasks.mjs';
 import { registerThreadRoutes } from './routes/threads.mjs';
 import { registerTurnRoutes } from './routes/turns.mjs';
 
-export function createRequestHandler({ auth, codex, events, assets, accounts, orchestrator }) {
+export function createRequestHandler({ auth, codex, events, assets, accounts, orchestrator, logins }) {
   const router = new Router();
-  const deps = { codex, events, accounts, orchestrator };
+  const deps = { codex, events, accounts, orchestrator, logins };
   registerSystemRoutes(router, deps);
   registerProjectRoutes(router, deps);
   registerThreadRoutes(router, deps);

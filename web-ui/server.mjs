@@ -2,6 +2,7 @@
 import { createServer } from 'node:http';
 import { ChatHandoff } from './src/accounts/chat-handoff.mjs';
 import { AccountRegistry } from './src/accounts/registry.mjs';
+import { LoginSessions } from './src/accounts/login-sessions.mjs';
 import { AccountService } from './src/accounts/service.mjs';
 import { createRequestHandler } from './src/app.mjs';
 import { AuthManager } from './src/auth/auth-manager.mjs';
@@ -14,7 +15,7 @@ import { TaskOrchestrator } from './src/tasks/orchestrator.mjs';
 const ACCOUNT_POLL_MS = 5 * 60 * 1000;
 
 const events = new EventHub();
-const emit = (type, data) => events.emit(type, data);
+const emit = (type, data, options) => events.emit(type, data, options);
 const codex = new CodexAppServer({ bin: config.codexBin, homeDir: config.homeDir, codexHome: config.codexHome, emit });
 const auth = new AuthManager(config.authFile);
 const registry = await new AccountRegistry().load();
@@ -22,8 +23,9 @@ const accounts = new AccountService({ registry, primaryCodex: codex, emit });
 const orchestrator = new TaskOrchestrator({ accounts, primaryCodex: codex, emit });
 const chatHandoff = new ChatHandoff({ primaryCodex: codex, accounts, orchestrator, emit });
 accounts.onOrchestratedThread = (threadId) => chatHandoff.markOrchestrated(threadId);
+const logins = new LoginSessions({ accounts, emit });
 const assets = new StaticAssets({ publicDir: config.publicDir, prefix: config.prefix, dev: config.dev });
-const server = createServer(createRequestHandler({ auth, codex, events, assets, accounts, orchestrator }));
+const server = createServer(createRequestHandler({ auth, codex, events, assets, accounts, orchestrator, logins }));
 
 await Promise.all([auth.initialize(), assets.load()]);
 
@@ -38,6 +40,7 @@ setInterval(() => { if (codex.ready) codex.refreshAccountData(true).catch(() => 
 
 function stop() {
   orchestrator.stopAll();
+  logins.stopAll();
   accounts.stop();
   codex.stop();
   server.close(() => process.exit(0));

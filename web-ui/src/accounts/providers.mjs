@@ -17,6 +17,14 @@ export const PROVIDERS = {
     login: 'codex login --device-auth',
     logout: 'codex logout',
     usage: 'reported',
+    setup: {
+      install: 'npm install -g @openai/codex',
+      notes: 'A conta principal do chat nunca é alterada aqui: cada conta extra tem o próprio CODEX_HOME, com a mesma configuração (config.toml e AGENTS.md) da principal.',
+      flows: [{
+        id: 'device', label: 'Código de dispositivo (recomendado)', command: ['codex', 'login', '--device-auth'], cols: 120,
+        steps: ['Toque em Iniciar: o Codex mostra um link e um código.', 'Abra o link, entre na conta ChatGPT desta conta e digite o código.', 'Aguarde: o harness detecta o login sozinho.'],
+      }],
+    },
   },
   'claude-code': {
     label: 'Claude Code (Anthropic)',
@@ -27,10 +35,26 @@ export const PROVIDERS = {
     resumeArgs: ['--resume', '{sessionId}'],
     permissionMode: 'acceptEdits',
     parser: 'claude',
-    status: { files: ['.credentials.json'] },
+    status: { files: ['.credentials.json'], secret: 'CLAUDE_CODE_OAUTH_TOKEN' },
     login: 'claude   # depois digite /login e siga o link',
     logout: 'claude   # depois digite /logout',
     usage: 'events',
+    setup: {
+      install: 'npm install -g @anthropic-ai/claude-code',
+      notes: 'O token de longa duração (claude setup-token) é o caminho mais estável num servidor: fica salvo só na pasta desta conta.',
+      flows: [
+        {
+          id: 'token', label: 'Token de longa duração (recomendado)', command: ['claude', 'setup-token'], cols: 320,
+          capture: { pattern: 'sk-ant-oat[0-9]*-[A-Za-z0-9_-]{20,}', env: 'CLAUDE_CODE_OAUTH_TOKEN' },
+          steps: ['Toque em Iniciar e abra o link que aparecer.', 'Entre na conta Claude (Pro/Max) e autorize.', 'Se a página mostrar um código, copie e cole no campo abaixo do terminal.', 'O harness guarda o token gerado nesta conta automaticamente.'],
+        },
+        {
+          id: 'interactive', label: 'Login interativo (/login)', command: ['claude'], cols: 320,
+          steps: ['Toque em Iniciar. Se aparecerem perguntas de tema ou de confiança na pasta, responda com as setas e Enter.', 'Digite /login e envie; escolha a conta Claude.', 'Abra o link, autorize e cole o código de volta.', 'Quando o login concluir, o harness detecta e encerra a tela.'],
+        },
+      ],
+      secret: { env: 'CLAUDE_CODE_OAUTH_TOKEN', label: 'Já tenho um token (gerado com claude setup-token em outro computador)', placeholder: 'sk-ant-oat01-…' },
+    },
   },
   antigravity: {
     label: 'Antigravity CLI (Google)',
@@ -40,10 +64,19 @@ export const PROVIDERS = {
     args: ['-p', '{prompt}', '--output-format', 'stream-json', ['--model', '{model}'], ['--effort', '{effort}']],
     resumeArgs: ['--conversation', '{sessionId}'],
     parser: 'generic',
-    status: { command: ['models'] },
+    status: { command: ['models'], secret: 'GEMINI_API_KEY' },
     login: 'agy   # abre um link de autorização para concluir em outro dispositivo',
     logout: 'agy   # depois digite /logout',
     usage: 'errors',
+    setup: {
+      install: 'curl -fsSL https://antigravity.google/cli/install.sh | bash',
+      notes: 'Em servidores sem chaveiro do sistema o agy pode não conseguir guardar o login. Se o terminal mostrar erro de keyring, use a chave de API ou instale gnome-keyring na VPS.',
+      flows: [{
+        id: 'google', label: 'Conta Google', command: ['agy'], cols: 320,
+        steps: ['Toque em Iniciar: o agy mostra um link de autorização.', 'Abra o link, entre na conta Google desta conta e autorize.', 'Copie o código exibido e cole no campo abaixo do terminal.', 'O harness confere o login e encerra a tela.'],
+      }],
+      secret: { env: 'GEMINI_API_KEY', label: 'Usar chave de API do Gemini (cobrada por uso, não usa a assinatura)', placeholder: 'AIza…', settings: { file: '.gemini/antigravity-cli/settings.json', merge: { modelProvider: 'gemini' } } },
+    },
   },
   'gemini-cli': {
     label: 'Gemini CLI (Google)',
@@ -53,10 +86,19 @@ export const PROVIDERS = {
     args: ['-p', '{prompt}', '--output-format', 'stream-json', ['-m', '{model}'], ['--approval-mode', '{permissionMode}']],
     permissionMode: 'auto_edit',
     parser: 'generic',
-    status: { files: ['.gemini/oauth_creds.json'] },
+    status: { files: ['.gemini/oauth_creds.json'], secret: 'GEMINI_API_KEY' },
     login: 'gemini   # escolha "Login with Google" e siga o link',
     logout: 'gemini   # depois digite /auth',
     usage: 'errors',
+    setup: {
+      install: 'npm install -g @google/gemini-cli',
+      notes: 'Desde junho de 2026 o Google indica o Antigravity CLI para contas sem plano pago; prefira o preset Antigravity nesses casos.',
+      flows: [{
+        id: 'google', label: 'Login com Google', command: ['gemini'], env: { NO_BROWSER: 'true' }, cols: 320,
+        steps: ['Toque em Iniciar. No menu de autenticação escolha "Login with Google" (Enter).', 'Abra o link, entre na conta Google e autorize.', 'Cole o código de autorização no campo abaixo do terminal.', 'O harness detecta as credenciais e encerra a tela.'],
+      }],
+      secret: { env: 'GEMINI_API_KEY', label: 'Usar chave de API do Gemini', placeholder: 'AIza…' },
+    },
   },
   custom: {
     label: 'CLI personalizada',
@@ -69,6 +111,7 @@ export const PROVIDERS = {
     login: '',
     logout: '',
     usage: 'errors',
+    setup: { install: '', notes: 'Defina bin, args e o comando de login desta CLI em web-accounts.json.', flows: [] },
   },
 };
 

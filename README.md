@@ -116,15 +116,9 @@ Imagens anexadas no rascunho, nas mensagens e na fila podem ser abertas em uma p
 
 Além da conta principal do Codex (a do chat), o harness pode usar outras contas de agentes de linha de comando e passar o trabalho de uma para outra quando o limite de uso acaba. Presets incluídos: **Codex** (contas extras), **Claude Code**, **Antigravity CLI** (`agy`), **Gemini CLI** e **CLI personalizada**.
 
-**Adicionar uma conta:** no painel *Uso e ambiente → Contas e fila → Adicionar conta*. Cada conta recebe uma pasta isolada em `CODEX_HOME/web-accounts/<id>` e o painel mostra o comando de login exato, por exemplo:
+**Conectar uma conta:** em *Uso e ambiente → Contas e fila → Conectar nova conta* um assistente guia cada provedor: escolha o tipo de conta, dê um nome e conecte. A etapa de conexão confere se a CLI está instalada (com botão para instalar), mostra o passo a passo daquele provedor e abre um terminal da VPS no próprio navegador rodando o login da conta. O link de autorização e o código aparecem destacados, há um campo para colar o código de volta e teclas como Enter, setas e Esc para os menus das CLIs. Quando o login conclui o harness detecta sozinho e a conta entra na fila. Também é possível colar um token ou chave de API (Claude Code: `claude setup-token`; Antigravity/Gemini: chave do Gemini). No menu de cada conta há *Reconectar*, *Sair da conta* (apaga só o login daquela conta) e *Remover*.
 
-```bash
-CLAUDE_CONFIG_DIR=~/.codex/web-accounts/claude-1 claude      # depois /login
-HOME=~/.codex/web-accounts/google-1 agy                       # abre o link de autorização
-CODEX_HOME=~/.codex/web-accounts/codex-2 codex login --device-auth
-```
-
-Rode o comando no terminal da VPS com o mesmo usuário do serviço e use *Verificar login*. A CLI precisa estar instalada e no `PATH` do serviço (ou informe o caminho no campo `bin` de `web-accounts.json`). *Remover* tira a conta da fila e, se você confirmar, apaga a pasta de login dela.
+Cada conta usa uma pasta isolada em `CODEX_HOME/web-accounts/<id>`; contas extras do Codex recebem uma cópia do `config.toml` e do `AGENTS.md` da principal. A conta principal do Codex (a do chat) não é alterada pelo painel. O terminal do assistente só executa os comandos de login e instalação definidos para cada provedor e depende do utilitário `script` (pacote util-linux, presente no Ubuntu). Se preferir, o comando de login de cada conta também pode ser copiado e executado manualmente na VPS.
 
 **Fila de uso:** as contas são usadas na ordem da lista (setas ↑ ↓). Uma conta sai da vez quando está desativada, sem login, executando outra tarefa, em espera após atingir o limite (até o horário de liberação informado, ou `defaultCooldownMinutes`) ou acima do percentual de troca (padrão 95%). Codex e Claude Code informam o uso; nas demais CLIs a troca acontece quando elas avisam que o limite acabou.
 
