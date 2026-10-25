@@ -32,6 +32,13 @@ export class CodexAppServer {
     this.rateLimits = null;
     this.usage = null;
     this.lastRefresh = 0;
+    this.listeners = new Set();
+  }
+
+  /** Observe every app-server notification (used by the account orchestrator). Returns an unsubscribe function. */
+  subscribe(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   start() {
@@ -207,6 +214,9 @@ export class CodexAppServer {
     }
 
     if (!message?.method) return;
+    for (const listener of this.listeners) {
+      try { listener(message); } catch (error) { console.error('Falha em um observador do app-server:', error.message); }
+    }
     const params = message.params || {};
     switch (message.method) {
       case 'turn/started':

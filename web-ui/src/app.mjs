@@ -4,19 +4,23 @@ import { getPublicPath, isAllowedOrigin, isSafeMethod } from './http/request.mjs
 import { fail } from './http/respond.mjs';
 import { Router } from './http/router.mjs';
 import { applySecurityHeaders } from './http/security.mjs';
+import { registerAccountRoutes } from './routes/accounts.mjs';
 import { handleAuthApi } from './routes/auth.mjs';
 import { registerProjectRoutes } from './routes/projects.mjs';
 import { registerSystemRoutes } from './routes/system.mjs';
+import { registerTaskRoutes } from './routes/tasks.mjs';
 import { registerThreadRoutes } from './routes/threads.mjs';
 import { registerTurnRoutes } from './routes/turns.mjs';
 
-export function createRequestHandler({ auth, codex, events, assets }) {
+export function createRequestHandler({ auth, codex, events, assets, accounts, orchestrator }) {
   const router = new Router();
-  const deps = { codex, events };
+  const deps = { codex, events, accounts, orchestrator };
   registerSystemRoutes(router, deps);
   registerProjectRoutes(router, deps);
   registerThreadRoutes(router, deps);
   registerTurnRoutes(router, deps);
+  registerAccountRoutes(router, deps);
+  registerTaskRoutes(router, deps);
 
   async function handleRequest(req, res) {
     applySecurityHeaders(res);
