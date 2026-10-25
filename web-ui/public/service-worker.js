@@ -1,7 +1,7 @@
-const CACHE = 'codex-web-harness-shell-v20';
+const CACHE = 'codex-web-harness-shell-v21';
 const SHELL = [
   '/codex-agent/',
-  '/codex-agent/styles.attachments-20261025.css',
+  '/codex-agent/styles.readability-20261025.css',
   '/codex-agent/app.attachments-20261025.js',
   '/codex-agent/manifest.webmanifest',
   '/codex-agent/icon.svg',

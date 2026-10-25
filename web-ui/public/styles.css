@@ -782,3 +782,29 @@ body.resizing-inspector { cursor: col-resize; user-select: none; }
 .attachment-file .attachment-remove { position: absolute; top: 3px; right: 3px; display: grid; width: 32px; height: 32px; padding: 0; place-items: center; color: #c4cada; font-size: 20px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; }
 .attachment-file .attachment-remove:hover { color: #fff; background: #ffffff12; }
 @media (max-width: 680px) { .attachment-file .attachment-remove { top: 0; right: 0; width: 44px; height: 44px; } }
+
+/* Improve inspector readability at both its default and expanded widths. */
+.inspector .card-title-row strong { font-size: 14px; }
+.inspector .vps-metric-heading { flex-wrap: wrap; font-size: 12px; line-height: 1.4; }
+.inspector .vps-metric-heading strong { max-width: 100%; font-size: 14px; }
+.inspector .vps-metric small { font-size: 11px; line-height: 1.5; }
+.inspector .vps-project-heading { font-size: 10px; }
+.inspector .vps-project-row { min-height: 54px; padding: 5px 0; }
+.inspector .vps-project-name strong { font-size: 13px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
+.inspector .vps-project-name small { font-size: 11px; line-height: 1.45; white-space: normal; }
+.inspector .vps-project-memory, .inspector .vps-project-resources strong { font-size: 12px; }
+.inspector .vps-project-resources small { font-size: 11px; }
+.inspector .vps-container-row { flex-wrap: wrap; font-size: 11px; line-height: 1.5; }
+.inspector .vps-storage-breakdown, .inspector .vps-storage-breakdown strong { font-size: 11px; }
+.inspector .vps-stopped-details, .inspector .vps-storage-details, .inspector .vps-storage-list strong { font-size: 12px; }
+.inspector .vps-stopped-details p strong, .inspector .vps-stopped-details p small, .inspector .vps-storage-list strong small,
+.inspector .vps-storage-section > strong, .inspector .vps-storage-section > div > div small, .inspector .vps-storage-section > div > div > strong,
+.inspector .vps-storage-note, .inspector .vps-health-updated, .inspector .vps-health-muted, .inspector .vps-health-error { font-size: 11px; line-height: 1.5; }
+.inspector .context-usage-heading { font-size: 12px; }
+.inspector .context-usage-heading strong { font-size: 16px; }
+.inspector .context-usage-foot { font-size: 11px; line-height: 1.45; }
+.inspector .muted-note { font-size: 12px; }
+.inspector .environment-row strong { font-size: 13px; }
+.inspector .environment-row small, .inspector .environment-path code, .inspector .access-pill { font-size: 11px; }
+.inspector .thread-meta { font-size: 12px; line-height: 1.45; }
+.inspector .inspector-bottom { font-size: 11px; }
