@@ -21,8 +21,20 @@ export function isAllowedOrigin(req, required = false) {
   return !forwardedProto || parsed.protocol === `${forwardedProto}:`;
 }
 
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+
+/**
+ * Client address for rate limiting. A forwarded header is only trusted when the TCP
+ * peer is the local reverse proxy; otherwise anyone could rotate it to dodge limits.
+ */
 export function getClientIp(req) {
-  const forwarded = String(req.headers['cf-connecting-ip'] || '').trim();
-  if (forwarded.length <= 64 && isIP(forwarded)) return forwarded;
-  return req.socket.remoteAddress || 'unknown';
+  const peer = req.socket.remoteAddress || 'unknown';
+  if (!config.clientIpHeader || !LOOPBACK.has(peer)) return peer;
+  const forwarded = String(req.headers[config.clientIpHeader] || '').split(',')[0].trim();
+  return forwarded.length <= 64 && isIP(forwarded) ? forwarded : peer;
+}
+
+/** Methods that change state must come from our own origin (CSRF defence in depth). */
+export function isSafeMethod(method) {
+  return method === 'GET' || method === 'HEAD';
 }

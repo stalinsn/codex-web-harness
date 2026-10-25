@@ -18,6 +18,9 @@ export const config = Object.freeze({
   projectsFile: join(CODEX_HOME, 'web-projects.json'),
   authFile: join(CODEX_HOME, 'web-auth.json'),
   authOrigin: process.env.CODEX_UI_ORIGIN ? new URL(process.env.CODEX_UI_ORIGIN).origin : null,
+  // Header set by the local reverse proxy with the real client address (e.g. x-real-ip,
+  // or cf-connecting-ip behind Cloudflare). Only trusted when the peer is loopback.
+  clientIpHeader: String(process.env.CODEX_UI_CLIENT_IP_HEADER ?? 'x-real-ip').trim().toLowerCase(),
 });
 
 export const limits = Object.freeze({

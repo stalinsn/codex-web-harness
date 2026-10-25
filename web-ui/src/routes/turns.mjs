@@ -42,7 +42,7 @@ export function registerTurnRoutes(router, { codex, events }) {
     const body = await readBody(req);
     const text = typeof body.text === 'string' ? body.text.trim() : '';
     const selectedModel = codex.findModel(body.model || codex.defaultModelId());
-    if (!selectedModel) throw new Error('Selecione um modelo disponível para a conta autenticada.');
+    if (!selectedModel) return fail(res, 400, 'Selecione um modelo disponível para a conta autenticada.');
     const effort = String(body.effort || selectedModel.defaultReasoningEffort || 'medium');
     const supportedEfforts = (selectedModel.supportedReasoningEfforts || []).map((item) => item.reasoningEffort);
     if (!supportedEfforts.includes(effort)) return fail(res, 400, 'O nível de raciocínio não é compatível com o modelo selecionado.');

@@ -65,6 +65,7 @@ Variáveis de ambiente opcionais:
 | `CODEX_BIN` | `$HOME/.local/bin/codex` | Caminho para a Codex CLI. |
 | `CODEX_HOME` | `$HOME/.codex` | Diretório da sessão autenticada, conversas e configuração privada do harness. |
 | `CODEX_DEFAULT_CWD` | `$HOME` | Diretório inicial de trabalho. |
+| `CODEX_UI_CLIENT_IP_HEADER` | `x-real-ip` | Cabeçalho com o IP real do cliente, definido pelo proxy reverso local (use `cf-connecting-ip` atrás da Cloudflare). Só é aceito quando a conexão vem do loopback; vazio desativa. Usado nos limites de tentativas do login. |
 
 Se a CLI estiver instalada fora de `~/.local/bin/codex`, defina `CODEX_BIN` com o caminho retornado por `command -v codex` no usuário do serviço.
 

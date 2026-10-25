@@ -23,18 +23,18 @@ export function validateAttachments(body) {
 
 /** Store base64 images and return `localImage` input parts for the app-server. */
 export async function saveImages(root, threadId, files) {
-  if (!Array.isArray(files) || files.length > limits.maxImages) throw new Error(`Envie no máximo ${limits.maxImages} imagens por mensagem.`);
+  if (!Array.isArray(files) || files.length > limits.maxImages) throw failure(`Envie no máximo ${limits.maxImages} imagens por mensagem.`);
   const items = [];
   if (!files.length) return items;
-  if (!THREAD_ID.test(threadId)) throw new Error('ID de conversa inválido.');
+  if (!THREAD_ID.test(threadId)) throw failure('ID de conversa inválido.');
   const targetDir = join(root, threadId);
   await mkdir(targetDir, { recursive: true, mode: 0o700 });
   for (const file of files) {
-    if (!file || typeof file.data !== 'string') throw new Error('Uma imagem enviada está inválida.');
+    if (!file || typeof file.data !== 'string') throw failure('Uma imagem enviada está inválida.');
     const extension = IMAGE_EXTENSIONS[String(file.mime || '').toLowerCase()];
-    if (!extension) throw new Error('Aceito imagens PNG, JPG, WEBP ou GIF.');
+    if (!extension) throw failure('Aceito imagens PNG, JPG, WEBP ou GIF.');
     const buffer = Buffer.from(file.data, 'base64');
-    if (!buffer.length || buffer.length > limits.maxImage) throw new Error('Cada imagem precisa ter até 8 MB.');
+    if (!buffer.length || buffer.length > limits.maxImage) throw failure('Cada imagem precisa ter até 8 MB.');
     const destination = join(targetDir, `${Date.now()}-${randomUUID()}${extension}`);
     await writeFile(destination, buffer, { mode: 0o600, flag: 'wx' });
     items.push({ type: 'localImage', path: destination });
@@ -106,7 +106,7 @@ export async function serveFile(root, threadId, name, req, res, url) {
   const audioType = { '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.mp4': 'audio/mp4', '.webm': 'audio/webm', '.ogg': 'audio/ogg', '.aac': 'audio/aac' }[extname(name).toLowerCase()];
   const download = !audioType || url.searchParams.has('download');
   const displayName = String(url.searchParams.get('name') || name).replace(/[\x00-\x1f\x7f]/g, '').slice(0, 180);
-  const headers = { 'Content-Type': audioType || 'application/octet-stream', 'Content-Disposition': `${download ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(displayName)}`, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=300', 'Accept-Ranges': 'bytes' };
+  const headers = { 'Content-Security-Policy': "default-src 'none'; media-src 'self'; sandbox", 'Content-Type': audioType || 'application/octet-stream', 'Content-Disposition': `${download ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(displayName)}`, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=300', 'Accept-Ranges': 'bytes' };
   let start = 0; let end = info.size - 1; let status = 200;
   if (req.headers.range && info.size) {
     const match = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
