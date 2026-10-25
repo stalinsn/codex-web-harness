@@ -1063,7 +1063,7 @@ function closeThreadMenus() {
   });
 }
 
-function createThreadRow(thread, { nested = false } = {}) {
+function createThreadRow(thread, { nested = false, showUnassigned = false } = {}) {
   const pinned = thread.section?.id === PINNED_THREAD_SECTION_ID;
   const row = document.createElement('div');
   row.className = `thread-row${pinned ? ' pinned' : ''}${nested ? ' project-thread-row' : ''}`;
@@ -1075,12 +1075,17 @@ function createThreadRow(thread, { nested = false } = {}) {
   button.innerHTML = '<span class="icon" data-icon="chat"></span><span class="thread-item-title"></span>';
   $('.thread-item-title', button).textContent = threadDisplayTitle(thread);
   const project = projectForThread(thread);
-  const color = !nested ? projectColor(project) : '';
-  if (color && project) {
+  const color = projectColor(project);
+  if (!nested && project) {
     const badge = document.createElement('span');
     badge.className = 'thread-project-tag';
-    badge.style.setProperty('--project-color', color);
+    badge.style.setProperty('--project-color', color || '#9ca7dc');
     badge.textContent = project.name;
+    button.append(badge);
+  } else if (!nested && showUnassigned) {
+    const badge = document.createElement('span');
+    badge.className = 'thread-project-tag thread-unassigned-tag';
+    badge.textContent = 'Sem projeto';
     button.append(badge);
   }
   if (pinned) {
@@ -1190,18 +1195,38 @@ function renderThreads(threads = state.threads, query = $('#threadSearch')?.valu
     list.append(empty);
     return;
   }
-  let previousGroup = '';
-  visibleThreads.forEach((thread) => {
-    const groupName = state.archivedView || query ? '' : thread.section?.id === PINNED_THREAD_SECTION_ID ? 'Fixadas' : 'Recentes';
-    if (groupName && groupName !== previousGroup) {
-      const groupHeading = document.createElement('div');
-      groupHeading.className = 'thread-group-heading';
-      groupHeading.textContent = groupName;
-      list.append(groupHeading);
-      previousGroup = groupName;
-    }
-    list.append(createThreadRow(thread));
-  });
+  const appendGroup = (label, rows, className = '', groupProject = null) => {
+    if (!rows.length) return;
+    const groupHeading = document.createElement('div');
+    groupHeading.className = `thread-group-heading ${className}`.trim();
+    groupHeading.textContent = label;
+    if (groupProject) groupHeading.style.setProperty('--project-color', projectColor(groupProject) || '#9ca7dc');
+    list.append(groupHeading);
+    rows.forEach((thread) => list.append(createThreadRow(thread, { showUnassigned: !project || allProjects })));
+  };
+
+  if (!query && !project) {
+    const pinnedThreads = visibleThreads.filter((thread) => thread.section?.id === PINNED_THREAD_SECTION_ID);
+    const recentThreads = visibleThreads.filter((thread) => thread.section?.id !== PINNED_THREAD_SECTION_ID);
+    appendGroup('Fixadas', pinnedThreads);
+    state.projects.forEach((item) => {
+      appendGroup(item.name, recentThreads.filter((thread) => threadBelongsToProject(thread, item)), 'thread-project-group-heading', item);
+    });
+    appendGroup('Sem projeto', recentThreads.filter((thread) => !projectForThread(thread)), 'thread-unassigned-heading');
+  } else {
+    let previousGroup = '';
+    visibleThreads.forEach((thread) => {
+      const groupName = state.archivedView || query ? '' : thread.section?.id === PINNED_THREAD_SECTION_ID ? 'Fixadas' : 'Recentes';
+      if (groupName && groupName !== previousGroup) {
+        const groupHeading = document.createElement('div');
+        groupHeading.className = 'thread-group-heading';
+        groupHeading.textContent = groupName;
+        list.append(groupHeading);
+        previousGroup = groupName;
+      }
+      list.append(createThreadRow(thread, { showUnassigned: !project || allProjects }));
+    });
+  }
   installIcons();
 }
 

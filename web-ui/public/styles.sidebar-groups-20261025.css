@@ -1,0 +1,4 @@
+.thread-group-heading.thread-project-group-heading { margin-top: 9px; padding: 8px 7px 4px; color: var(--project-color, #9ca7dc); border-left: 2px solid color-mix(in srgb, var(--project-color, #9ca7dc) 65%, transparent); }
+.thread-group-heading.thread-project-group-heading:first-child { padding-top: 8px; }
+.thread-group-heading.thread-unassigned-heading { margin-top: 12px; padding: 11px 8px 6px; color: #c1c3cc; border-top: 1px solid #393a42; }
+.thread-project-tag.thread-unassigned-tag { max-width: 78px; color: #aeb1bd; border-color: #555761; border-style: dashed; background: #25262b; box-shadow: none; }

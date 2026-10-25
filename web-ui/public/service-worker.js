@@ -1,10 +1,11 @@
-const CACHE = 'codex-web-harness-shell-v24';
+const CACHE = 'codex-web-harness-shell-v25';
 const SHELL = [
   '/codex-agent/',
   '/codex-agent/styles.readability-20261025.css',
   '/codex-agent/styles.session-20261025.css',
   '/codex-agent/styles.collaboration-20261025.css',
-  '/codex-agent/app.collaboration-20261025.js',
+  '/codex-agent/styles.sidebar-groups-20261025.css',
+  '/codex-agent/app.sidebar-groups-20261025.js',
   '/codex-agent/manifest.webmanifest',
   '/codex-agent/icon.svg',
 ];
