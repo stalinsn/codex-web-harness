@@ -12,8 +12,13 @@ async function waitReady(server, timeoutMs = 60000) {
 /**
  * @returns {Promise<{status: 'completed'|'rate-limited'|'failed'|'stopped', text: string, sessionId: string, threadId: string, resetsAt: number, error: string}>}
  */
-export async function runCodexSegment({ server, prompt, cwd, model, effort, threadId = '', title = '', onEvent = () => {}, signal, handoff = { enabled: false, atPercent: 95 } }) {
+const SEGMENT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+const stoppedEarly = (threadId = '') => ({ status: 'stopped', text: '', sessionId: threadId, threadId, resetsAt: 0, error: '' });
+
+export async function runCodexSegment({ server, prompt, cwd, model, effort, threadId = '', title = '', onEvent = () => {}, signal, handoff = { enabled: false, atPercent: 95 }, timeoutMs = SEGMENT_TIMEOUT_MS }) {
+  if (signal?.aborted) return stoppedEarly(threadId);
   await waitReady(server);
+  if (signal?.aborted) return stoppedEarly(threadId);
   if (threadId) await server.ensureResumed(threadId);
   else {
     const created = await server.rpc('thread/start', { ...(model ? { model } : {}), cwd });
@@ -22,6 +27,7 @@ export async function runCodexSegment({ server, prompt, cwd, model, effort, thre
     if (title) server.rpc('thread/name/set', { threadId, name: title.slice(0, 120) }).catch(() => {});
   }
   onEvent({ type: 'session', sessionId: threadId });
+  if (signal?.aborted) return stoppedEarly(threadId);
 
   const outcome = { status: 'failed', text: '', sessionId: threadId, threadId, resetsAt: 0, error: '' };
   let turnId = '';
@@ -34,8 +40,14 @@ export async function runCodexSegment({ server, prompt, cwd, model, effort, thre
     const finish = (status) => {
       if (finished) return;
       finished = true;
+      clearTimeout(timer);
       unsubscribe();
       signal?.removeEventListener('abort', abort);
+      // A turn that stopped because we asked for a handoff is a limit, not a finished goal.
+      if (steered && status === 'completed') {
+        limited = true;
+        outcome.resetsAt ||= codexUsage(server.rateLimits).resetsAt;
+      }
       outcome.status = limited ? 'rate-limited' : status;
       resolvePromise(outcome);
     };
@@ -50,8 +62,14 @@ export async function runCodexSegment({ server, prompt, cwd, model, effort, thre
       server.rpc('turn/steer', { threadId, expectedTurnId: turnId, clientUserMessageId: randomUUID(), input: [{ type: 'text', text: handoffInstruction(percent) }] }).catch(() => {});
     };
 
+    const timer = setTimeout(() => { outcome.error = 'A etapa excedeu o tempo máximo.'; abort(); }, timeoutMs);
     const unsubscribe = server.subscribe((message) => {
       const params = message.params || {};
+      if (message.method === 'server/closed') {
+        outcome.error = 'O processo do Codex desta conta foi reiniciado durante a etapa.';
+        finish('failed');
+        return;
+      }
       if (message.method === 'account/rateLimits/updated') {
         const { percent, resetsAt } = codexUsage(params);
         if (percent == null) return;
@@ -92,6 +110,7 @@ export async function runCodexSegment({ server, prompt, cwd, model, effort, thre
       .then((result) => {
         turnId = result.turn?.id || '';
         if (turnId) server.activeTurns.set(threadId, turnId);
+        if (signal?.aborted) { abort(); return; }
         const { percent } = codexUsage(server.rateLimits);
         if (handoff.enabled && percent != null && percent >= handoff.atPercent) steerHandoff(percent);
       })

@@ -30,11 +30,13 @@ function percentOf(value) {
 function parseClaude(line) {
   let event;
   try { event = JSON.parse(line); } catch { return [{ type: 'text', text: line }]; }
+  if (!event || typeof event !== 'object') return [];
   switch (event.type) {
     case 'system':
       return event.session_id ? [{ type: 'session', sessionId: event.session_id }] : [];
     case 'assistant':
-      return (event.message?.content || []).flatMap((block) => {
+      return (Array.isArray(event.message?.content) ? event.message.content : []).flatMap((block) => {
+        if (!block || typeof block !== 'object') return [];
         if (block.type === 'text' && block.text) return [{ type: 'text', text: block.text }];
         if (block.type === 'tool_use') return [{ type: 'tool', name: block.name, detail: short(block.input?.command || block.input?.file_path || block.input) }];
         return [];
@@ -78,19 +80,22 @@ function parseGeneric(line) {
   const sessionId = event.session_id || event.sessionId || event.conversation_id || event.conversationId;
   const kind = String(event.type || event.event || '').toLowerCase();
   if (sessionId && (kind === 'init' || kind === 'system' || kind === 'result' || !kind)) out.push({ type: 'session', sessionId });
+  const isTool = /tool/.test(kind);
   const errorText = typeof event.error === 'string' ? event.error : event.error?.message || (kind === 'error' ? pickText(event) : '');
-  if (errorText) {
+  // Errors from tools (npm, curl, …) are the agent's business, never the account's quota.
+  if (errorText && isTool) out.push({ type: 'tool', name: event.tool_name || event.name || event.tool || 'ferramenta', detail: short(`erro: ${errorText}`) });
+  else if (errorText) {
     if (looksRateLimited(errorText) || /RESOURCE_EXHAUSTED/.test(JSON.stringify(event.error || ''))) out.push({ type: 'rate-limit', resetsAt: resetFromText(errorText), message: errorText });
     else out.push({ type: 'error', message: errorText });
   }
-  if (kind === 'tool_use' || kind === 'tool_call') out.push({ type: 'tool', name: event.tool_name || event.name || event.tool || 'ferramenta', detail: short(event.parameters || event.args || event.input) });
+  if ((kind === 'tool_use' || kind === 'tool_call') && !errorText) out.push({ type: 'tool', name: event.tool_name || event.name || event.tool || 'ferramenta', detail: short(event.parameters || event.args || event.input) });
   else if (kind === 'result' || 'response' in event || 'status' in event && 'response' in event) {
     const text = pickText(event);
     const ok = !errorText && !/error|fail/i.test(String(event.status || ''));
     out.push({ type: 'result', ok, text, sessionId: sessionId || '' });
   } else if (kind === 'message' || kind === 'content' || kind === 'assistant') {
     const role = event.role || event.message?.role;
-    if (role !== 'user') { const text = pickText(event); if (text) out.push({ type: 'text', text }); }
+    if (role !== 'user') { const text = pickText(event); if (text) out.push({ type: 'text', text, delta: event.delta === true }); }
   }
   return out;
 }

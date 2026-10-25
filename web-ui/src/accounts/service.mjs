@@ -84,7 +84,7 @@ export class AccountService {
     if (!account.enabled) return { ok: false, reason: 'Desativada' };
     if (state.loggedIn === false) return { ok: false, reason: 'Sem login' };
     if (state.cooldownUntil > now) return { ok: false, reason: 'Aguardando a janela de uso', until: state.cooldownUntil };
-    if (this.busy.has(account.id)) return { ok: false, reason: 'Em uso por outra execução' };
+    if (this.busy.has(account.id)) return { ok: false, reason: 'Em uso por outra execução', until: now + 60 * 1000 };
     const fresh = state.percentAt && now - state.percentAt < USAGE_FRESH_MS && (!state.resetsAt || state.resetsAt * 1000 > now);
     if (fresh && state.percent != null && state.percent >= this.registry.rotation.switchAtPercent) {
       return { ok: false, reason: `Uso em ${Math.round(state.percent)}%`, until: state.resetsAt ? state.resetsAt * 1000 : 0 };
@@ -129,10 +129,27 @@ export class AccountService {
     for (const account of this.registry.accounts) await this.checkStatus(account.id).catch(() => {});
   }
 
+  /** Claim an account for a task in the same tick it was picked (no double booking). */
+  reserve(accountId, taskId) {
+    const holder = this.busy.get(accountId);
+    if (holder && holder !== taskId) return false;
+    this.busy.set(accountId, taskId);
+    this.emit('accounts-changed', {});
+    return true;
+  }
+
+  release(accountId, taskId) {
+    if (this.busy.get(accountId) === taskId) this.busy.delete(accountId);
+    this.emit('accounts-changed', {});
+  }
+
   async markLimited(id, { resetsAt = 0, message = '' } = {}) {
     const state = this.registry.stateOf(id);
-    const fallback = Date.now() + this.registry.rotation.defaultCooldownMinutes * 60 * 1000;
-    state.cooldownUntil = resetsAt ? Math.max(resetsAt * 1000, Date.now() + 60 * 1000) : fallback;
+    const now = Date.now();
+    const fallback = now + this.registry.rotation.defaultCooldownMinutes * 60 * 1000;
+    // Reset times are unix seconds; tolerate milliseconds and cap at one week.
+    const resetMs = resetsAt > 1e11 ? resetsAt : resetsAt * 1000;
+    state.cooldownUntil = resetsAt ? Math.min(Math.max(resetMs, now + 60 * 1000), now + 7 * 24 * 60 * 60 * 1000) : fallback;
     state.lastLimit = { at: Date.now(), resetsAt, message: String(message || '').slice(0, 300) };
     await this.registry.saveState();
     this.emit('accounts-changed', {});
@@ -153,7 +170,11 @@ export class AccountService {
     const home = account.primary ? this.primaryCodex.codexHome : account.dir;
     let server = this.codexServers.get(home);
     if (!server) {
-      server = new CodexAppServer({ bin: account.bin || config.codexBin, homeDir: config.homeDir, codexHome: home, emit: () => {} });
+      // Nobody can answer approval prompts of a secondary account: decline them so the
+      // turn continues (the policy tells the agent to stop as BLOCKED instead).
+      server = new CodexAppServer({ bin: account.bin || config.codexBin, homeDir: config.homeDir, codexHome: home, emit: (type, data) => {
+        if (type === 'server-request') server.respondToServerRequest(data.id, { decision: 'decline' });
+      } });
       server.subscribe((message) => { if (message.method === 'account/rateLimits/updated') this.#recordCodexUsage(account.id, message.params); });
       server.start();
       this.codexServers.set(home, server);
@@ -163,7 +184,7 @@ export class AccountService {
 
   /** Run one segment and update the account's bookkeeping. */
   async runSegment(account, { taskId, prompt, cwd, sessionId, title, onEvent, signal }) {
-    this.busy.set(account.id, taskId);
+    if (!this.reserve(account.id, taskId)) throw new Error('A conta já está executando outra tarefa.');
     const state = this.registry.stateOf(account.id);
     state.segments += 1;
     state.lastUsedAt = Date.now();
@@ -180,7 +201,6 @@ export class AccountService {
       if (outcome.status === 'rate-limited') await this.markLimited(account.id, { resetsAt: outcome.resetsAt, message: outcome.error });
       return outcome;
     } finally {
-      this.busy.delete(account.id);
       await this.registry.saveState().catch(() => {});
       this.emit('accounts-changed', {});
     }
@@ -191,6 +211,14 @@ export class AccountService {
     const root = resolve(accountsDir()) + sep;
     if (account.primary || !resolve(account.dir).startsWith(root)) throw httpError('Esta pasta não foi criada pelo harness; saia da conta pela própria CLI.', 400);
     await rm(account.dir, { recursive: true, force: true });
+  }
+
+  /** Stop the app-server of a removed Codex account. */
+  dropAccount(account) {
+    if (account.provider !== 'codex' || account.primary) return;
+    const server = this.codexServers.get(account.dir);
+    server?.stop();
+    this.codexServers.delete(account.dir);
   }
 
   stop() {

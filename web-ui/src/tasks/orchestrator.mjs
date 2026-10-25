@@ -8,7 +8,7 @@ import { config } from '../config.mjs';
 import { HANDOFF_FILE } from '../accounts/codex-usage.mjs';
 import { httpError } from '../http/respond.mjs';
 import { validateCwd } from '../projects.mjs';
-import { buildSegmentPrompt, goalFromThread, outcomeMarker } from './prompt.mjs';
+import { fitPrompt, goalFromThread, outcomeMarker } from './prompt.mjs';
 
 const TASK_ID = /^[a-f0-9-]{36}$/;
 const ACTIVE = new Set(['queued', 'running', 'waiting']);
@@ -16,6 +16,7 @@ const MAX_NUDGES = 2;
 const MAX_LOG_BYTES = 20 * 1024 * 1024;
 const RECENT_EVENTS = 200;
 const RETRY_WHEN_NOTHING_KNOWN_MS = 5 * 60 * 1000;
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 const tasksDir = () => join(config.codexHome, 'web-tasks');
 const OUTCOME_LABEL = { completed: 'concluiu a etapa', 'rate-limited': 'limite de uso atingido', failed: 'falhou', stopped: 'foi interrompida' };
@@ -37,6 +38,7 @@ export class TaskOrchestrator {
     this.controllers = new Map();
     this.timers = new Map();
     this.running = new Set();
+    this.shuttingDown = false;
   }
 
   async load() {
@@ -124,7 +126,9 @@ export class TaskOrchestrator {
     return this.#summary(task);
   }
 
+  /** Service shutdown: abort segments but keep tasks active so they resume on the next start. */
   stopAll() {
+    this.shuttingDown = true;
     for (const controller of this.controllers.values()) controller.abort();
     for (const timer of this.timers.values()) clearTimeout(timer);
   }
@@ -148,7 +152,7 @@ export class TaskOrchestrator {
 
   #schedule(task, delayMs) {
     clearTimeout(this.timers.get(task.id));
-    const timer = setTimeout(() => { this.timers.delete(task.id); this.#run(task).catch((error) => this.#fail(task, error)); }, Math.max(0, delayMs));
+    const timer = setTimeout(() => { this.timers.delete(task.id); this.#run(task).catch((error) => this.#fail(task, error)); }, Math.min(MAX_TIMER_MS, Math.max(0, delayMs)));
     timer.unref?.();
     this.timers.set(task.id, timer);
   }
@@ -229,46 +233,52 @@ export class TaskOrchestrator {
           this.#schedule(task, task.nextAttemptAt - Date.now() + 1000);
           return;
         }
+        if (!this.accounts.reserve(account.id, task.id)) continue;
         if (mode === 'nudge' && account !== sameAccountNudge) mode = 'handoff';
+        if (previous && previous.accountId !== account.id) task.nudges = 0;
+        try {
+          const reuseSession = mode === 'nudge' && previous?.sessionId ? previous.sessionId : '';
+          const segment = { id: task.segments.length + 1, accountId: account.id, accountLabel: account.label, provider: account.provider, mode, startedAt: Date.now(), endedAt: 0, outcome: '', resetsAt: 0, sessionId: reuseSession, summary: '', error: '' };
+          task.segments.push(segment);
+          Object.assign(task, { status: 'running', currentAccountId: account.id, nextAttemptAt: 0, note: '' });
+          await this.#save(task);
+          await this.#log(task, { type: 'segment-start', accountLabel: account.label, mode });
 
-        const reuseSession = mode === 'nudge' && previous?.sessionId ? previous.sessionId : '';
-        const segment = { id: task.segments.length + 1, accountId: account.id, accountLabel: account.label, provider: account.provider, mode, startedAt: Date.now(), endedAt: 0, outcome: '', resetsAt: 0, sessionId: reuseSession, summary: '', error: '' };
-        task.segments.push(segment);
-        Object.assign(task, { status: 'running', currentAccountId: account.id, nextAttemptAt: 0, note: '' });
-        await this.#save(task);
-        await this.#log(task, { type: 'segment-start', accountLabel: account.label, mode });
+          const prompt = fitPrompt({
+            task, account, mode,
+            handoff: mode === 'handoff' ? await readText(join(task.cwd, HANDOFF_FILE), 60_000) : '',
+            previous: previous ? { accountLabel: previous.accountLabel, outcome: OUTCOME_LABEL[previous.outcome] || previous.outcome, summary: previous.summary } : null,
+            policies: await this.#policies(task.cwd),
+          });
+          if (controller.signal.aborted) break;
+          const outcome = await this.accounts.runSegment(account, {
+            taskId: task.id, prompt, cwd: task.cwd, sessionId: reuseSession, title: `Contínua · ${task.title}`, signal: controller.signal,
+            onEvent: (event) => { if (event.type !== 'session') this.#log(task, event).catch(() => {}); else segment.sessionId = event.sessionId; },
+          }).catch((error) => ({ status: 'failed', error: error.message, text: '', sessionId: '', resetsAt: 0 }));
 
-        const prompt = buildSegmentPrompt({
-          task, account, mode,
-          handoff: mode === 'handoff' ? await readText(join(task.cwd, HANDOFF_FILE), 60_000) : '',
-          previous: previous ? { accountLabel: previous.accountLabel, outcome: OUTCOME_LABEL[previous.outcome] || previous.outcome, summary: previous.summary } : null,
-          policies: await this.#policies(task.cwd),
-        });
-        const outcome = await this.accounts.runSegment(account, {
-          taskId: task.id, prompt, cwd: task.cwd, sessionId: reuseSession, title: `Contínua · ${task.title}`, signal: controller.signal,
-          onEvent: (event) => { if (event.type !== 'session') this.#log(task, event).catch(() => {}); else segment.sessionId = event.sessionId; },
-        }).catch((error) => ({ status: 'failed', error: error.message, text: '', sessionId: '', resetsAt: 0 }));
+          Object.assign(segment, { endedAt: Date.now(), outcome: outcome.status, resetsAt: outcome.resetsAt || 0, sessionId: outcome.sessionId || segment.sessionId, summary: String(outcome.text || '').slice(-4000), error: outcome.error || '' });
+          await this.#log(task, { type: 'segment-end', outcome: outcome.status, error: outcome.error || '' });
+          if (task.status === 'stopped' || this.shuttingDown) break;
 
-        Object.assign(segment, { endedAt: Date.now(), outcome: outcome.status, resetsAt: outcome.resetsAt || 0, sessionId: outcome.sessionId || segment.sessionId, summary: String(outcome.text || '').slice(-4000), error: outcome.error || '' });
-        await this.#log(task, { type: 'segment-end', outcome: outcome.status, error: outcome.error || '' });
-        if (task.status === 'stopped') break;
-
-        if (outcome.status === 'rate-limited') { mode = 'handoff'; task.nudges = 0; }
-        else if (outcome.status === 'completed') {
-          const marker = outcomeMarker(outcome.text);
-          if (marker === 'done') { task.status = 'completed'; task.note = 'Objetivo concluído.'; }
-          else if (marker === 'blocked') { task.status = 'blocked'; task.note = 'O agente precisa de uma decisão ou aprovação sua.'; }
-          else if (task.nudges < MAX_NUDGES) { task.nudges += 1; mode = 'nudge'; }
-          else { task.status = 'blocked'; task.note = 'O agente encerrou sem confirmar a conclusão. Revise e retome com uma orientação.'; }
-        } else if (outcome.status === 'stopped') {
-          task.status = 'failed';
-          task.error = outcome.error || 'A etapa foi interrompida.';
-        } else {
-          failedAccounts.push(account.id);
-          task.error = outcome.error || 'A etapa falhou.';
-          mode = 'handoff';
+          if (outcome.status === 'rate-limited') { mode = 'handoff'; task.nudges = 0; }
+          else if (outcome.status === 'completed') {
+            const marker = outcomeMarker(outcome.text);
+            if (marker === 'done') { task.status = 'completed'; task.note = 'Objetivo concluído.'; }
+            else if (marker === 'blocked') { task.status = 'blocked'; task.note = 'O agente precisa de uma decisão ou aprovação sua.'; }
+            else if (task.nudges < MAX_NUDGES) { task.nudges += 1; mode = 'nudge'; }
+            else { task.status = 'blocked'; task.note = 'O agente encerrou sem confirmar a conclusão. Revise e retome com uma orientação.'; }
+          } else if (outcome.status === 'stopped') {
+            task.status = 'failed';
+            task.error = outcome.error || 'A etapa foi interrompida.';
+          } else {
+            failedAccounts.push(account.id);
+            task.error = outcome.error || 'A etapa falhou.';
+            mode = 'handoff';
+          }
+          await this.#save(task);
+        } finally {
+          this.accounts.release(account.id, task.id);
         }
-        await this.#save(task);
       }
     } finally {
       this.running.delete(task.id);

@@ -33,14 +33,22 @@ export function runCliSegment({ account, prompt, cwd, sessionId = '', onEvent = 
   const args = expandArgs(account.args || preset.args, values);
   if (sessionId) args.push(...expandArgs(account.resumeArgs || preset.resumeArgs || [], values));
   const parse = getParser(account.parser || preset.parser);
+  const outcome = { status: 'failed', text: '', sessionId, resetsAt: 0, error: '' };
+  if (signal?.aborted) return Promise.resolve({ ...outcome, status: 'stopped' });
 
   return new Promise((resolvePromise) => {
-    const outcome = { status: 'failed', text: '', sessionId, resetsAt: 0, error: '' };
+    let child;
+    try {
+      child = spawn(commandFor(account), args, { cwd, env: accountEnv(account), stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    } catch (error) {
+      resolvePromise({ ...outcome, error: error.code === 'E2BIG' ? 'O prompt ficou grande demais para a linha de comando.' : error.message });
+      return;
+    }
     let stderr = '';
     let settled = false;
     let limited = false;
     let stopped = false;
-    const child = spawn(commandFor(account), args, { cwd, env: accountEnv(account), stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    let pendingDelta = '';
 
     const killTree = (sig) => { try { process.kill(-child.pid, sig); } catch { /* already gone */ } };
     const stop = () => {
@@ -52,11 +60,23 @@ export function runCliSegment({ account, prompt, cwd, sessionId = '', onEvent = 
     const timer = setTimeout(() => { outcome.error = 'A etapa excedeu o tempo máximo.'; stop(); }, timeoutMs);
     signal?.addEventListener('abort', stop, { once: true });
 
+    // Streamed chunks are joined without separators and reported as one text event.
+    const flushDelta = () => {
+      if (!pendingDelta) return;
+      const text = pendingDelta;
+      pendingDelta = '';
+      onEvent({ type: 'text', text });
+    };
+    const appendText = (text, delta) => {
+      outcome.text = `${outcome.text}${outcome.text && !delta ? '\n' : ''}${text}`.slice(-20000);
+    };
     const handle = (event) => {
       // One limit notice per run: the CLI may report it as an event and again as the result.
       if (limited && (event.type === 'rate-limit' || (event.type === 'result' && !event.ok))) return;
+      if (event.type === 'text' && event.delta) { appendText(event.text, true); pendingDelta += event.text; return; }
+      flushDelta();
       if (event.type === 'session' && event.sessionId) outcome.sessionId = event.sessionId;
-      if (event.type === 'text') outcome.text = `${outcome.text}${outcome.text ? '\n' : ''}${event.text}`.slice(-20000);
+      if (event.type === 'text') appendText(event.text, false);
       if (event.type === 'rate-limit') { limited = true; outcome.resetsAt = event.resetsAt || outcome.resetsAt; outcome.error = event.message || outcome.error; }
       if (event.type === 'result') {
         if (event.text) outcome.text = event.text;
@@ -69,16 +89,29 @@ export function runCliSegment({ account, prompt, cwd, sessionId = '', onEvent = 
     };
 
     readline.createInterface({ input: child.stdout }).on('line', (line) => {
-      for (const event of parse(line)) handle(event);
+      let events;
+      try { events = parse(line); } catch { events = [{ type: 'text', text: line }]; }
+      for (const event of events) handle(event);
     });
     child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-8000); });
     child.on('error', (error) => {
       outcome.error = error.code === 'ENOENT' ? `Comando não encontrado: ${commandFor(account)}` : error.message;
     });
+    // A background process started by the agent may keep stdout open after the CLI
+    // exits; give the pipes a moment, then end the group.
+    child.on('exit', () => {
+      setTimeout(() => {
+        if (settled) return;
+        killTree('SIGKILL');
+        child.stdout.destroy();
+        child.stderr.destroy();
+      }, 3000).unref();
+    });
     child.on('close', (code) => {
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener('abort', stop);
+      flushDelta();
       if (!limited && looksRateLimited(stderr) && code !== 0) {
         limited = true;
         outcome.resetsAt = resetFromText(stderr);

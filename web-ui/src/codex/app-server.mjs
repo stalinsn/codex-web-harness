@@ -71,6 +71,9 @@ export class CodexAppServer {
         this.rpcPending.delete(id);
       }
       this.emit('server-state', { online: false, message: 'Reconectando ao Codex…' });
+      for (const listener of this.listeners) {
+        try { listener({ method: 'server/closed', params: {} }); } catch { /* observers must not break restarts */ }
+      }
       if (!this.stopped) this.restartTimer = setTimeout(() => this.start(), RESTART_DELAY_MS);
     });
 

@@ -64,3 +64,33 @@ test('goal from an interrupted thread keeps the original ask and the last answer
   assert.match(goal, /Pode continuar/);
   assert.match(goal, /Falta o build/);
 });
+
+test('parsers survive odd lines and keep tool errors away from quota detection', () => {
+  assert.deepEqual(getParser('claude')('null'), []);
+  assert.deepEqual(getParser('claude')('{"type":"assistant","message":{"content":"x"}}'), []);
+  const tool = getParser('generic')('{"type":"tool_result","status":"error","error":{"message":"npm ERR! 429 Too Many Requests"}}');
+  assert.equal(tool[0].type, 'tool');
+  assert.equal(getParser('generic')('{"type":"message","role":"assistant","content":"HARNESS_","delta":true}')[0].delta, true);
+});
+
+test('prompts are shrunk to fit one command-line argument', async () => {
+  const { fitPrompt } = await import('../src/tasks/prompt.mjs');
+  const huge = 'á'.repeat(60_000);
+  const prompt = fitPrompt({ task: { goal: huge, cwd: '/x' }, account: { provider: 'claude-code' }, policies: [huge, huge], handoff: huge, mode: 'handoff' });
+  assert.ok(Buffer.byteLength(prompt) <= 110_000);
+  assert.match(prompt, /HARNESS_STATUS: DONE/);
+});
+
+test('CLI runner: pre-aborted runs do not start, deltas join without separators', async () => {
+  const { runCliSegment } = await import('../src/accounts/cli-runner.mjs');
+  const controller = new AbortController();
+  controller.abort();
+  const account = { provider: 'custom', bin: 'sh', dir: '/tmp', env: {}, parser: 'generic' };
+  assert.equal((await runCliSegment({ account: { ...account, args: ['-c', 'sleep 5'] }, prompt: 'x', cwd: '/tmp', signal: controller.signal })).status, 'stopped');
+  const lines = ['{"type":"message","role":"assistant","content":"HARNESS_","delta":true}', '{"type":"message","role":"assistant","content":"STATUS: DONE","delta":true}'];
+  const events = [];
+  const outcome = await runCliSegment({ account: { ...account, args: ['-c', lines.map((line) => `echo '${line}'`).join('; ')] }, prompt: 'x', cwd: '/tmp', onEvent: (event) => events.push(event) });
+  assert.equal(outcome.status, 'completed');
+  assert.match(outcome.text, /HARNESS_STATUS: DONE/);
+  assert.equal(events.filter((event) => event.type === 'text').length, 1);
+});

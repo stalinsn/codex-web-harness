@@ -36,6 +36,7 @@ export function registerAccountRoutes(router, { accounts }) {
     const account = accounts.registry.get(id);
     if (!account) return fail(res, 404, 'Conta não encontrada.');
     if (accounts.busy.has(id)) return fail(res, 409, 'A conta está executando uma tarefa. Pare a tarefa antes de removê-la.');
+    accounts.dropAccount(account);
     if (url.searchParams.get('forget') === 'true') await accounts.forgetCredentials(account);
     await accounts.registry.remove(id);
     return json(res, 200, snapshot());

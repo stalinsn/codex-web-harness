@@ -9,6 +9,7 @@ import { httpError } from '../http/respond.mjs';
 import { PROVIDERS } from './providers.mjs';
 
 export const PRIMARY_ID = 'codex';
+const RESERVED_IDS = new Set([PRIMARY_ID, 'rotation']);
 const ACCOUNT_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const DEFAULT_ROTATION = { order: [PRIMARY_ID], switchAtPercent: 95, proactiveHandoff: true, autoContinue: true, defaultCooldownMinutes: 60 };
 const EDITABLE = ['label', 'enabled', 'model', 'effort', 'permissionMode', 'bin', 'args', 'resumeArgs', 'parser', 'env'];
@@ -111,7 +112,7 @@ export class AccountRegistry {
 
   async add({ id, provider, label, ...rest }) {
     const slug = String(id || '').trim().toLowerCase();
-    if (!ACCOUNT_ID.test(slug) || slug === PRIMARY_ID) throw httpError('Use um identificador com letras minúsculas, números e hífens (até 40).', 400);
+    if (!ACCOUNT_ID.test(slug) || RESERVED_IDS.has(slug)) throw httpError('Use um identificador com letras minúsculas, números e hífens (até 40).', 400);
     if (this.get(slug)) throw httpError('Já existe uma conta com esse identificador.', 409);
     if (!PROVIDERS[provider]) throw httpError('Provedor desconhecido.', 400);
     const account = normalizeAccount({ id: slug, provider, label, ...pick(rest), args: sanitizeArgs(rest.args), resumeArgs: sanitizeArgs(rest.resumeArgs) });
