@@ -4,7 +4,7 @@ const state = {
   models: [], threads: [], projects: [], selectedProjectId: localStorage.getItem('codex-project') || '', selectedThreadId: null, selectedThread: null,
   cwd: localStorage.getItem('codex-cwd') || '', defaultCwd: '', projectsRoot: '', activeThreadProjectId: '', archivedView: false, loadingThreadId: null,
   modelId: localStorage.getItem('codex-model') || '', effort: localStorage.getItem('codex-effort') || '',
-  files: [], busy: false, sending: false, interrupting: false, account: null, rateLimits: null, usage: null,
+  files: [], busy: false, sending: false, interrupting: false, account: null, rateLimits: null, usage: null, contextUsage: null,
   queueItems: [], recoveredQueueItems: [], turnStartedAtMs: null, turnTimer: null,
   streamedMessages: new Map(), activityCards: new Map(), commandGroups: new Map(), reasoningGroups: new Map(), turnIntermediates: new Map(), userMessageIds: new Set(), pendingApprovals: new Map(),
   activeTurnId: null,
@@ -859,12 +859,49 @@ function updateThreadHeader(thread) {
     const status = thread.status?.type === 'active' ? 'Em execução' : 'Pronta para continuar';
     $('#threadMeta').innerHTML = `<div class="thread-meta-row"><span>Estado</span><strong>${escapeHtml(status)}</strong></div><div class="thread-meta-row"><span>Modelo</span><strong>${escapeHtml(thread.model || thread.modelProvider || 'Codex')}</strong></div><div class="thread-meta-row"><span>Atualizada</span><strong>${updated && !Number.isNaN(updated.getTime()) ? escapeHtml(new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(updated)) : '—'}</strong></div>`;
     location.hash = `thread=${encodeURIComponent(thread.id)}`;
+    renderContextUsage(state.contextUsage);
   } else {
     $('#threadMeta').replaceChildren();
+    state.contextUsage = null;
+    renderContextUsage(null);
     history.replaceState(null, '', location.pathname);
   }
   renderConversationContext();
   renderThreads(state.threads);
+}
+
+function renderContextUsage(snapshot) {
+  const root = $('#contextUsageMeter');
+  if (!root) return;
+  const usage = snapshot?.tokenUsage || snapshot || null;
+  const used = Number(usage?.last?.totalTokens ?? usage?.last?.inputTokens ?? usage?.lastTokenUsage?.totalTokens);
+  const capacity = Number(usage?.modelContextWindow ?? usage?.model_context_window);
+  if (!state.selectedThreadId) {
+    root.innerHTML = '<p class="muted-note">Abra uma conversa para ver o contexto usado e o limite do modelo.</p>';
+    return;
+  }
+  if (!Number.isFinite(used) || !Number.isFinite(capacity) || capacity <= 0) {
+    root.innerHTML = '<p class="muted-note">Aguardando a próxima leitura de tokens desta conversa.</p>';
+    return;
+  }
+  const percent = Math.min(100, Math.max(0, used / capacity * 100));
+  const remaining = Math.max(0, capacity - used);
+  const tone = percent >= 90 ? 'critical' : percent >= 75 ? 'high' : '';
+  const updated = snapshot?.updatedAt ? new Date(snapshot.updatedAt) : null;
+  const updatedText = updated && !Number.isNaN(updated.getTime()) ? new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' }).format(updated) : '';
+  root.innerHTML = `<div class="context-usage-heading"><strong>${escapeHtml(formatNumber(used))} usados</strong><span>${escapeHtml(formatNumber(capacity))} tokens</span></div><div class="meter-track context-usage-track"><div class="meter-fill ${tone}" style="width:${percent.toFixed(1)}%"></div></div><div class="context-usage-foot"><span>${percent.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}% · ${escapeHtml(formatNumber(remaining))} restantes</span><span>${updatedText ? `Atualizado ${escapeHtml(updatedText)}` : 'Último turno'}</span></div><p class="muted-note">Estimativa do último turno em relação à janela do modelo. A janela pode incluir instruções e ferramentas, não só o texto visível.</p>`;
+}
+
+async function loadContextUsage(threadId) {
+  state.contextUsage = null;
+  renderContextUsage(null);
+  if (!threadId) return;
+  try {
+    const data = await api(`/api/threads/${encodeURIComponent(threadId)}/context-usage`);
+    if (state.selectedThreadId !== threadId) return;
+    state.contextUsage = data.contextUsage || null;
+    renderContextUsage(state.contextUsage);
+  } catch { /* Live app-server notifications will update the meter when available. */ }
 }
 
 function formatDuration(milliseconds) {
@@ -1503,6 +1540,10 @@ function connectEvents() {
       const usage = event.data.tokenUsage || event.data;
       const tokenText = usage.total?.totalTokens ?? usage.totalTokens ?? usage.total?.inputTokens;
       if (tokenText != null) $('#threadMeta').dataset.tokens = String(tokenText);
+      if (event.data.threadId === state.selectedThreadId) {
+        state.contextUsage = { tokenUsage: usage, updatedAt: event.at || new Date().toISOString() };
+        renderContextUsage(state.contextUsage);
+      }
     }
     else if (event.type === 'thread-queue-changed') {
       if (event.data.threadId === state.selectedThreadId) refreshQueue(state.selectedThreadId).catch((error) => toast(error.message, 'error'));
@@ -1588,6 +1629,7 @@ async function loadThreadHistory(threadId) {
   const thread = data.thread || { id: threadId };
   if (!thread.name && !thread.preview && row) Object.assign(thread, { name: row.name, preview: row.preview });
   updateThreadHeader(thread);
+  await loadContextUsage(threadId);
   renderTurnHistory(data.turns || [], threadId);
   const active = data.thread?.status?.type === 'active';
   const activeTurn = [...(data.turns || [])].reverse().find((turn) => {

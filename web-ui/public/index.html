@@ -7,7 +7,7 @@
     <meta name="description" content="Converse com o Codex na sua VPS." />
     <title>Codex Web Harness</title>
     <link rel="manifest" href="/codex-agent/manifest.webmanifest" />
-    <link rel="stylesheet" href="/codex-agent/styles.vps-health-20261024.css" />
+    <link rel="stylesheet" href="/codex-agent/styles.context-20261025.css" />
   </head>
   <body>
     <main class="auth-screen" id="authScreen" aria-labelledby="authTitle">
@@ -202,6 +202,10 @@
           <div class="token-summary" id="tokenSummary"></div>
           <p class="muted-note">Os limites são os informados pela conta ChatGPT. Tokens são atividade, não valor em dólares.</p>
         </section>
+        <section class="inspector-card context-usage-card" aria-label="Contexto da conversa">
+          <div class="card-title-row"><div><span class="card-icon" data-icon="chat"></span><strong>Contexto da conversa</strong></div></div>
+          <div id="contextUsageMeter" class="context-usage-meter"><p class="muted-note">Abra uma conversa para ver o contexto usado e o limite do modelo.</p></div>
+        </section>
         <section class="inspector-card server-health-card" aria-label="Saúde da VPS">
           <div class="card-title-row"><div><span class="card-icon" data-icon="server"></span><strong>Saúde da VPS</strong></div><button class="refresh-mini" id="refreshVpsHealth" aria-label="Atualizar saúde da VPS" title="Atualizar agora"><span class="icon" data-icon="refresh"></span></button></div>
           <div class="vps-host-metrics" id="vpsHostMetrics"><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
@@ -234,6 +238,6 @@
     </dialog>
 
     <div class="toast-container" id="toastContainer" aria-live="polite"></div>
-    <script src="/codex-agent/app.vps-health-20261024.js" defer></script>
+    <script src="/codex-agent/app.context-20261025.js" defer></script>
   </body>
 </html>

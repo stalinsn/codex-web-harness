@@ -32,6 +32,7 @@ const eventHistory = [];
 const pendingRequests = new Map();
 const activeTurns = new Map();
 const resumedThreads = new Set();
+const threadContextUsage = new Map();
 const rpcPending = new Map();
 let appServer;
 let appReady = false;
@@ -156,7 +157,12 @@ function handleServerMessage(message) {
   }
   if (message.method === 'account/updated') accountCache = message.params;
   if (message.method === 'account/rateLimits/updated') rateLimitsCache = message.params;
-  if (message.method === 'thread/tokenUsage/updated') emit('thread-usage', message.params);
+  if (message.method === 'thread/tokenUsage/updated') {
+    const threadId = message.params?.threadId;
+    const tokenUsage = message.params?.tokenUsage || message.params;
+    if (threadId && tokenUsage) threadContextUsage.set(threadId, { tokenUsage, updatedAt: new Date().toISOString() });
+    emit('thread-usage', message.params);
+  }
   emit('codex-event', message);
 }
 
@@ -612,6 +618,11 @@ async function handleApi(req, res, pathName, url) {
     });
   }
 
+  const contextUsageMatch = pathName.match(/^\/api\/threads\/([a-zA-Z0-9_-]{1,100})\/context-usage$/);
+  if (req.method === 'GET' && contextUsageMatch) {
+    return json(res, 200, { contextUsage: threadContextUsage.get(contextUsageMatch[1]) || null });
+  }
+
   if (req.method === 'GET' && pathName === '/api/projects') {
     return json(res, 200, { projects: await getProjects() });
   }
@@ -667,7 +678,9 @@ async function handleApi(req, res, pathName, url) {
     const threadId = queueRoute[1];
     if (!resumedThreads.has(threadId)) {
       try {
-        await rpc('thread/resume', { threadId, excludeTurns: true });
+        // The full resume lets app-server replay the persisted token-usage
+        // snapshot for this thread; excludeTurns skips that context telemetry.
+        await rpc('thread/resume', { threadId });
         resumedThreads.add(threadId);
       } catch (error) {
         if (!/already has an active writer/i.test(error.message)) throw error;

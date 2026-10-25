@@ -88,6 +88,8 @@ O processo precisa de uma configuração privada válida em `CODEX_HOME/web-auth
 
 O painel de saúde lê `/proc`, o espaço de disco com `df` e métricas Docker com `docker stats`, `docker ps` e `docker system df`. Para exibir o resumo dos containers, o usuário Unix do serviço precisa ter o Docker CLI e acesso de leitura ao daemon. A rota é protegida pela mesma sessão autenticada do chat.
 
+O painel lateral também mostra o uso recente de contexto da conversa e o limite informado pelo app-server para o modelo selecionado. O percentual usa os tokens do último turno em relação à janela do modelo; não representa a soma acumulada de todos os turnos. A leitura é atualizada quando o app-server emite `thread/tokenUsage/updated` e é recuperada ao reabrir conversas existentes.
+
 ## Licença
 
 MIT. Consulte [LICENSE](LICENSE).

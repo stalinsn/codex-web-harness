@@ -395,6 +395,15 @@ kbd { margin-left: auto; padding: 2px 5px; color: #898a94; font-size: 10px; bord
 .token-stat { min-width: 0; }
 .token-stat strong { display: block; color: #e7e7ed; font-family: 'IBM Plex Mono', monospace; font-size: 17px; font-weight: 500; }
 .token-stat span { display: block; margin-top: 4px; color: #b0b1bb; font-size: 11px; line-height: 1.45; }
+.context-usage-card { margin-top: 1px; }
+.context-usage-heading, .context-usage-foot { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.context-usage-heading { margin-top: 14px; color: #b7b8c1; font-size: 10px; }
+.context-usage-heading strong { color: #ececf1; font-family: 'IBM Plex Mono', monospace; font-size: 14px; font-weight: 500; }
+.context-usage-heading span { text-align: right; }
+.context-usage-track { height: 8px; margin-top: 10px; background: #3a3b42; }
+.context-usage-foot { margin-top: 7px; color: #a5a6af; font-size: 9px; }
+.context-usage-foot span:last-child { text-align: right; }
+.context-usage-card .muted-note { margin-top: 10px; }
 .muted-note { margin: 12px 0 0; color: #a5a6af; font-size: 11px; line-height: 1.55; }
 .environment-card { margin-top: 1px; }
 .environment-row { gap: 9px; margin-top: 14px; }
