@@ -8,12 +8,14 @@ const state = {
   queueItems: [], recoveredQueueItems: [], turnStartedAtMs: null, turnTimer: null,
   streamedMessages: new Map(), activityCards: new Map(), commandGroups: new Map(), reasoningGroups: new Map(), turnIntermediates: new Map(), userMessageIds: new Set(), pendingApprovals: new Map(),
   activeTurnId: null,
+  completedTurnIds: new Set(), progressSegments: new Map(), executionRevision: 0, lastExecutionEventAt: Date.now(),
   activeThreadIds: new Set(),
   followLatest: true,
   threadListRequest: 0,
 };
 const authUi = { mode: 'login', step: 'credentials', challengeId: '', setupRequired: false, countdown: null, started: false };
 let vpsHealthRequest = null;
+let executionSyncRequest = null;
 const voice = { phase: 'idle', recorder: null, stream: null, chunks: [], blob: null, url: '', timer: null, startedAt: 0, seconds: 0, request: null, jobId: null, cancelled: false, context: null, meterSource: null, meterFrame: null, hasSignal: false, generation: 0 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -359,6 +361,8 @@ function startApplication() {
   refreshVpsHealth();
   setInterval(() => { if (!document.hidden) refreshVpsHealth(); }, 60_000);
   bindEvents(); connectEvents(); bootstrap();
+  setInterval(() => { if (!document.hidden && state.busy && Date.now() - state.lastExecutionEventAt > 20_000) syncExecutionState().catch(() => {}); }, 15_000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) syncExecutionState().catch(() => {}); });
 }
 
 async function initializeAuthentication() {
@@ -815,7 +819,7 @@ function renderThreads(threads = state.threads, query = $('#threadSearch')?.valu
     const row = document.createElement('div');
     row.className = `thread-row${pinned ? ' pinned' : ''}`;
     const button = document.createElement('button');
-    const isRunning = state.activeThreadIds.has(thread.id) || thread.status?.type === 'active';
+    const isRunning = thread.id === state.selectedThreadId ? state.busy : state.activeThreadIds.has(thread.id) || thread.status?.type === 'active';
     button.className = `thread-item ${thread.id === state.selectedThreadId ? 'active' : ''}${isRunning ? ' running' : ''}`;
     button.type = 'button';
     button.title = threadDisplayTitle(thread);
@@ -1020,7 +1024,7 @@ function updateThreadHeader(thread) {
   if (thread?.id) {
     const updated = thread.updatedAt ? new Date(Number(thread.updatedAt) * (Number(thread.updatedAt) < 1e12 ? 1000 : 1)) : null;
     const status = thread.status?.type === 'active' ? 'Em execução' : 'Pronta para continuar';
-    $('#threadMeta').innerHTML = `<div class="thread-meta-row"><span>Estado</span><strong>${escapeHtml(status)}</strong></div><div class="thread-meta-row"><span>Modelo</span><strong>${escapeHtml(thread.model || thread.modelProvider || 'Codex')}</strong></div><div class="thread-meta-row"><span>Atualizada</span><strong>${updated && !Number.isNaN(updated.getTime()) ? escapeHtml(new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(updated)) : '—'}</strong></div>`;
+    $('#threadMeta').innerHTML = `<div class="thread-meta-row"><span>Estado</span><strong id="threadExecutionState">${escapeHtml(status)}</strong></div><div class="thread-meta-row"><span>Modelo</span><strong>${escapeHtml(thread.model || thread.modelProvider || 'Codex')}</strong></div><div class="thread-meta-row"><span>Atualizada</span><strong>${updated && !Number.isNaN(updated.getTime()) ? escapeHtml(new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(updated)) : '—'}</strong></div>`;
     location.hash = `thread=${encodeURIComponent(thread.id)}`;
     renderContextUsage(state.contextUsage);
   } else {
@@ -1189,7 +1193,11 @@ function updateComposerControls() {
 }
 
 function setBusy(busy, detail = '') {
+  const changed = state.busy !== Boolean(busy);
   state.busy = Boolean(busy);
+  const statusLabel = $('#threadExecutionState');
+  if (statusLabel) statusLabel.textContent = state.busy ? 'Em execução' : 'Pronta para continuar';
+  if (changed) renderThreads(state.threads, $('#threadSearch').value.trim());
   $('#runningIndicator').classList.toggle('hidden', !state.busy);
   if (detail) $('#runningText').textContent = detail;
   if (state.busy) {
@@ -1300,7 +1308,7 @@ function updateTurnIntermediateTitle(group) {
 
 function ensureTurnIntermediates(turnId, append = true) {
   const normalizedTurnId = turnId || state.activeTurnId || 'active';
-  const groupKey = `${state.selectedThreadId}:${normalizedTurnId}`;
+  const groupKey = `${state.selectedThreadId}:${normalizedTurnId}:${state.progressSegments.get(normalizedTurnId) || 0}`;
   let group = state.turnIntermediates.get(groupKey);
   if (group) return group;
 
@@ -1316,7 +1324,7 @@ function ensureTurnIntermediates(turnId, append = true) {
   const content = document.createElement('div'); content.className = 'turn-intermediate-content';
   heading.append(icon, title, hint); card.append(heading, content);
   card.addEventListener('toggle', () => updateTurnIntermediateTitle(group));
-  group = { card, title, hint, content, items: new Set(), turnId: normalizedTurnId, durationMs: null };
+  group = { key: groupKey, card, title, hint, content, items: new Set(), turnId: normalizedTurnId, durationMs: null };
   state.turnIntermediates.set(groupKey, group);
 
   const finalAnswer = normalizedTurnId === 'active' ? null : $$('.message.assistant', $('#messages')).find((message) => message.dataset.turnId === normalizedTurnId && message.dataset.finalAnswer === 'true');
@@ -1324,6 +1332,13 @@ function ensureTurnIntermediates(turnId, append = true) {
   else if (append) $('#messages').append(card);
   updateTurnIntermediateTitle(group);
   return group;
+}
+
+function startProgressSegment(turnId) {
+  const id = turnId || state.activeTurnId || 'active';
+  if ([...state.turnIntermediates.values()].some((group) => group.turnId === id)) {
+    state.progressSegments.set(id, (state.progressSegments.get(id) || 0) + 1);
+  }
 }
 
 function registerIntermediate(turnId, itemId, append = true) {
@@ -1336,7 +1351,7 @@ function registerIntermediate(turnId, itemId, append = true) {
 function renderCommandActivity(item, append, turnId) {
   const key = `${state.selectedThreadId}:${item.id}`;
   const turnGroup = registerIntermediate(turnId, `command:${item.id}`, append);
-  const groupKey = `${state.selectedThreadId}:${turnGroup.turnId}`;
+  const groupKey = turnGroup.key;
   let group = state.commandGroups.get(groupKey);
   if (!group) {
     const card = document.createElement('details');
@@ -1380,7 +1395,7 @@ function renderCommandActivity(item, append, turnId) {
 function ensureReasoningGroup(turnId, append = true, itemId = '') {
   const turnGroup = registerIntermediate(turnId, `reasoning:${itemId || 'summary'}`, append);
   const normalizedTurnId = turnGroup.turnId;
-  const groupKey = `${state.selectedThreadId}:${normalizedTurnId}`;
+  const groupKey = turnGroup.key;
   let group = state.reasoningGroups.get(groupKey);
   if (group) return group;
 
@@ -1428,6 +1443,7 @@ function setReasoningPart({ itemId, summaryIndex = 0, turnId = '', text = '', de
   }
   part.text = delta ? part.text + String(text || '') : String(text || '');
   updateReasoningGroup(group);
+  if (append) scrollConversation();
   return group;
 }
 
@@ -1520,8 +1536,8 @@ function renderTurnHistory(turns, threadId) {
   state.commandGroups.clear();
   state.reasoningGroups.clear();
   state.turnIntermediates.clear();
+  state.progressSegments.clear();
   state.userMessageIds.clear();
-  state.activeTurnId = null;
   $('#messages').replaceChildren();
   let count = 0;
   for (const turn of turns || []) {
@@ -1533,7 +1549,7 @@ function renderTurnHistory(turns, threadId) {
       lastAgentIndex = index;
       if (isFinalAgentMessage(item)) lastFinalIndex = index;
     });
-    const visibleAnswerIndex = lastFinalIndex >= 0 ? lastFinalIndex : lastAgentIndex;
+    const visibleAnswerIndex = lastFinalIndex >= 0 ? lastFinalIndex : (turnStatus(turn) === 'inProgress' || turnStatus(turn) === 'active' ? -1 : lastAgentIndex);
     let lastAssistant = null;
     items.forEach((item, index) => {
       if (item.type === 'userMessage') {
@@ -1541,17 +1557,19 @@ function renderTurnHistory(turns, threadId) {
         const images = imageFromContent(item.content, threadId);
         if (text || images.length) {
           if (item.id) state.userMessageIds.add(item.id);
-          makeMessage('user', { text, images, id: item.id }); count++;
+          makeMessage('user', { text, images, id: item.id }); startProgressSegment(turn.id); count++;
         }
       } else if (item.type === 'agentMessage') {
         if (item.text) {
           const finalAnswer = index === visibleAnswerIndex;
+          let row;
           if (finalAnswer) {
-            lastAssistant = makeMessage('assistant', { text: item.text, id: item.id, turnId: turn.id, phase: item.phase, finalAnswer: true });
+            row = lastAssistant = makeMessage('assistant', { text: item.text, id: item.id, turnId: turn.id, phase: item.phase, finalAnswer: true });
           } else {
             const group = registerIntermediate(turn.id, `message:${item.id || index}`, true);
-            makeMessage('assistant', { text: item.text, id: item.id, turnId: turn.id, phase: item.phase, finalAnswer: false, parent: group.content });
+            row = makeMessage('assistant', { text: item.text, id: item.id, turnId: turn.id, phase: item.phase, finalAnswer: false, parent: group.content });
           }
+          if (item.id) state.streamedMessages.set(`${threadId}:${item.id}`, { row, text: item.text, phase: item.phase || '', turnId: turn.id, finalAnswer });
           count++;
         }
       } else if (item.type === 'reasoning') {
@@ -1561,8 +1579,8 @@ function renderTurnHistory(turns, threadId) {
       }
     });
     const durationMs = Number(turn.durationMs) || (turn.startedAt && turn.completedAt ? (Number(turn.completedAt) - Number(turn.startedAt)) * 1000 : 0);
-    const group = state.turnIntermediates.get(`${threadId}:${turn.id}`);
-    if (group && durationMs > 0) { group.durationMs = durationMs; updateTurnIntermediateTitle(group); }
+    const groups = [...state.turnIntermediates.values()].filter((group) => group.turnId === turn.id);
+    if (groups.length && durationMs > 0) groups.forEach((group) => { group.durationMs = durationMs; updateTurnIntermediateTitle(group); });
     else if (lastAssistant && durationMs > 0) $('.message-meta', lastAssistant).textContent = `Trabalhou por ${formatDuration(durationMs)}`;
   }
   $('#welcome').classList.toggle('hidden', count > 0);
@@ -1575,7 +1593,7 @@ function getOrCreateStreamMessage(itemId, turnId = '', phase = '') {
   let message = state.streamedMessages.get(key);
   if (!message) {
     const normalizedTurnId = turnId || state.activeTurnId || '';
-    const finalAnswer = isFinalAgentMessage({ phase });
+    const finalAnswer = Boolean(phase) && isFinalAgentMessage({ phase });
     const group = finalAnswer ? null : registerIntermediate(normalizedTurnId, `message:${itemId}`, true);
     const row = makeMessage('assistant', { id: itemId, turnId: normalizedTurnId, phase, finalAnswer, parent: group?.content || null });
     message = { row, text: '', phase, turnId: normalizedTurnId, finalAnswer };
@@ -1586,7 +1604,7 @@ function getOrCreateStreamMessage(itemId, turnId = '', phase = '') {
 
 function placeStreamMessage(stream, phase) {
   if (phase) stream.phase = phase;
-  const finalAnswer = isFinalAgentMessage({ phase: stream.phase });
+  const finalAnswer = Boolean(stream.phase) && isFinalAgentMessage({ phase: stream.phase });
   const target = finalAnswer ? $('#messages') : registerIntermediate(stream.turnId, `message:${stream.row.dataset.itemId}`, true).content;
   if (stream.row.parentElement !== target) target.append(stream.row);
   stream.finalAnswer = finalAnswer;
@@ -1624,6 +1642,10 @@ function addApproval(request) {
 function handleCodexNotification(message) {
   const params = message.params || {};
   const eventThreadId = params.threadId || params.turn?.threadId;
+  if (eventThreadId === state.selectedThreadId) {
+    state.executionRevision += 1;
+    state.lastExecutionEventAt = Date.now();
+  }
   if (eventThreadId && message.method === 'turn/started') {
     state.activeThreadIds.add(eventThreadId);
     renderThreads(state.threads, $('#threadSearch').value.trim());
@@ -1637,10 +1659,13 @@ function handleCodexNotification(message) {
     return;
   }
   if (message.method === 'thread/status/changed' && eventThreadId === state.selectedThreadId) {
-    setBusy(params.status?.type === 'active');
+    if (params.status?.type !== 'active') { setBusy(false); state.activeTurnId = null; }
+    else if (state.activeTurnId) setBusy(true);
+    else syncExecutionState().catch(() => {});
   }
   if (eventThreadId && eventThreadId !== state.selectedThreadId) return;
   if (message.method === 'turn/started') {
+    if (params.turn?.id && state.completedTurnIds.has(params.turn.id)) return;
     state.turnStartedAtMs = params.turn?.startedAt ? Number(params.turn.startedAt) * 1000 : Date.now();
     state.activeTurnId = params.turn?.id || null;
     setBusy(true);
@@ -1695,7 +1720,7 @@ function handleCodexNotification(message) {
         const text = (item.content || []).filter((part) => part.type === 'text').map((part) => part.text).join('\n');
         const images = imageFromContent(item.content, state.selectedThreadId);
         if (item.id) state.userMessageIds.add(item.id);
-        if (text || images.length) makeMessage('user', { text, images, id: item.id });
+        if (text || images.length) { makeMessage('user', { text, images, id: item.id }); startProgressSegment(params.turnId); }
       }
     } else if (item.type === 'userMessage') {
       // The user message was rendered when its item started.
@@ -1723,7 +1748,7 @@ function randomKey() { return `request-${Date.now()}-${Math.random().toString(36
 
 function connectEvents() {
   const events = new EventSource(`${PREFIX}/api/events`, { withCredentials: true });
-  events.onopen = () => setConnection(true, 'Codex conectado');
+  events.onopen = () => { setConnection(true, 'Codex conectado'); syncExecutionState().catch(() => {}); };
   events.onerror = () => setConnection(false, 'Reconectando ao Codex…');
   events.onmessage = (raw) => {
     let event; try { event = JSON.parse(raw.data); } catch { return; }
@@ -1745,32 +1770,44 @@ function connectEvents() {
       if (event.data.threadId === state.selectedThreadId) refreshQueue(state.selectedThreadId).catch((error) => toast(error.message, 'error'));
     }
     else if (event.type === 'turn-accepted') {
-      const isNew = !state.selectedThreadId;
-      state.selectedThreadId = event.data.threadId;
+      if (event.data.turnId && state.completedTurnIds.has(event.data.turnId)) return;
       state.activeThreadIds.add(event.data.threadId);
+      const isNew = !state.selectedThreadId && state.sending;
+      if (!isNew && state.selectedThreadId !== event.data.threadId) return;
+      state.executionRevision += 1; state.lastExecutionEventAt = Date.now();
+      state.selectedThreadId = event.data.threadId;
+      state.activeTurnId = event.data.turnId || state.activeTurnId;
       if (isNew) state.activeThreadProjectId = state.selectedProjectId;
       setBusy(true);
       if (isNew) updateThreadHeader({ id: event.data.threadId, name: 'Nova conversa', model: event.data.model, status: { type: 'active' } });
     }
     else if (event.type === 'thread-created') {
+      if (state.selectedThreadId || !state.sending) return;
       state.selectedThreadId = event.data.thread.id;
       state.activeThreadProjectId = state.selectedProjectId;
       associateThreadWithSelectedProject(event.data.thread.id);
       renderConversationContext();
     }
     else if (event.type === 'turn-completed') {
-      if (event.data.threadId) {
+      const turnId = event.data.turn?.id;
+      if (turnId) {
+        state.completedTurnIds.add(turnId);
+        if (state.completedTurnIds.size > 200) state.completedTurnIds.delete(state.completedTurnIds.values().next().value);
+      }
+      const isSelected = event.data.threadId === state.selectedThreadId;
+      const superseded = isSelected && state.activeTurnId && turnId && state.activeTurnId !== turnId;
+      if (event.data.threadId && !superseded) {
         state.activeThreadIds.delete(event.data.threadId);
         renderThreads(state.threads, $('#threadSearch').value.trim());
       }
-      if (event.data.threadId === state.selectedThreadId) {
-        const turnId = event.data.turn?.id;
-        const group = turnId ? state.turnIntermediates.get(`${event.data.threadId}:${turnId}`) : null;
-        if (group) group.durationMs = Number(event.data.turn?.durationMs) || (state.turnStartedAtMs ? Date.now() - state.turnStartedAtMs : 0);
-        setBusy(false);
-        if (group) { group.card.open = false; updateTurnIntermediateTitle(group); }
-        state.activeTurnId = null;
-        loadThreadHistory(state.selectedThreadId).catch(() => {});
+      if (isSelected) {
+        state.executionRevision += 1; state.lastExecutionEventAt = Date.now();
+        const groups = [...state.turnIntermediates.values()].filter((group) => group.turnId === turnId);
+        groups.forEach((group) => { group.durationMs = Number(event.data.turn?.durationMs) || (state.turnStartedAtMs ? Date.now() - state.turnStartedAtMs : 0); group.card.open = false; updateTurnIntermediateTitle(group); });
+        if (!superseded) {
+          setBusy(false); state.activeTurnId = null;
+          loadThreadHistory(state.selectedThreadId, { background: true }).catch(() => {});
+        }
       }
       refreshThreadList().catch(() => {});
       refreshUsage().catch(() => {});
@@ -1823,25 +1860,43 @@ async function bootstrap() {
   }
 }
 
-async function loadThreadHistory(threadId) {
+function turnStatus(turn) { return typeof turn?.status === 'string' ? turn.status : turn?.status?.type; }
+
+function executionFromHistory(data) {
+  const latest = (data.turns || []).at(-1);
+  const status = turnStatus(latest);
+  if (['completed', 'failed', 'interrupted'].includes(status)) return { active: false, turn: null };
+  const active = ['inProgress', 'active'].includes(status) || data.thread?.status?.type === 'active';
+  return { active, turn: active ? latest : null };
+}
+
+async function syncExecutionState() {
+  const threadId = state.selectedThreadId;
+  if (!threadId || state.loadingThreadId || executionSyncRequest) return;
+  executionSyncRequest = loadThreadHistory(threadId, { background: true });
+  try { await executionSyncRequest; } finally { executionSyncRequest = null; }
+}
+
+async function loadThreadHistory(threadId, { background = false } = {}) {
+  const revision = state.executionRevision;
   const data = await api(`/api/threads/${encodeURIComponent(threadId)}/history`);
-  if (state.selectedThreadId !== threadId) return null;
+  if (state.selectedThreadId !== threadId || (background && revision !== state.executionRevision)) return null;
   state.selectedThreadId = threadId;
   const row = state.threads.find((item) => item.id === threadId);
   const thread = data.thread || { id: threadId };
   if (!thread.name && !thread.preview && row) Object.assign(thread, { name: row.name, preview: row.preview });
   updateThreadHeader(thread);
-  await loadContextUsage(threadId);
+  loadContextUsage(threadId).catch(() => {});
+  const execution = executionFromHistory(data);
+  const active = execution.active;
+  state.activeTurnId = execution.turn?.id || null;
+  for (const turn of data.turns || []) if (['completed', 'failed', 'interrupted'].includes(turnStatus(turn)) && turn.id) state.completedTurnIds.add(turn.id);
   renderTurnHistory(data.turns || [], threadId);
-  const active = data.thread?.status?.type === 'active';
   if (active) state.activeThreadIds.add(threadId);
   else state.activeThreadIds.delete(threadId);
   renderThreads(state.threads, $('#threadSearch').value.trim());
-  const activeTurn = [...(data.turns || [])].reverse().find((turn) => {
-    const status = typeof turn.status === 'string' ? turn.status : turn.status?.type;
-    return status === 'inProgress' || status === 'active';
-  });
-  state.turnStartedAtMs = activeTurn?.startedAt ? Number(activeTurn.startedAt) * 1000 : null;
+  const activeTurn = execution.turn;
+  state.turnStartedAtMs = activeTurn?.startedAt ? Number(activeTurn.startedAt) * 1000 : (active ? state.turnStartedAtMs || Date.now() : null);
   setBusy(active);
   refreshQueue(threadId).catch((error) => toast(error.message, 'error'));
   state.pendingApprovals.forEach((request) => { if (request.params?.threadId === threadId) addApproval(request); });
@@ -1914,7 +1969,7 @@ function newChat() {
   state.activeThreadProjectId = '';
   state.loadingThreadId = null;
   state.streamedMessages.clear(); state.activityCards.clear(); state.commandGroups.clear(); state.reasoningGroups.clear(); state.turnIntermediates.clear(); state.userMessageIds.clear();
-  state.activeTurnId = null;
+  state.activeTurnId = null; state.progressSegments.clear();
   state.queueItems = []; renderQueue();
   const project = state.projects.find((item) => item.id === state.selectedProjectId);
   updateWorkingDirectory(project?.cwd || state.defaultCwd || state.cwd || '/');
@@ -2102,7 +2157,10 @@ async function submitMessage(event) {
       refreshQueue(result.threadId).catch((error) => toast(error.message, 'error'));
     } else {
       if (!state.turnStartedAtMs) state.turnStartedAtMs = Date.now();
-      setBusy(true);
+      if (!result.turn?.id || !state.completedTurnIds.has(result.turn.id)) {
+        state.activeTurnId = result.turn?.id || state.activeTurnId;
+        setBusy(true);
+      }
     }
     if (textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
     if (files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
