@@ -7,7 +7,7 @@
     <meta name="description" content="Converse com o Codex na sua VPS." />
     <title>Codex Web Harness</title>
     <link rel="manifest" href="/codex-agent/manifest.webmanifest" />
-    <link rel="stylesheet" href="/codex-agent/styles.running-20261025.css" />
+    <link rel="stylesheet" href="/codex-agent/styles.storage-20261025.css" />
   </head>
   <body>
     <main class="auth-screen" id="authScreen" aria-labelledby="authTitle">
@@ -195,6 +195,7 @@
       </main>
 
       <aside class="inspector" id="inspector" aria-label="Uso e ambiente">
+        <div class="inspector-resize-handle" id="inspectorResizeHandle" role="separator" aria-orientation="vertical" aria-label="Redimensionar painel lateral" aria-valuemin="260" aria-valuemax="560" tabindex="0" title="Arraste para redimensionar"></div>
         <div class="inspector-header"><div><p class="eyebrow">VISÃO GERAL</p><h2>Uso e ambiente</h2></div><button class="icon-button inspector-close" id="closeUsage" aria-label="Fechar painel"><span class="icon" data-icon="close"></span></button></div>
         <section class="inspector-card">
           <div class="card-title-row"><div><span class="card-icon" data-icon="gauge"></span><strong>Uso do Codex</strong></div><button class="refresh-mini" id="refreshUsage" aria-label="Atualizar uso"><span class="icon" data-icon="refresh"></span></button></div>
@@ -210,7 +211,7 @@
           <div class="card-title-row"><div><span class="card-icon" data-icon="server"></span><strong>Saúde da VPS</strong></div><button class="refresh-mini" id="refreshVpsHealth" aria-label="Atualizar saúde da VPS" title="Atualizar agora"><span class="icon" data-icon="refresh"></span></button></div>
           <div class="vps-host-metrics" id="vpsHostMetrics"><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
           <div class="vps-project-list" id="vpsProjectList"></div>
-          <details class="vps-storage-details" id="vpsStorageDetails"><summary>Armazenamento Docker</summary><div class="vps-storage-list" id="vpsStorageList"></div></details>
+          <details class="vps-storage-details" id="vpsStorageDetails"><summary>Armazenamento e locais no disco</summary><div class="vps-storage-list" id="vpsStorageList"></div><div class="vps-storage-section"><strong>Volumes Docker</strong><div id="vpsVolumeStorage"></div></div><div class="vps-storage-section"><strong>Pastas principais</strong><div id="vpsStorageLocations"></div></div><p class="vps-storage-note">Por instância: código da pasta do projeto + camada gravável dos containers + volumes identificados. Imagens Docker são compartilhadas e aparecem no total geral. Pastas listadas podem se sobrepor; não some esses valores. Detalhes do disco atualizam a cada 5 min; use atualizar para ler agora.</p></details>
           <p class="vps-health-updated" id="vpsHealthUpdated" aria-live="polite">Lendo métricas da VPS…</p>
         </section>
         <section class="inspector-card environment-card">
@@ -237,7 +238,11 @@
       </form>
     </dialog>
 
+    <dialog class="image-preview-dialog" id="imagePreviewDialog" aria-label="Prévia da imagem">
+      <div class="image-preview-content"><button type="button" class="image-preview-close" id="closeImagePreview" aria-label="Fechar prévia">×</button><img id="imagePreviewImage" alt="Prévia da imagem" /><p id="imagePreviewCaption"></p></div>
+    </dialog>
+
     <div class="toast-container" id="toastContainer" aria-live="polite"></div>
-    <script src="/codex-agent/app.running-20261025.js" defer></script>
+    <script src="/codex-agent/app.storage-20261025.js" defer></script>
   </body>
 </html>

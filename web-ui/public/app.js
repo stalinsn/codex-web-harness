@@ -851,6 +851,57 @@ function showInspector(show) {
   }
 }
 
+function setupInspectorResize() {
+  const handle = $('#inspectorResizeHandle');
+  const root = document.documentElement;
+  const minimum = 260;
+  const maximum = () => {
+    const sidebarWidth = Number.parseFloat(getComputedStyle(root).getPropertyValue('--side-width')) || 264;
+    return Math.max(minimum, Math.min(560, window.innerWidth - sidebarWidth - 460));
+  };
+  const current = () => Number.parseFloat(getComputedStyle(root).getPropertyValue('--inspector-width')) || 300;
+  let preferredWidth = Number(localStorage.getItem('codex-inspector-width'));
+  if (!Number.isFinite(preferredWidth) || preferredWidth < minimum) preferredWidth = current();
+  const apply = (requested) => {
+    const width = Math.min(maximum(), Math.max(minimum, requested));
+    root.style.setProperty('--inspector-width', `${width}px`);
+    handle.setAttribute('aria-valuemax', String(Math.round(maximum())));
+    handle.setAttribute('aria-valuenow', String(Math.round(width)));
+  };
+  apply(preferredWidth);
+  let pointerId = null;
+  handle.addEventListener('pointerdown', (event) => {
+    if (window.innerWidth <= 980 || event.button !== 0) return;
+    pointerId = event.pointerId;
+    handle.setPointerCapture(pointerId);
+    document.body.classList.add('resizing-inspector');
+    event.preventDefault();
+  });
+  handle.addEventListener('pointermove', (event) => {
+    if (event.pointerId === pointerId) apply(window.innerWidth - event.clientX);
+  });
+  const finish = (event) => {
+    if (event.pointerId !== pointerId) return;
+    pointerId = null;
+    document.body.classList.remove('resizing-inspector');
+    preferredWidth = current();
+    localStorage.setItem('codex-inspector-width', String(Math.round(preferredWidth)));
+  };
+  handle.addEventListener('pointerup', finish);
+  handle.addEventListener('pointercancel', finish);
+  handle.addEventListener('keydown', (event) => {
+    const step = event.shiftKey ? 48 : 16;
+    if (event.key === 'ArrowLeft') { event.preventDefault(); apply(current() + step); }
+    else if (event.key === 'ArrowRight') { event.preventDefault(); apply(current() - step); }
+    else if (event.key === 'Home') { event.preventDefault(); apply(minimum); }
+    else if (event.key === 'End') { event.preventDefault(); apply(maximum()); }
+    else return;
+    preferredWidth = current();
+    localStorage.setItem('codex-inspector-width', String(Math.round(preferredWidth)));
+  });
+  window.addEventListener('resize', () => { if (window.innerWidth > 980) apply(preferredWidth); });
+}
+
 function updateThreadHeader(thread) {
   state.selectedThread = thread || null;
   const title = thread?.id ? threadDisplayTitle(thread) : 'Novo chat';
@@ -952,16 +1003,21 @@ function renderVpsHealth(data) {
     const projectRows = projects.map((project) => {
       const stateClass = project.unhealthy ? 'unhealthy' : project.stopped ? 'partial' : 'healthy';
       const stateText = project.unhealthy ? 'Com falha' : project.stopped ? `${project.running}/${project.containers} ativos` : 'Em execução';
-      const children = (docker.containers || []).filter((container) => container.project === project.name).map((container) => `<div class="vps-container-row"><span>${escapeHtml(container.name)}</span><span>${container.running ? `${Number(container.cpuPercent).toFixed(1)}% CPU · ${escapeHtml(formatBytes(container.memoryBytes))}` : escapeHtml(container.status)}</span></div>`).join('');
-      return `<details class="vps-project-details"><summary class="vps-project-row"><span class="vps-state-dot ${stateClass}"></span><span class="vps-project-name"><strong>${escapeHtml(project.name)}</strong><small>${project.containers} ${project.containers === 1 ? 'container' : 'containers'} · CPU ${Number(project.cpuPercent).toFixed(1)}% · ${escapeHtml(stateText)}</small></span><span class="vps-project-memory">${escapeHtml(formatBytes(project.memoryBytes))}</span></summary><div class="vps-container-list">${children}</div></details>`;
+      const children = (docker.containers || []).filter((container) => container.project === project.name).map((container) => `<div class="vps-container-row"><span>${escapeHtml(container.name)}</span><span>${container.running ? `${Number(container.cpuPercent).toFixed(1)}% CPU · ${escapeHtml(formatBytes(container.memoryBytes))} RAM` : escapeHtml(container.status)} · disco ${escapeHtml(formatBytes(container.storageBytes))}</span></div>`).join('');
+      const projectPath = project.sourcePath ? `<div class="vps-storage-breakdown"><span>Código · ${escapeHtml(project.sourcePath)}</span><strong>${escapeHtml(formatBytes(project.sourceBytes))}</strong></div>` : '';
+      const projectVolumes = (data.dockerVolumes || []).filter((volume) => volume.project === project.name).map((volume) => `<div class="vps-storage-breakdown"><span>Volume · ${escapeHtml(volume.name)}</span><strong>${escapeHtml(volume.size)}</strong></div>`).join('');
+      return `<details class="vps-project-details"><summary class="vps-project-row"><span class="vps-state-dot ${stateClass}"></span><span class="vps-project-name"><strong>${escapeHtml(project.name)}</strong><small>${project.containers} ${project.containers === 1 ? 'container' : 'containers'} · CPU ${Number(project.cpuPercent).toFixed(1)}% · ${escapeHtml(stateText)}</small></span><span class="vps-project-resources"><strong>${escapeHtml(formatBytes(project.memoryBytes))}</strong><small>${escapeHtml(formatBytes(project.storageBytes))} disco</small></span></summary><div class="vps-container-list">${children}${projectPath}${projectVolumes}</div></details>`;
     }).join('');
     const stopped = (docker.containers || []).filter((container) => !container.running);
     const stoppedDetails = stopped.length ? `<details class="vps-stopped-details"><summary>${stopped.length} ${stopped.length === 1 ? 'container parado' : 'containers parados'}</summary><div>${stopped.map((container) => `<p><strong>${escapeHtml(container.name)}</strong><small>${escapeHtml(container.status)}</small></p>`).join('')}</div></details>` : '';
-    projectList.innerHTML = `<div class="vps-project-heading"><span>INSTÂNCIA</span><span>MEMÓRIA</span></div>${hostServices}${projectRows || '<p class="vps-health-muted">Nenhum container em execução.</p>'}${stoppedDetails}`;
+    projectList.innerHTML = `<div class="vps-project-heading"><span>INSTÂNCIA</span><span>MEMÓRIA / DISCO</span></div>${hostServices}${projectRows || '<p class="vps-health-muted">Nenhum container em execução.</p>'}${stoppedDetails}`;
   }
 
   const storageLabels = { Images: 'Imagens', Containers: 'Containers', 'Local Volumes': 'Volumes', 'Build Cache': 'Cache de build' };
   storageList.innerHTML = (data.dockerStorage || []).map((item) => `<div><span>${escapeHtml(storageLabels[item.type] || item.type)}</span><strong>${escapeHtml(item.size)}${item.reclaimable ? `<small>${escapeHtml(item.reclaimable)} reclamável</small>` : ''}</strong></div>`).join('') || '<small>Resumo Docker indisponível.</small>';
+  $('#vpsVolumeStorage').innerHTML = (data.dockerVolumes || []).map((volume) => `<div><span>${escapeHtml(volume.name)}${volume.project ? `<small>${escapeHtml(volume.project)}</small>` : '<small>sem instância atribuída</small>'}</span><strong>${escapeHtml(volume.size)}</strong></div>`).join('') || '<small>Nenhum volume local.</small>';
+  const storageLocations = [...(data.storageLocations || []), ...(data.projectDirectories || []).map((location) => ({ ...location, name: `Código · ${location.project}` }))];
+  $('#vpsStorageLocations').innerHTML = storageLocations.map((location) => `<div><span>${escapeHtml(location.name)}<small>${escapeHtml(location.path)}</small></span><strong>${escapeHtml(formatBytes(location.bytes))}</strong></div>`).join('') || '<small>Pastas principais indisponíveis.</small>';
   const checked = new Date(data.checkedAt);
   $('#vpsHealthUpdated').textContent = `Atualizado ${checked.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} · atualiza a cada minuto`;
 }
@@ -1043,6 +1099,14 @@ function makeAvatar() {
   return '<div class="message-avatar" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M16 3.2 27.1 9.6v12.8L16 28.8 4.9 22.4V9.6L16 3.2Z"/><path d="m11.2 11.2 4.8 4.8-4.8 4.8M20.8 11.2 16 16l4.8 4.8"/></svg></div>';
 }
 
+function openImagePreview(src, caption = 'Imagem anexada') {
+  if (!src) return;
+  $('#imagePreviewImage').src = src;
+  $('#imagePreviewImage').alt = caption;
+  $('#imagePreviewCaption').textContent = caption;
+  $('#imagePreviewDialog').showModal();
+}
+
 function makeMessage(role, { text = '', images = [], time = null, id = '', turnId = '', phase = '', finalAnswer = true, parent = null } = {}) {
   $('#welcome').classList.add('hidden');
   const row = document.createElement('article');
@@ -1059,12 +1123,19 @@ function makeMessage(role, { text = '', images = [], time = null, id = '', turnI
   else $('.message-content', row).textContent = text;
   const imageBox = $('.message-images', row);
   for (const image of images) {
+    const preview = document.createElement('button');
+    preview.type = 'button';
+    preview.className = 'message-image-open';
+    preview.title = 'Abrir imagem em tamanho maior';
+    preview.setAttribute('aria-label', `Ampliar ${image.name || 'imagem anexada'}`);
     const img = document.createElement('img');
     img.alt = image.name || 'Imagem anexada';
     if (image.url) img.src = image.url;
     else if (image.dataUrl) img.src = image.dataUrl;
     else img.alt = 'Imagem anexada';
-    imageBox?.append(img);
+    preview.addEventListener('click', () => openImagePreview(img.currentSrc || img.src, img.alt));
+    preview.append(img);
+    imageBox?.append(preview);
   }
   if (imageBox && !imageBox.children.length) imageBox.remove();
   if (time) $('.message-meta', row).textContent = time;
@@ -1744,10 +1815,12 @@ function renderAttachments() {
   box.classList.toggle('hidden', !state.files.length);
   state.files.forEach((file, index) => {
     const tile = document.createElement('div'); tile.className = 'attachment-preview';
+    const preview = document.createElement('button'); preview.type = 'button'; preview.className = 'attachment-image-open'; preview.title = 'Ampliar imagem'; preview.setAttribute('aria-label', `Ampliar ${file.name}`);
     const image = document.createElement('img'); image.src = file.dataUrl; image.alt = file.name;
-    const remove = document.createElement('button'); remove.type = 'button'; remove.title = 'Remover imagem'; remove.innerHTML = `<span class="icon" data-icon="close"></span>`;
+    preview.addEventListener('click', () => openImagePreview(image.src, file.name));
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'attachment-remove'; remove.title = 'Remover imagem'; remove.innerHTML = `<span class="icon" data-icon="close"></span>`;
     remove.addEventListener('click', () => { state.files.splice(index, 1); renderAttachments(); });
-    tile.append(image, remove); box.append(tile);
+    preview.append(image); tile.append(preview, remove); box.append(tile);
   });
   installIcons();
   updateComposerControls();
@@ -1774,6 +1847,21 @@ function renderQueue() {
     const row = document.createElement('div'); row.className = 'queued-item';
     const position = document.createElement('span'); position.className = 'queued-position'; position.textContent = String(index + 1);
     const text = document.createElement('span'); text.className = 'queued-text'; text.textContent = queueItemLabel(item);
+    const imageParts = (item.input || []).filter((part) => part.type === 'image' || part.type === 'localImage');
+    const imagePreviews = document.createElement('div'); imagePreviews.className = 'queued-image-previews';
+    imageParts.forEach((part, imageIndex) => {
+      let src = part.url || '';
+      if (part.type === 'localImage' && part.path) {
+        const name = String(part.path).split('/').pop();
+        src = `${PREFIX}/api/images/${encodeURIComponent(threadId)}/${encodeURIComponent(name)}`;
+      }
+      if (!src) return;
+      const imageButton = document.createElement('button'); imageButton.type = 'button'; imageButton.className = 'queued-image-open'; imageButton.title = 'Ampliar imagem da mensagem na fila'; imageButton.setAttribute('aria-label', `Ampliar imagem ${imageIndex + 1} da fila`);
+      const image = document.createElement('img'); image.src = src; image.alt = `Imagem ${imageIndex + 1} da mensagem na fila`;
+      imageButton.addEventListener('click', () => openImagePreview(image.currentSrc || image.src, image.alt));
+      imageButton.append(image); imagePreviews.append(imageButton);
+    });
+    if (!imagePreviews.children.length) imagePreviews.remove();
     const actions = document.createElement('div'); actions.className = 'queued-actions';
     const steer = document.createElement('button'); steer.type = 'button'; steer.className = 'queue-action queue-steer'; steer.textContent = 'Orientar agora'; steer.title = 'Tirar da fila e enviar como orientação para a execução atual';
     steer.hidden = Boolean(item.localOnly);
@@ -1804,7 +1892,9 @@ function renderQueue() {
       finally { restore.disabled = false; }
     });
     actions.append(steer, restore);
-    row.append(position, text, actions); list.append(row);
+    row.append(position, text);
+    if (imagePreviews.isConnected || imagePreviews.children.length) row.append(imagePreviews);
+    row.append(actions); list.append(row);
   });
   installIcons();
 }
@@ -1944,6 +2034,11 @@ function openSidebar() { showInspector(false); $('#sidebar').classList.add('open
 function closeSidebar() { $('#sidebar').classList.remove('open'); if (!$('#inspector').classList.contains('open')) $('#mobileScrim').classList.remove('show'); }
 
 function bindEvents() {
+  setupInspectorResize();
+  $('#closeImagePreview').addEventListener('click', () => $('#imagePreviewDialog').close());
+  $('#imagePreviewDialog').addEventListener('click', (event) => {
+    if (event.target === $('#imagePreviewDialog')) $('#imagePreviewDialog').close();
+  });
   $('#messages').addEventListener('scroll', () => {
     const area = $('#messages');
     state.followLatest = area.scrollHeight - area.clientHeight - area.scrollTop < 80;

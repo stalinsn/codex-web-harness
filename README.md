@@ -92,6 +92,8 @@ O painel lateral também mostra o uso recente de contexto da conversa e o limite
 
 A lista lateral mostra um indicador animado nas conversas com turno ativo. A atividade é atualizada pelos eventos do app-server e pelos estados das conversas ao carregar a lista.
 
+Imagens anexadas no rascunho, nas mensagens e na fila podem ser abertas em uma prévia ampliada. No desktop, a coluna de visão geral pode ser redimensionada pela borda e a largura escolhida fica salva neste navegador. O painel de saúde inclui camada gravável dos containers, volumes Docker por projeto, diretórios dos projetos e pastas principais no host; imagens e subpastas podem ser compartilhadas ou sobrepostas aos totais.
+
 ## Licença
 
 MIT. Consulte [LICENSE](LICENSE).

@@ -515,7 +515,7 @@ async function readDockerHealth() {
   try {
     const [statsResult, containersResult] = await Promise.all([
       execFileAsync('docker', ['stats', '--no-stream', '--format', '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}'], { timeout: 25000, maxBuffer: 1024 * 1024 }),
-      execFileAsync('docker', ['ps', '-a', '--format', '{{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Label "com.docker.compose.project"}}'], { timeout: 10000, maxBuffer: 1024 * 1024 }),
+      execFileAsync('docker', ['ps', '-a', '--size', '--format', '{{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Label "com.docker.compose.project"}}\t{{.Size}}'], { timeout: 10000, maxBuffer: 1024 * 1024 }),
     ]);
     const stats = new Map(statsResult.stdout.trim().split('\n').filter(Boolean).map((line) => {
       const [name, cpu, memory, percent] = line.split('\t');
@@ -523,7 +523,7 @@ async function readDockerHealth() {
       return [name, { cpuPercent: Number(String(cpu).replace('%', '')) || 0, memoryBytes: used, memoryLimitBytes: limit, memoryPercent: Number(String(percent).replace('%', '')) || 0 }];
     }));
     const containers = containersResult.stdout.trim().split('\n').filter(Boolean).map((line) => {
-      const [name, status, image, composeProject] = line.split('\t');
+      const [name, status, image, composeProject, size] = line.split('\t');
       const metric = stats.get(name) || {};
       return {
         name,
@@ -536,17 +536,20 @@ async function readDockerHealth() {
         memoryBytes: metric.memoryBytes || 0,
         memoryLimitBytes: metric.memoryLimitBytes || 0,
         memoryPercent: metric.memoryPercent || 0,
+        storageBytes: parseBytes(String(size || '').split(' (virtual')[0]),
       };
     });
     const groups = new Map();
     for (const container of containers) {
-      if (!groups.has(container.project)) groups.set(container.project, { name: container.project, containers: 0, running: 0, stopped: 0, cpuPercent: 0, memoryBytes: 0, memoryLimitBytes: 0, unhealthy: false });
+      if (!groups.has(container.project)) groups.set(container.project, { name: container.project, containers: 0, running: 0, stopped: 0, cpuPercent: 0, memoryBytes: 0, memoryLimitBytes: 0, containerStorageBytes: 0, volumeStorageBytes: 0, storageBytes: 0, unhealthy: false });
       const group = groups.get(container.project);
       group.containers += 1;
       if (container.running) group.running += 1; else group.stopped += 1;
       group.cpuPercent += container.cpuPercent;
       group.memoryBytes += container.memoryBytes;
       group.memoryLimitBytes += container.memoryLimitBytes;
+      group.containerStorageBytes += container.storageBytes;
+      group.storageBytes += container.storageBytes;
       group.unhealthy ||= container.health === 'unhealthy';
     }
     return {
@@ -564,15 +567,75 @@ async function readDockerHealth() {
 async function readDockerStorage(force = false) {
   if (!force && dockerStorageCache && Date.now() - dockerStorageCacheAt < 5 * 60 * 1000) return dockerStorageCache;
   try {
-    const { stdout } = await execFileAsync('docker', ['system', 'df', '--format', '{{.Type}}\t{{.TotalCount}}\t{{.Active}}\t{{.Size}}\t{{.Reclaimable}}'], { timeout: 30000, maxBuffer: 64 * 1024 });
-    dockerStorageCache = stdout.trim().split('\n').filter(Boolean).map((line) => {
+    const [summaryResult, detailResult, dockerRootResult] = await Promise.all([
+      execFileAsync('docker', ['system', 'df', '--format', '{{.Type}}\t{{.TotalCount}}\t{{.Active}}\t{{.Size}}\t{{.Reclaimable}}'], { timeout: 30000, maxBuffer: 64 * 1024 }),
+      execFileAsync('docker', ['system', 'df', '-v', '--format', 'json'], { timeout: 30000, maxBuffer: 4 * 1024 * 1024 }),
+      execFileAsync('docker', ['info', '--format', '{{.DockerRootDir}}'], { timeout: 10000, maxBuffer: 16 * 1024 }),
+    ]);
+    const summary = summaryResult.stdout.trim().split('\n').filter(Boolean).map((line) => {
       const [type, total, active, size, reclaimable] = line.split('\t');
       return { type, total: Number(total) || 0, active: Number(active) || 0, size, reclaimable };
     });
+    const detail = JSON.parse(detailResult.stdout);
+    const volumeProjects = new Map();
+    const projectPaths = new Map();
+    for (const container of detail.Containers || []) {
+      const labels = Object.fromEntries(String(container.Labels || '').split(',').map((label) => {
+        const separator = label.indexOf('=');
+        return separator < 0 ? [label, ''] : [label.slice(0, separator), label.slice(separator + 1)];
+      }).filter(([key]) => key));
+      const owner = projectLabel(container.Names || '', labels['com.docker.compose.project']);
+      const workingDir = labels['com.docker.compose.project.working_dir'];
+      if (workingDir && workingDir.startsWith('/') && !workingDir.includes('..') && !projectPaths.has(owner)) projectPaths.set(owner, workingDir);
+      for (const volumeName of String(container.Mounts || '').split(',').map((name) => name.trim()).filter((name) => name && !name.startsWith('/'))) {
+        if (!volumeProjects.has(volumeName)) volumeProjects.set(volumeName, owner);
+      }
+    }
+    const volumes = (detail.Volumes || []).map((volume) => {
+      const labels = Object.fromEntries(String(volume.Labels || '').split(',').map((label) => {
+        const separator = label.indexOf('=');
+        return separator < 0 ? [label, ''] : [label.slice(0, separator), label.slice(separator + 1)];
+      }).filter(([key]) => key));
+      const composeProject = labels['com.docker.compose.project'];
+      const project = composeProject ? projectLabel(volume.Name, composeProject) : volumeProjects.get(volume.Name) || (volume.Name.startsWith('buildx_buildkit_') ? 'BuildKit de homologação' : null);
+      return { name: volume.Name, size: volume.Size, storageBytes: parseBytes(volume.Size), project, links: Number(volume.Links) || 0 };
+    }).sort((a, b) => b.storageBytes - a.storageBytes);
+    const projectVolumes = new Map();
+    for (const volume of volumes) if (volume.project) projectVolumes.set(volume.project, (projectVolumes.get(volume.project) || 0) + volume.storageBytes);
+    const storagePaths = [
+      ['Repositórios de projetos', join(HOME_DIR, 'projects')],
+      ['Builds', join(HOME_DIR, 'builds')],
+      ['Dados e cache do Codex', CODEX_HOME],
+      ['Workspaces Live Rooms', join(HOME_DIR, 'live-rooms-workspaces')],
+      ['Assets LPC', join(HOME_DIR, 'lpc_assets')],
+      ['Cache do usuário', join(HOME_DIR, '.cache')],
+      ['Cache npm', join(HOME_DIR, '.npm')],
+    ];
+    const storageLocations = await Promise.all(storagePaths.map(async ([name, path]) => {
+      try {
+        const { stdout } = await execFileAsync('du', ['-x', '-B1', '-s', '--', path], { timeout: 15000, maxBuffer: 16 * 1024 });
+        const bytes = Number(stdout.trim().split(/\s+/)[0]) || 0;
+        return { name, path, bytes };
+      } catch { return null; }
+    }));
+    const projectDirectories = await Promise.all([...projectPaths].map(async ([project, path]) => {
+      try {
+        const { stdout } = await execFileAsync('du', ['-x', '-B1', '-s', '--', path], { timeout: 15000, maxBuffer: 16 * 1024 });
+        return { project, path, bytes: Number(stdout.trim().split(/\s+/)[0]) || 0 };
+      } catch { return null; }
+    }));
+    const dockerRoot = dockerRootResult.stdout.trim();
+    if (dockerRoot) {
+      try {
+        const { stdout } = await execFileAsync('du', ['-x', '-B1', '-s', '--', dockerRoot], { timeout: 30000, maxBuffer: 16 * 1024 });
+        storageLocations.unshift({ name: 'Diretório de dados Docker', path: dockerRoot, bytes: Number(stdout.trim().split(/\s+/)[0]) || 0 });
+      } catch { /* Docker's summary below remains available if du cannot read its data root. */ }
+    }
+    dockerStorageCache = { summary, volumes, projectVolumes: [...projectVolumes].map(([project, bytes]) => ({ project, bytes })), projectDirectories: projectDirectories.filter(Boolean), storageLocations: storageLocations.filter(Boolean) };
     dockerStorageCacheAt = Date.now();
     return dockerStorageCache;
   } catch {
-    return dockerStorageCache || [];
+    return dockerStorageCache || { summary: [], volumes: [], projectVolumes: [], projectDirectories: [], storageLocations: [] };
   }
 }
 
@@ -581,7 +644,16 @@ async function getVpsHealth(force = false) {
   if (vpsHealthInFlight) return vpsHealthInFlight;
   vpsHealthInFlight = (async () => {
     const [host, docker, dockerStorage] = await Promise.all([readHostHealth(), readDockerHealth(), readDockerStorage(force)]);
-    const data = { checkedAt: new Date().toISOString(), host, docker, dockerStorage };
+    const volumeBytesByProject = new Map((dockerStorage.projectVolumes || []).map((item) => [item.project, item.bytes]));
+    const projectDirByName = new Map((dockerStorage.projectDirectories || []).map((item) => [item.project, item]));
+    for (const project of docker.projects || []) {
+      project.volumeStorageBytes = volumeBytesByProject.get(project.name) || 0;
+      const projectDir = projectDirByName.get(project.name);
+      project.sourceBytes = projectDir?.bytes || 0;
+      project.sourcePath = projectDir?.path || null;
+      project.storageBytes += project.volumeStorageBytes + project.sourceBytes;
+    }
+    const data = { checkedAt: new Date().toISOString(), host, docker, dockerStorage: dockerStorage.summary || [], dockerVolumes: dockerStorage.volumes || [], storageLocations: dockerStorage.storageLocations || [], projectDirectories: dockerStorage.projectDirectories || [] };
     vpsHealthCache = data;
     vpsHealthCacheAt = Date.now();
     return data;
