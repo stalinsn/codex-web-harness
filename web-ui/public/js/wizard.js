@@ -14,9 +14,10 @@ const BLURBS = {
   'gemini-cli': 'Gemini CLI com login Google ou chave de API.',
 };
 const KEYS = { enter: '\r', up: '\x1b[A', down: '\x1b[B', tab: '\t', esc: '\x1b', ctrlc: '\x03' };
-const wizard = { step: 'provider', provider: '', accountId: '', setup: null, flowId: '', session: null, term: null, catalog: null, finishing: false };
+const wizard = { step: 'provider', provider: '', accountId: '', setup: null, flowId: '', session: null, term: null, catalog: null, finishing: false, starting: false };
 let xtermLoading = null;
 let accountCreationPending = false;
+let installProgressTimer = null;
 
 function loadXterm() {
   if (window.Terminal) return Promise.resolve();
@@ -102,7 +103,7 @@ function renderConnect() {
   const installed = Boolean(setup.binPath);
   $('#wizardCli').innerHTML = installed
     ? `<span class="wizard-pill ok">CLI instalada</span><code>${escapeHtml(setup.binPath)}</code>${setup.version ? `<small>${escapeHtml(setup.version)}</small>` : ''}${account?.loggedIn ? '<span class="wizard-pill ok">Conectada</span>' : ''}`
-    : `<span class="wizard-pill warn">CLI não encontrada</span><code>${escapeHtml(setup.bin)}</code>${setup.install ? `<button type="button" class="secondary-button" id="wizardInstall">Instalar agora</button><small>Executa na VPS: <code>${escapeHtml(setup.install)}</code></small>` : '<small>Instale a CLI na VPS e informe o caminho em web-accounts.json.</small>'}`;
+    : `<span class="wizard-pill warn">CLI não encontrada</span><code>${escapeHtml(setup.bin)}</code>${setup.install ? `<button type="button" class="secondary-button" id="wizardInstall">Instalar agora</button><small>O harness executa a instalação automaticamente na VPS.</small>` : '<small>Instale a CLI na VPS e informe o caminho em web-accounts.json.</small>'}`;
   $('#wizardInstall')?.addEventListener('click', () => startSession('install'));
   $('#wizardNotes').textContent = setup.notes || '';
   $('#wizardFlows').innerHTML = setup.flows.map((flow) => `<label class="wizard-flow"><input type="radio" name="wizardFlow" value="${escapeHtml(flow.id)}" ${flow.id === wizard.flowId ? 'checked' : ''} /> <span>${escapeHtml(flow.label)}</span></label>`).join('');
@@ -137,11 +138,18 @@ async function openConnect(accountId) {
 
 async function startSession(kind) {
   const button = kind === 'install' ? $('#wizardInstall') : $('#wizardStart');
+  if (wizard.starting) return;
   const account = state.accounts.find((item) => item.id === wizard.accountId);
   if (kind === 'login' && account?.loggedIn) {
     if (!window.confirm('Esta conta já está conectada. Reconectar apaga o login atual dela e inicia um novo. Continuar?')) return;
   }
+  wizard.starting = true;
   if (button) button.disabled = true;
+  if (kind === 'install') {
+    wizard.session = { id: '', kind, status: 'running', startedAt: Date.now(), hints: { links: [], codes: [] }, output: '' };
+    $('#wizardTerminal').replaceChildren();
+    renderSessionState(wizard.session);
+  }
   try {
     if (kind === 'login' && account?.loggedIn) applyAccounts(await api(`/api/accounts/${encodeURIComponent(wizard.accountId)}/logout`, { method: 'POST', body: '{}' }));
     await loadXterm();
@@ -151,8 +159,17 @@ async function startSession(kind) {
     // A state change may have arrived over SSE before this response: read it once.
     const { session: current } = await api(`/api/login-sessions/${session.id}`);
     if (wizard.session?.id === current.id && current.status !== 'running') onLoginState({ sessionId: current.id, ...current });
-  } catch (error) { toast(error.message, 'error'); }
-  finally { if (button) button.disabled = false; }
+  } catch (error) {
+    if (kind === 'install') {
+      wizard.session = { id: '', kind, status: 'failed', startedAt: Date.now(), hints: { links: [], codes: [] }, detail: error.message };
+      renderSessionState(wizard.session);
+    }
+    toast(error.message, 'error');
+  }
+  finally {
+    wizard.starting = false;
+    if (button) button.disabled = kind === 'install' && wizard.session?.status === 'running';
+  }
 }
 
 function attachSession(session) {
@@ -181,8 +198,11 @@ function renderHints(hints = { links: [], codes: [] }) {
 }
 
 function renderSessionState(session) {
+  const installRunning = session.kind === 'install' && session.status === 'running';
   const messages = {
-    running: session.kind === 'install' ? 'Instalando na VPS…' : 'Aguardando você concluir o login. O harness detecta sozinho quando terminar.',
+    running: session.kind === 'install'
+      ? `Instalando automaticamente na VPS · ${formatElapsed(session.startedAt)}`
+      : 'Aguardando você concluir o login. O harness detecta sozinho quando terminar.',
     success: session.detail || 'Concluído.',
     failed: session.detail || 'Não deu certo.',
     stopped: session.detail || 'Encerrada.',
@@ -192,10 +212,36 @@ function renderSessionState(session) {
   status.className = `wizard-session-status ${session.status}`;
   renderHints(session.hints);
   const running = session.status === 'running';
-  $('#wizardInputForm').hidden = !running;
+  $('#wizardInstallNote').hidden = !installRunning;
+  $('#wizardInputForm').hidden = !running || session.kind === 'install';
   $('#wizardStart').hidden = running;
   $('#wizardFlows').classList.toggle('locked', running);
-  $('#wizardKeys').hidden = !running;
+  $('#wizardKeys').hidden = !running || session.kind === 'install';
+  const installButton = $('#wizardInstall');
+  if (installButton) {
+    installButton.disabled = installRunning || wizard.starting;
+    if (session.kind === 'install') installButton.textContent = installRunning ? 'Instalação em andamento…' : session.status === 'failed' ? 'Tentar novamente' : 'Instalar agora';
+  }
+  clearInterval(installProgressTimer);
+  installProgressTimer = null;
+  if (installRunning) {
+    const sessionId = session.id;
+    installProgressTimer = setInterval(() => {
+      if (wizard.session?.kind !== 'install' || wizard.session.status !== 'running' || wizard.session.id !== sessionId) {
+        clearInterval(installProgressTimer);
+        installProgressTimer = null;
+        return;
+      }
+      status.textContent = `Instalando automaticamente na VPS · ${formatElapsed(session.startedAt)}`;
+    }, 1000);
+  }
+}
+
+function formatElapsed(startedAt) {
+  const total = Math.max(0, Math.floor((Date.now() - (Number(startedAt) || Date.now())) / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = String(total % 60).padStart(2, '0');
+  return `${minutes}:${seconds}`;
 }
 
 async function sendInput(data) {
@@ -387,9 +433,12 @@ export function bindWizardEvents() {
   $('#closeWizard').addEventListener('click', () => $('#accountWizard').close());
   $('#accountWizard').addEventListener('close', () => {
     stopSession();
+    clearInterval(installProgressTimer);
+    installProgressTimer = null;
     wizard.term?.dispose();
     wizard.term = null;
     wizard.session = null;
+    wizard.starting = false;
     $('#wizardTerminal').replaceChildren();
   });
   installIcons($('#accountWizard'));

@@ -1184,6 +1184,11 @@ body.resizing-inspector { cursor: col-resize; user-select: none; }
 .wizard-session { display: grid; gap: 10px; margin-top: 14px; }
 .wizard-session[hidden] { display: none; }
 .wizard-session-status { margin: 0 !important; padding: 9px 11px; color: #d7dcff !important; font-size: 12px !important; border-radius: 8px; background: #1d2030; }
+.wizard-session-status.running { display: flex; align-items: center; gap: 9px; }
+.wizard-session-status.running::before { content: ''; width: 11px; height: 11px; flex: 0 0 11px; border: 2px solid #767da7; border-top-color: #c4caff; border-radius: 50%; animation: wizard-spin .8s linear infinite; }
+.wizard-install-note { margin: -2px 0 0 !important; color: #a9adbb !important; font-size: 11px !important; }
+@keyframes wizard-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .wizard-session-status.running::before { animation-duration: 2s; } }
 .wizard-session-status.success { color: #b9f0d1 !important; background: #1a3426; }
 .wizard-session-status.failed, .wizard-session-status.stopped { color: #ffc9c9 !important; background: #3a1d1f; }
 .wizard-hints { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

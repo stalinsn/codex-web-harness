@@ -69,7 +69,8 @@ export const PROVIDERS = {
     logout: 'agy   # depois digite /logout',
     usage: 'errors',
     setup: {
-      install: 'curl -fsSL https://antigravity.google/cli/install.sh | bash',
+      // Make curl failures fail the whole installer instead of piping an empty body to bash.
+      install: "bash -o pipefail -c 'curl -fsSL https://antigravity.google/cli/install.sh | bash'",
       notes: 'A conexão usa o fluxo oficial de autorização Google; o harness não pede a senha Google. Em servidores sem chaveiro do sistema o agy pode não conseguir guardar o login. Se o terminal mostrar erro de keyring, configure o chaveiro da VPS ou use uma chave de API do Gemini (cobrada separadamente).',
       flows: [{
         id: 'google', label: 'Conta Google', command: ['agy'], cols: 320,
