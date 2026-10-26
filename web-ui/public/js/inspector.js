@@ -7,6 +7,7 @@ import { renderInspectorSummary, setCardSummary } from './inspector-layout.js';
 import { renderConversationContext, threadDisplayTitle } from './projects.js';
 import { renderQueue } from './queue.js';
 import { clearResolvedRateLimitFailure, getEffectiveRateLimitBlock, renderRateLimitNotice, updateResetCountdowns } from './rate-limit.js';
+import { renderErrorHistory } from './error-history.js';
 import { runtime, state } from './state.js';
 import { renderThreads } from './thread-list.js';
 
@@ -51,6 +52,7 @@ export function renderUsage() {
 
 export function updateThreadHeader(thread) {
   state.selectedThread = thread || null;
+  renderErrorHistory();
   const title = thread?.id ? threadDisplayTitle(thread) : 'Novo chat';
   $('#activeTitle').textContent = title;
   $('#threadInfo').classList.toggle('hidden', !thread?.id);

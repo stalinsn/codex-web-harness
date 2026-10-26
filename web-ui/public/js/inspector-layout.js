@@ -5,7 +5,7 @@ import { formatCountdown, formatNumber } from './format.js';
 import { state } from './state.js';
 
 const STORAGE_KEY = 'codex-inspector-collapsed';
-const DEFAULT_OPEN = new Set(['tasks']);
+const DEFAULT_OPEN = new Set(['tasks', 'errors']);
 
 function loadCollapsed() {
   try {

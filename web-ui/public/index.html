@@ -245,6 +245,11 @@
           <div class="card-title-row"><div><span class="card-icon" data-icon="chat"></span><strong>Contexto da conversa</strong></div></div>
           <div id="contextUsageMeter" class="context-usage-meter"><p class="muted-note">Abra uma conversa para ver o contexto usado e o limite do modelo.</p></div>
         </section>
+        <section class="inspector-card error-history-card hidden" data-card="errors" id="errorHistoryCard" aria-label="Histórico de erros da conversa">
+          <div class="card-title-row"><div><span class="card-icon error-history-icon" data-icon="warning"></span><strong>Erros da conversa</strong></div></div>
+          <div class="error-history-list" id="errorHistoryList" aria-live="polite"></div>
+          <p class="muted-note">Os avisos ficam salvos neste navegador e as falhas de execução também aparecem no histórico da conversa.</p>
+        </section>
         <section class="inspector-card server-health-card" data-card="health" aria-label="Saúde da VPS">
           <div class="card-title-row"><div><span class="card-icon" data-icon="server"></span><strong>Saúde da VPS</strong></div><button class="refresh-mini" id="refreshVpsHealth" aria-label="Atualizar saúde da VPS" title="Atualizar agora"><span class="icon" data-icon="refresh"></span></button></div>
           <div class="vps-host-metrics" id="vpsHostMetrics"><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>

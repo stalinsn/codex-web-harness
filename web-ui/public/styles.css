@@ -407,6 +407,17 @@ body.resizing-inspector { cursor: col-resize; user-select: none; }
 .vps-storage-note { margin: 10px 0 0; color: #81828d; font-size: 8px; line-height: 1.5; }
 .vps-health-updated, .vps-health-muted { margin: 9px 0 0; color: #858791; font-size: 8px; line-height: 1.45; }
 .vps-health-error { margin: 11px 0 0; color: #e7a0a0; font-size: 9px; line-height: 1.5; }
+.error-history-list { display: flex; max-height: min(42vh, 420px); flex-direction: column; gap: 7px; margin-top: 11px; overflow: auto; padding-right: 3px; }
+.error-history-entry { overflow: hidden; border: 1px solid #493337; border-radius: 8px; background: #241f23; }
+.error-history-entry > summary { display: flex; min-width: 0; align-items: center; gap: 7px; padding: 8px; color: #e8c5c7; cursor: pointer; list-style: none; }
+.error-history-entry > summary::-webkit-details-marker { display: none; }
+.error-history-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: #e47d83; box-shadow: 0 0 0 3px #e47d831f; }
+.error-history-title { min-width: 0; flex: 1; overflow: hidden; font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.error-history-entry time { flex: none; color: #a69a9e; font-size: 9px; white-space: nowrap; }
+.error-history-body { padding: 0 9px 9px 22px; }
+.error-history-body small { display: block; margin-bottom: 5px; color: #aaa0a7; font-size: 9px; }
+.error-history-body p { margin: 0; color: #d4cdd1; font: 10px/1.55 'IBM Plex Mono', ui-monospace, monospace; overflow-wrap: anywhere; white-space: pre-wrap; }
+.error-history-icon { color: #f09a9f; background: #3a252a; }
 .refresh-mini.spinning .icon { animation: vps-spin .8s linear infinite; }
 @keyframes vps-spin { to { transform: rotate(360deg); } }
 .card-title-row { justify-content: space-between; gap: 8px; }

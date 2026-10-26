@@ -5,6 +5,7 @@ import { PREFIX } from './config.js';
 import { loadThreadHistory, rememberCompletedTurn, setBusy, syncExecutionState, turnStatus } from './conversation.js';
 import { maybeDrainDeferredQueue } from './deferred-queue.js';
 import { $, onNextFrame, randomKey, toast } from './dom.js';
+import { rememberError } from './error-history.js';
 import { applyAccountData, refreshUsage, renderContextUsage, renderUsage, updateThreadHeader } from './inspector.js';
 import { setConnection } from './layout.js';
 import { markdown } from './markdown.js';
@@ -54,6 +55,12 @@ function handleCodexNotification(message) {
   }
   if (message.method === 'error') {
     const errorMessage = params.error?.message || 'Ocorreu um erro no turno.';
+    rememberError(errorMessage, {
+      threadId: eventThreadId || state.selectedThreadId,
+      turnId: params.turnId || '',
+      source: 'Provedor',
+      provider: state.selectedThread?.provider || '',
+    });
     // Limits of other accounts are handled by the server's rotation, not by the Codex limit notice.
     if (isRateLimitError(errorMessage) && !String(eventThreadId || '').startsWith('ext-')) {
       recordRateLimitFailure(errorMessage);
@@ -122,6 +129,16 @@ function handleCodexNotification(message) {
   if (message.method === 'item/started' || message.method === 'item/completed') {
     const item = params.item;
     if (!item) return;
+    if (message.method === 'item/completed' && (item.status === 'failed' || item.error)) {
+      const detail = item.error || item.aggregatedOutput || item.result || 'A ferramenta falhou sem devolver detalhes.';
+      rememberError(typeof detail === 'string' ? detail : detail.message || JSON.stringify(detail), {
+        threadId: eventThreadId || state.selectedThreadId,
+        turnId: params.turnId || '',
+        source: 'Ferramenta',
+        provider: state.selectedThread?.provider || '',
+        tool: item.tool || (item.type === 'commandExecution' ? 'Comando' : item.type),
+      });
+    }
     if (item.type === 'agentMessage') {
       const key = `${state.selectedThreadId}:${item.id}`;
       let stream = state.streamedMessages.get(key);

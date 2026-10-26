@@ -24,6 +24,20 @@ const short = (value, max = 240) => {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 };
 
+function diagnosticText(value) {
+  if (typeof value === 'string') return value;
+  if (value == null) return '';
+  if (Array.isArray(value)) return value.map(diagnosticText).filter(Boolean).join('\n');
+  if (typeof value === 'object') {
+    if (typeof value.message === 'string') return `${value.type ? `${value.type}: ` : ''}${value.message}`;
+    if (typeof value.stderr === 'string' || typeof value.stdout === 'string') return [value.stderr, value.stdout].filter(Boolean).join('\n');
+    if (typeof value.output === 'string') return value.output;
+    if (Array.isArray(value.content)) return diagnosticText(value.content);
+    try { return JSON.stringify(value); } catch { return '[detalhe de erro indisponível]'; }
+  }
+  return String(value);
+}
+
 function percentOf(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return null;
@@ -127,9 +141,13 @@ function genericParser() {
           seenTools.add(id);
           out.push({ type: 'tool', id, name: info.name || step.tool_name || 'ferramenta', input: parameters, detail: short(parameters.command || parameters.CommandLine || parameters.file_path || parameters.path || parameters) });
         }
-        if (String(step.state || '').toUpperCase() === 'DONE' && (typeof info.output === 'string' || info.error)) {
-          const toolError = typeof info.error === 'string' ? info.error : info.error?.message || '';
-          out.push({ type: 'tool-result', id, output: toolError || info.output || '', isError: Boolean(toolError) });
+        const stepState = String(step.state || '').toUpperCase();
+        if (['DONE', 'ERROR', 'FAILED', 'CANCELED', 'CANCELLED'].includes(stepState)) {
+          const errorText = diagnosticText(info.error ?? step.error ?? step.failure ?? event.error);
+          const outputText = diagnosticText(info.output ?? step.output ?? step.result);
+          const failed = Boolean(errorText) || ['ERROR', 'FAILED', 'CANCELED', 'CANCELLED'].includes(stepState);
+          const finalText = errorText || outputText || (failed ? `A ferramenta terminou com estado ${stepState}.` : '');
+          if (finalText) out.push({ type: 'tool-result', id, output: finalText, isError: failed });
         }
         return out;
       }

@@ -118,7 +118,12 @@ export function runCliSegment({ account, prompt, cwd, sessionId = '', onEvent = 
       }
       if (limited) outcome.status = 'rate-limited';
       else if (stopped) outcome.status = 'stopped';
-      else if (code === 0 && !outcome.error) outcome.status = 'completed';
+      else if (code === 0 && !outcome.error) {
+        if (!String(outcome.text || '').trim() && stderr.trim()) {
+          outcome.status = 'failed';
+          outcome.error = stderr.trim().split('\n').map((line) => line.replace(/\u001b\[[0-9;]*m/gu, '').trim()).filter(Boolean).slice(-4).join(' ').slice(-2000);
+        } else outcome.status = 'completed';
+      }
       else {
         outcome.status = 'failed';
         outcome.error ||= stderr.trim().split('\n').slice(-3).join(' ') || `Saiu com código ${code}.`;
