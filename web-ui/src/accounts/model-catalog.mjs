@@ -10,6 +10,9 @@ const CLAUDE_MODELS = ['best', 'fable', 'opus', 'sonnet', 'haiku'];
 const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'];
 const MODEL_EFFORT_SUFFIX = /-(low|medium|high|xhigh|max)$/i;
+const MODEL_CATALOG_TTL_MS = 60_000;
+const modelCatalogCache = new Map();
+const modelCatalogRequests = new Map();
 
 function parseJsonOutput(output) {
   const value = String(output || '').trim();
@@ -39,12 +42,28 @@ function findArray(payload, keys, depth = 0) {
   return null;
 }
 
+function explicitToolSupport(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return 'unknown';
+  const fields = ['supportsTools', 'supports_tools', 'supports_tool_use', 'toolUse', 'tool_use', 'toolCalling', 'tool_calling', 'functionCalling', 'function_calling', 'tools'];
+  const sources = [item, item.capabilities, item.features].filter((value) => value && typeof value === 'object' && !Array.isArray(value));
+  for (const source of sources) {
+    for (const field of fields) {
+      if (typeof source[field] === 'boolean') return source[field] ? 'supported' : 'unsupported';
+      if (typeof source[field] === 'string' && /^(supported|available|enabled)$/i.test(source[field])) return 'supported';
+      if (typeof source[field] === 'string' && /^(unsupported|unavailable|disabled|none)$/i.test(source[field])) return 'unsupported';
+    }
+  }
+  const lists = [item.capabilities, item.supportedCapabilities, item.supported_capabilities, item.features, item.tools].filter(Array.isArray);
+  if (lists.some((list) => list.some((value) => typeof value === 'string' && /^(tools?|tool[-_ ]?(use|calling)|function[-_ ]?calling|agent[-_ ]?tools?)$/i.test(value.trim())))) return 'supported';
+  return 'unknown';
+}
+
 function normalizeModels(payload) {
   const items = findArray(payload, ['models', 'availableModels', 'available_models', 'data', 'items']);
   if (!items) return [];
   const seen = new Set();
   const models = items.map((item) => {
-    if (typeof item === 'string') return { id: item, label: item, efforts: [], defaultEffort: '' };
+    if (typeof item === 'string') return { id: item, label: item, efforts: [], defaultEffort: '', toolSupport: 'unknown' };
     const id = item?.id || item?.model || item?.slug || item?.name;
     if (typeof id !== 'string' || !id || seen.has(id)) return null;
     seen.add(id);
@@ -54,6 +73,7 @@ function normalizeModels(payload) {
       isDefault: Boolean(item.isDefault || item.default || item.is_default),
       efforts: normalizeEfforts(item.supportedReasoningEfforts || item.supported_reasoning_efforts || item.reasoningEfforts || item.efforts),
       defaultEffort: item.defaultReasoningEffort || item.default_reasoning_effort || '',
+      toolSupport: explicitToolSupport(item),
     };
   }).filter(Boolean);
   return inferModelEfforts(models);
@@ -87,7 +107,7 @@ function parseTextModels(output) {
   for (const line of String(output || '').split(/\r?\n/)) {
     const match = line.trim().match(/^([a-z0-9][a-z0-9._-]*[._-][a-z0-9._-]*)[\t ]+(.+?)\s*$/i);
     if (!match) continue;
-    models.push({ id: match[1], label: match[2], isDefault: false, efforts: [], defaultEffort: '' });
+    models.push({ id: match[1], label: match[2], isDefault: false, efforts: [], defaultEffort: '', toolSupport: 'unknown' });
   }
   return inferModelEfforts(models);
 }
@@ -126,8 +146,9 @@ async function codexCatalog(account, accounts) {
     isDefault: Boolean(item.isDefault),
     efforts: normalizeEfforts(item.supportedReasoningEfforts),
     defaultEffort: item.defaultReasoningEffort || '',
+    toolSupport: explicitToolSupport(item),
   })).filter((item) => item.id);
-  return { models, source: 'Codex app-server', note: models.length ? 'Catálogo do cliente Codex. Ele pode não refletir o acesso liberado para a conta; o Codex confirma isso ao iniciar uma tarefa.' : 'O Codex não informou modelos nesta sessão; você pode usar o padrão da CLI.' };
+  return { models, source: 'Codex app-server', note: models.length ? 'Catálogo do cliente Codex. Ele pode não refletir o acesso liberado para a conta; o Codex confirma isso ao iniciar uma tarefa. Suporte a ferramentas só é marcado quando o catálogo o declara.' : 'O Codex não informou modelos nesta sessão; você pode usar o padrão da CLI.' };
 }
 
 async function antigravityCatalog(account) {
@@ -150,7 +171,7 @@ async function antigravityCatalog(account) {
     models,
     source: 'Antigravity CLI',
     note: models.length
-      ? 'Modelos detectados pelo comando agy models. As variantes de esforço listadas foram identificadas na própria saída da CLI.'
+      ? 'Modelos detectados pelo comando agy models. As variantes de esforço listadas foram identificadas na própria saída da CLI. Esta versão não informa compatibilidade de ferramentas por modelo; ela permanece não confirmada.'
       : 'Esta versão do agy não retornou uma lista legível. Você pode usar o padrão da CLI; nenhuma opção foi presumida.',
   };
 }
@@ -163,15 +184,27 @@ function claudeCatalog() {
   };
 }
 
-export async function getAccountModelCatalog(account, accounts) {
-  if (account.provider === 'codex') return codexCatalog(account, accounts);
-  if (account.provider === 'antigravity') return antigravityCatalog(account);
-  if (account.provider === 'claude-code') return claudeCatalog();
-  return {
-    models: [],
-    source: 'Padrão da CLI',
-    note: 'Esta CLI não fornece uma lista de modelos ao harness. Deixe os campos no padrão para usar as escolhas definidas por ela.',
-  };
+export async function getAccountModelCatalog(account, accounts, { refresh = false } = {}) {
+  const key = `${account.provider}:${account.id}:${account.bin || ''}`;
+  const cached = modelCatalogCache.get(key);
+  if (!refresh && cached && cached.expiresAt > Date.now()) return cached.catalog;
+  if (!refresh && modelCatalogRequests.has(key)) return modelCatalogRequests.get(key);
+  const request = (async () => {
+    let catalog;
+    if (account.provider === 'codex') catalog = await codexCatalog(account, accounts);
+    else if (account.provider === 'antigravity') catalog = await antigravityCatalog(account);
+    else if (account.provider === 'claude-code') catalog = claudeCatalog();
+    else catalog = {
+      models: [],
+      source: 'Padrão da CLI',
+      note: 'Esta CLI não fornece uma lista de modelos ao harness. Deixe os campos no padrão para usar as escolhas definidas por ela; compatibilidade por modelo não é presumida.',
+    };
+    modelCatalogCache.set(key, { catalog, expiresAt: Date.now() + MODEL_CATALOG_TTL_MS });
+    return catalog;
+  })();
+  modelCatalogRequests.set(key, request);
+  try { return await request; }
+  finally { if (modelCatalogRequests.get(key) === request) modelCatalogRequests.delete(key); }
 }
 
 export { normalizeEffortPayload, normalizeModels, parseTextModels };

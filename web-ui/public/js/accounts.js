@@ -61,6 +61,9 @@ export function renderAccounts() {
   list.innerHTML = state.accounts.map((account, index) => {
     const status = statusOf(account);
     const details = [account.providerLabel, account.model, account.effort ? `esforço ${account.effort}` : ''].filter(Boolean).map(escapeHtml).join(' · ');
+    const accessMode = account.permissionMode || (account.provider === 'antigravity' ? 'request-review' : '');
+    const modeLabel = accessMode === 'always-proceed' ? 'Acesso completo' : accessMode === 'request-review' ? 'Com autorização' : `Outro modo da CLI: ${accessMode}`;
+    const accessControls = account.provider === 'antigravity' ? `<div class="account-access-controls"><span>Acesso do agente</span><small class="account-access-current">Modo atual: ${escapeHtml(modeLabel)}</small><div role="group" aria-label="Modo de acesso de ${escapeHtml(account.label)}"><button type="button" class="account-access-button ${accessMode === 'always-proceed' ? 'active' : ''}" data-action="access-mode" data-mode="always-proceed" aria-pressed="${accessMode === 'always-proceed'}" ${account.busyWith ? 'disabled' : ''}>Acesso completo</button><button type="button" class="account-access-button ${accessMode === 'request-review' ? 'active' : ''}" data-action="access-mode" data-mode="request-review" aria-pressed="${accessMode === 'request-review'}" ${account.busyWith ? 'disabled' : ''}>Com autorização</button></div><small>Esse modo vale para a conta e libera as ferramentas que a CLI oferece; não cria capacidade no modelo. Em headless, pedidos de aprovação são bloqueados e registrados em Erros da conversa. Regras de aprovação ou negação em outros escopos continuam valendo.</small></div>` : '';
     return `<li class="account-row tone-${status.tone} ${providerClass(account.provider)}" data-account-id="${escapeHtml(account.id)}">
       <span class="account-position">${index + 1}</span>
       <div class="account-main">
@@ -83,6 +86,7 @@ export function renderAccounts() {
         </div>
         <small>${details}</small>
         ${usageMeter(account)}
+        ${accessControls}
         <small class="account-status"><span class="account-dot"></span>${status.tone === 'error' && !account.primary ? `<button type="button" class="account-connect-link" data-action="connect" title="${escapeHtml(status.title || '')}">${escapeHtml(status.text)} · Conectar</button>` : escapeHtml(status.text)}${account.percent != null ? ` · ${Math.round(account.percent)}% usado` : ''}</small>
       </div>
     </li>`;
@@ -101,8 +105,13 @@ async function copyText(text) {
   catch { window.prompt('Copie o comando:', text); }
 }
 
-async function accountAction(account, action) {
+async function accountAction(account, action, mode = '') {
   const id = encodeURIComponent(account.id);
+  if (action === 'access-mode') {
+    const data = await api(`/api/accounts/${id}/access`, { method: 'POST', body: JSON.stringify({ mode }) });
+    applyAccounts(data);
+    return toast(mode === 'always-proceed' ? `${account.label}: acesso automático ativado.` : `${account.label}: ações sem autorização serão bloqueadas.`);
+  }
   if (action === 'up' || action === 'down') {
     const order = state.accounts.map((item) => item.id);
     const index = order.indexOf(account.id);
@@ -148,7 +157,7 @@ export function bindAccountEvents() {
     if (!account) return;
     button.closest('details')?.removeAttribute('open');
     button.disabled = true;
-    accountAction(account, button.dataset.action).catch((error) => toast(error.message, 'error')).finally(() => { button.disabled = false; });
+    accountAction(account, button.dataset.action, button.dataset.mode).catch((error) => toast(error.message, 'error')).finally(() => { button.disabled = false; });
   });
   $('#accountList').addEventListener('toggle', (event) => {
     if (event.target.matches?.('.account-menu') && !event.target.open && renderPending) renderAccounts();

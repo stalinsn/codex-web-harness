@@ -9,6 +9,7 @@ import { HANDOFF_FILE } from '../accounts/codex-usage.mjs';
 import { PRIMARY_ID } from '../accounts/registry.mjs';
 import { config } from '../config.mjs';
 import { httpError } from '../http/respond.mjs';
+import { getAccountModelCatalog } from '../accounts/model-catalog.mjs';
 import { TurnRecorder } from './recorder.mjs';
 
 const TRANSCRIPT_TURNS = 8;
@@ -76,11 +77,25 @@ export class ProviderChat {
     return [account.label, account.model].filter(Boolean).join(' · ');
   }
 
-  #withChatSelection(account, selection = {}) {
+  async #withChatSelection(account, selection = {}) {
     const model = typeof selection.model === 'string' ? selection.model.trim().slice(0, 100) : account.model;
     let effort = typeof selection.effort === 'string' ? selection.effort.trim().slice(0, 30) : account.effort;
-    if (account.provider === 'antigravity' && ANTIGRAVITY_ENCODED_EFFORT.test(model || '')) effort = '';
-    return { ...account, model, effort };
+    const catalog = await getAccountModelCatalog(account, this.accounts);
+    const selectedModel = model
+      ? (catalog.models || []).find((item) => item.id === model)
+      : (catalog.models || []).find((item) => item.isDefault);
+    if (model && catalog.models?.length && !selectedModel) {
+      throw httpError(`O modelo “${model}” não consta no catálogo atual de ${account.label}. Atualize as opções e escolha um modelo disponível.`, 400);
+    }
+    if (account.provider === 'antigravity' && (selectedModel?.effortEncoded || ANTIGRAVITY_ENCODED_EFFORT.test(model || ''))) effort = '';
+    if (effort && selectedModel) {
+      if (selectedModel.efforts?.length) {
+        if (!selectedModel.efforts.includes(effort)) throw httpError(`O esforço “${effort}” não é compatível com o modelo “${selectedModel.label || selectedModel.id}”.`, 400);
+      } else if (!selectedModel.defaultEffort) {
+        throw httpError(`A CLI não confirmou esforço compatível para “${selectedModel.label || selectedModel.id}”. Deixe o esforço no padrão do provedor.`, 400);
+      } else if (selectedModel.defaultEffort !== effort) throw httpError(`A CLI só confirmou o esforço padrão “${selectedModel.defaultEffort}” para “${selectedModel.label || selectedModel.id}”.`, 400);
+    }
+    return { ...account, model, effort, modelToolSupport: selectedModel?.toolSupport || 'unknown' };
   }
 
   /**
@@ -91,7 +106,7 @@ export class ProviderChat {
     const record = await this.store.get(threadId);
     if (!record) throw httpError('Conversa não encontrada.', 404);
     if (record.thread.taskId) throw httpError('Esta conversa pertence a uma execução contínua. Para orientar, use Retomar no painel Execuções contínuas.', 409);
-    const account = this.#withChatSelection(this.accountFor(record, accountId), { model, effort });
+    const account = await this.#withChatSelection(this.accountFor(record, accountId), { model, effort });
     const message = [text, extraText].filter(Boolean).join('\n\n');
     if (this.running.has(threadId)) {
       if (record.queue.length >= MAX_QUEUE) throw httpError('A fila desta conversa está cheia.', 409);
@@ -138,6 +153,9 @@ export class ProviderChat {
     if (handoff) {
       const file = await readText(join(record.thread.cwd, HANDOFF_FILE), 30_000);
       if (file) parts.push(`## Registro de retomada (${HANDOFF_FILE})\n\n${file}`);
+    }
+    if (account.modelToolSupport === 'unsupported') {
+      parts.push('## Compatibilidade do modelo\n\nO catálogo do provedor declara que o modelo selecionado não oferece ferramentas. Responda a perguntas conversacionais, mas não solicite comandos, leituras ou alterações de arquivos; explique a limitação quando a tarefa depender dessas ferramentas.');
     }
     parts.push(`## Mensagem do usuário\n\n${text}`);
     return { prompt: parts.join('\n\n'), sessionId: '' };
@@ -197,7 +215,10 @@ export class ProviderChat {
       // On a usage limit, keep going on the next account of the rotation.
       if (outcome.status === 'rate-limited' && this.accounts.registry.rotation.autoContinue) {
         next = this.accounts.pick(this.accounts.registry.rotation.order.filter((id) => id !== PRIMARY_ID), { exclude: [account.id] });
-        if (next) fresh = await this.store.get(threadId);
+        if (next) {
+          next = await this.#withChatSelection(next);
+          fresh = await this.store.get(threadId);
+        }
       }
     } catch (error) {
       console.error('Falha ao concluir a resposta de uma conversa do harness:', error.message);
@@ -219,7 +240,7 @@ export class ProviderChat {
     if (!next || this.running.has(threadId)) return;
     const text = next.prompt || next.input.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
     try {
-      const account = this.#withChatSelection(this.accountFor(record, next.accountId), next);
+      const account = await this.#withChatSelection(this.accountFor(record, next.accountId), next);
       if (!this.accounts.availability(account).ok) throw new Error(`${account.label} indisponível`);
       const started = this.#startTurn(record, account, { text, content: next.input });
       await this.store.update(threadId, (stored) => { stored.queue = stored.queue.filter((item) => item.id !== next.id); });

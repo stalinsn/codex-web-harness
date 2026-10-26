@@ -2,37 +2,44 @@
 import { fail, json, readBody } from '../http/respond.mjs';
 import { PROVIDERS } from '../accounts/providers.mjs';
 import { getAccountModelCatalog } from '../accounts/model-catalog.mjs';
+import { getAntigravityAccessMode, setAntigravityAccessMode } from '../accounts/permissions.mjs';
 import { prepareAccountDir, saveManualSecret, setupInfo, signOut } from '../accounts/setup.mjs';
 
 const ACCOUNT = /^\/api\/accounts\/([a-z0-9][a-z0-9-]{0,39})$/;
 const ACCOUNT_ACTION = (action) => new RegExp(`^/api/accounts/([a-z0-9][a-z0-9-]{0,39})/${action}$`);
 
 export function registerAccountRoutes(router, { accounts, logins }) {
-  const snapshot = () => ({
-    accounts: accounts.list(),
-    rotation: accounts.registry.rotation,
-    providers: Object.entries(PROVIDERS).map(([id, preset]) => ({ id, label: preset.label, usage: preset.usage, kind: preset.kind })),
-  });
+  const snapshot = async () => {
+    const result = {
+      accounts: accounts.list(),
+      rotation: accounts.registry.rotation,
+      providers: Object.entries(PROVIDERS).map(([id, preset]) => ({ id, label: preset.label, usage: preset.usage, kind: preset.kind })),
+    };
+    await Promise.all(result.accounts.filter((item) => item.provider === 'antigravity').map(async (item) => {
+      item.permissionMode = await getAntigravityAccessMode(accounts.registry.get(item.id), item.permissionMode).catch(() => item.permissionMode);
+    }));
+    return result;
+  };
 
-  router.get('/api/accounts', ({ res }) => json(res, 200, snapshot()));
+  router.get('/api/accounts', async ({ res }) => json(res, 200, await snapshot()));
 
   router.post('/api/accounts', async ({ req, res }) => {
     const body = await readBody(req);
     const account = await accounts.registry.add(body);
     await prepareAccountDir(account);
     await accounts.checkStatus(account.id).catch(() => {});
-    return json(res, 201, { account: accounts.list().find((item) => item.id === account.id), ...snapshot() });
+    return json(res, 201, { account: accounts.list().find((item) => item.id === account.id), ...await snapshot() });
   });
 
   // Registered before the /api/accounts/:id pattern, which would also match it.
   router.post('/api/accounts/rotation', async ({ req, res }) => {
     await accounts.registry.setRotation(await readBody(req));
-    return json(res, 200, snapshot());
+    return json(res, 200, await snapshot());
   });
 
   router.post(ACCOUNT, async ({ req, res, params: [id] }) => {
     await accounts.registry.update(id, await readBody(req));
-    return json(res, 200, snapshot());
+    return json(res, 200, await snapshot());
   });
 
   router.delete(ACCOUNT, async ({ res, url, params: [id] }) => {
@@ -42,12 +49,12 @@ export function registerAccountRoutes(router, { accounts, logins }) {
     accounts.dropAccount(account);
     if (url.searchParams.get('forget') === 'true') await accounts.forgetCredentials(account);
     await accounts.registry.remove(id);
-    return json(res, 200, snapshot());
+    return json(res, 200, await snapshot());
   });
 
   router.post(ACCOUNT_ACTION('check'), async ({ res, params: [id] }) => {
     await accounts.checkStatus(id);
-    return json(res, 200, snapshot());
+    return json(res, 200, await snapshot());
   });
 
   // Connection wizard: CLI detection, login/install terminals, manual tokens, sign-out.
@@ -56,14 +63,22 @@ export function registerAccountRoutes(router, { accounts, logins }) {
     if (!account) throw Object.assign(new Error('Conta não encontrada.'), { statusCode: 404 });
     return account;
   };
+  router.post(ACCOUNT_ACTION('access'), async ({ req, res, params: [id] }) => {
+    const account = requireAccount(id);
+    if (accounts.busy.has(id)) return fail(res, 409, 'A conta está executando uma tarefa. Altere o acesso depois que ela terminar.');
+    const body = await readBody(req, 4096);
+    await setAntigravityAccessMode(account, body.mode);
+    await accounts.registry.update(id, { permissionMode: body.mode });
+    return json(res, 200, await snapshot());
+  });
   router.get(ACCOUNT_ACTION('setup'), async ({ res, params: [id] }) => {
     const account = requireAccount(id);
     const state = accounts.registry.stateOf(id);
     return json(res, 200, { setup: await setupInfo(account), loggedIn: state.loggedIn, statusDetail: state.statusDetail });
   });
-  router.get(ACCOUNT_ACTION('models'), async ({ res, params: [id] }) => {
+  router.get(ACCOUNT_ACTION('models'), async ({ res, url, params: [id] }) => {
     const account = requireAccount(id);
-    return json(res, 200, await getAccountModelCatalog(account, accounts));
+    return json(res, 200, await getAccountModelCatalog(account, accounts, { refresh: url.searchParams.get('refresh') === '1' }));
   });
   router.post(ACCOUNT_ACTION('login'), async ({ req, res, params: [id] }) => {
     const body = await readBody(req, 4096);
@@ -74,7 +89,7 @@ export function registerAccountRoutes(router, { accounts, logins }) {
     const body = await readBody(req, 16 * 1024);
     await saveManualSecret(requireAccount(id), body.value);
     await accounts.checkStatus(id);
-    return json(res, 200, snapshot());
+    return json(res, 200, await snapshot());
   });
   router.post(ACCOUNT_ACTION('logout'), async ({ res, params: [id] }) => {
     if (accounts.busy.has(id)) return fail(res, 409, 'A conta está executando uma tarefa. Pare a tarefa antes de sair.');
@@ -84,7 +99,7 @@ export function registerAccountRoutes(router, { accounts, logins }) {
     await signOut(account);
     Object.assign(accounts.registry.stateOf(id), { loggedIn: false, statusDetail: 'Desconectada pelo painel.', checkedAt: Date.now(), cooldownUntil: 0, percent: null });
     await accounts.registry.saveState();
-    return json(res, 200, snapshot());
+    return json(res, 200, await snapshot());
   });
   const SESSION = (suffix = '') => new RegExp(`^/api/login-sessions/([a-f0-9-]{36})${suffix}$`);
   router.get(SESSION(), ({ res, params: [sid] }) => json(res, 200, { session: logins.view(logins.get(sid)) }));
@@ -99,6 +114,6 @@ export function registerAccountRoutes(router, { accounts, logins }) {
     if (!accounts.registry.get(id)) return fail(res, 404, 'Conta não encontrada.');
     Object.assign(accounts.registry.stateOf(id), { cooldownUntil: 0, percent: null, percentAt: 0 });
     await accounts.registry.saveState();
-    return json(res, 200, snapshot());
+    return json(res, 200, await snapshot());
   });
 }

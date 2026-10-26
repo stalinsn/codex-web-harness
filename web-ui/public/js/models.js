@@ -76,6 +76,7 @@ function applyAccountModelSettings(account, catalog) {
       supportedReasoningEfforts: encoded ? [] : (item.efforts || item.supportedReasoningEfforts || []),
       defaultReasoningEffort: encoded ? '' : (item.defaultEffort || item.defaultReasoningEffort || ''),
       effortEncoded: encoded,
+      toolSupport: item.toolSupport || 'unknown',
     };
   });
 
@@ -88,6 +89,7 @@ function applyAccountModelSettings(account, catalog) {
       supportedReasoningEfforts: encoded ? [] : (account.effort ? [account.effort] : []),
       defaultReasoningEffort: encoded ? '' : (account.effort || ''),
       effortEncoded: encoded,
+      toolSupport: 'unknown',
     }, ...models];
   }
 
@@ -115,6 +117,7 @@ function renderExternalModels(account) {
   select.value = state.chatModelId;
   syncComposerSelect(select);
   updateEfforts();
+  updateModelCompatibility();
   $('.model-wrap')?.classList.remove('hidden');
   $('.model-wrap')?.classList.add('external-model');
   select.title = [account.providerLabel, state.chatModels.find((item) => item.id === state.chatModelId)?.displayName].filter(Boolean).join(' · ');
@@ -130,6 +133,7 @@ function showCatalogLoading(account) {
   state.chatModelId = '';
   state.chatEffort = '';
   state.chatModelsLoading = true;
+  $('#modelCompatibilityNote')?.classList.add('hidden');
   $('.model-wrap')?.classList.remove('hidden');
   $('.model-wrap')?.classList.add('external-model');
   $('.effort-wrap')?.classList.add('hidden');
@@ -207,11 +211,36 @@ export function updateEfforts() {
   syncComposerSelect(select);
 }
 
+function updateModelCompatibility() {
+  const note = $('#modelCompatibilityNote');
+  if (!note) return;
+  const account = state.accounts.find((item) => item.id === state.chatAccountId);
+  if (!account || account.primary) {
+    note.classList.add('hidden');
+    note.removeAttribute('data-tone');
+    return;
+  }
+  const model = getSelectedModel();
+  const support = model?.toolSupport || 'unknown';
+  note.classList.remove('hidden');
+  note.dataset.tone = support === 'unsupported' ? 'warning' : support === 'supported' ? 'confirmed' : 'unknown';
+  if (support === 'supported') {
+    note.textContent = 'O catálogo declara suporte a ferramentas para este modelo. As permissões da CLI continuam sendo aplicadas por conta.';
+  } else if (support === 'unsupported') {
+    note.textContent = 'O catálogo declara que este modelo não oferece ferramentas. Use-o para conversa; tarefas com comandos ou arquivos podem falhar.';
+  } else if (account.provider === 'antigravity') {
+    note.textContent = 'A Antigravity CLI oferece ferramentas de agente, mas não informa compatibilidade por modelo. O harness não presume esse suporte.';
+  } else {
+    note.textContent = 'O catálogo não informa suporte a ferramentas para este modelo. O harness não presume compatibilidade; consulte o histórico de erros após executar.';
+  }
+}
+
 export function setComposerModel(modelId) {
   if (isExternalChat()) {
     state.chatModelId = modelId || '';
     saveChatPreference(chatModelKey(state.chatAccountId), state.chatModelId);
     updateEfforts();
+    updateModelCompatibility();
     updateComposerControls();
     return;
   }
@@ -270,6 +299,7 @@ export function applyChatAccount() {
     $('.model-wrap')?.classList.remove('external-model');
     $('.model-wrap')?.classList.remove('hidden');
     $('.effort-wrap')?.classList.remove('hidden');
+    $('#modelCompatibilityNote')?.classList.add('hidden');
     populateModels();
   }
 }

@@ -294,7 +294,7 @@ function renderModelOptions(catalog, account) {
   $('#wizardModelsSource').textContent = catalog.source ? `Origem: ${catalog.source}` : '';
 }
 
-async function loadModelSettings(account = state.accounts.find((item) => item.id === wizard.accountId)) {
+async function loadModelSettings(account = state.accounts.find((item) => item.id === wizard.accountId), { refresh = false } = {}) {
   const previousModel = $('#wizardModelSelect').value;
   const previousEffort = $('#wizardEffortSelect').value;
   showStep('models');
@@ -302,7 +302,7 @@ async function loadModelSettings(account = state.accounts.find((item) => item.id
   $('#wizardModelsSource').textContent = '';
   $('#wizardSaveModels').disabled = true;
   try {
-    wizard.catalog = await api(`/api/accounts/${encodeURIComponent(wizard.accountId)}/models`);
+    wizard.catalog = await api(`/api/accounts/${encodeURIComponent(wizard.accountId)}/models${refresh ? '?refresh=1' : ''}`);
   } catch (error) {
     wizard.catalog = { models: [], source: '', note: `${error.message} Você ainda pode manter o padrão da CLI.` };
   }
@@ -401,7 +401,7 @@ export function bindWizardEvents() {
   $('#wizardStart').addEventListener('click', () => startSession('login'));
   $('#wizardConfigure').addEventListener('click', () => loadModelSettings());
   $('#wizardModelSelect').addEventListener('change', (event) => updateEffortChoices(event.target.value));
-  $('#wizardModelsRefresh').addEventListener('click', () => loadModelSettings());
+  $('#wizardModelsRefresh').addEventListener('click', () => loadModelSettings(undefined, { refresh: true }));
   $('#wizardModelsForm').addEventListener('submit', saveModelSettings);
   $('#wizardModelsSkip').addEventListener('click', () => {
     const account = state.accounts.find((item) => item.id === wizard.accountId);

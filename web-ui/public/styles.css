@@ -715,6 +715,10 @@ body.resizing-inspector { cursor: col-resize; user-select: none; }
 .composer-settings .effort-wrap { flex: .8 1 0; }
 .composer-settings select { width: 100%; max-width: none; min-width: 0; min-height: 25px; padding: 0 14px 0 0; appearance: auto; -webkit-appearance: menulist; font-size: 12px; color: #e5e6f0; }
 .composer-settings select:disabled { opacity: .5; }
+.model-compatibility-note { margin: 6px 4px 0; color: #a2a6b8; font-size: 10px; line-height: 1.45; }
+.model-compatibility-note[data-tone="confirmed"] { color: #91d4ad; }
+.model-compatibility-note[data-tone="warning"] { color: #f0c78b; }
+.model-compatibility-note[data-tone="unknown"] { color: #afb2c0; }
 .composer-footnote { font-size: 10px; line-height: 1.4; }
 .stop-turn, .steer-button { min-height: 34px; font-size: 11px; touch-action: manipulation; }
 .voice-panel { position: relative; display: grid; gap: 9px; padding: 12px; margin: 8px 0; overflow: hidden; border: 1px solid #4b506c; border-radius: 12px; background: #252935; }
@@ -1112,6 +1116,15 @@ body.resizing-inspector { cursor: col-resize; user-select: none; }
 .account-main > small { overflow: hidden; color: #8f909a; font-size: 10px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
 .account-main > small.account-status { display: flex; align-items: center; gap: 6px; white-space: normal; }
 .account-usage-note { color: #6f717b !important; font-style: italic; }
+.account-access-controls { display: flex; flex-direction: column; gap: 6px; margin: 9px 0; padding: 8px; border: 1px solid #343743; border-radius: 8px; background: #1a1b20; }
+.account-access-controls > span { color: #b6b8c4; font-size: 9px; font-weight: 600; }
+.account-access-controls > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+.account-access-button { min-width: 0; padding: 6px 5px; color: #b5b7c1; font: inherit; font-size: 9px; font-weight: 500; line-height: 1.25; border: 1px solid #3d404b; border-radius: 6px; background: #222329; cursor: pointer; }
+.account-access-button:hover:not(:disabled) { border-color: #7c85a6; background: #2a2c35; }
+.account-access-button.active { color: #d9ddff; border-color: #717cae; background: #2a2d40; box-shadow: inset 0 0 0 1px #717cae33; }
+.account-access-button:disabled { opacity: .5; cursor: not-allowed; }
+.account-access-controls small.account-access-current { color: #bfc1cd; font-weight: 600; }
+.account-access-controls small { color: #92949f; font-size: 9px; line-height: 1.45; }
 .account-meter { height: 5px; margin: 2px 0; }
 .account-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: #6d6f78; }
 .tone-ok .account-dot { background: var(--green); box-shadow: 0 0 8px #72c99a66; }

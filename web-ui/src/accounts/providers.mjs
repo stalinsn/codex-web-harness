@@ -60,6 +60,7 @@ export const PROVIDERS = {
     label: 'Antigravity CLI (Google)',
     kind: 'cli',
     bin: 'agy',
+    permissionMode: 'request-review',
     isolation: { env: 'HOME' },
     args: ['-p', '{prompt}', '--output-format', 'stream-json', ['--model', '{model}'], ['--effort', '{effort}']],
     resumeArgs: ['--conversation', '{sessionId}'],
