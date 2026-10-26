@@ -142,7 +142,7 @@ export class ProviderChat {
     this.running.set(threadId, { controller, accountId: account.id });
     const recorder = new TurnRecorder({ store: this.store, threadId, emit: this.emit });
     let turnId;
-    try { turnId = await recorder.start({ text: label || text, content: label ? null : content }); }
+    try { turnId = await recorder.start({ text: label || text, content: label ? null : content, account }); }
     catch (error) { this.running.delete(threadId); throw error; }
     this.emit('turn-accepted', { threadId, turnId, model: this.#modelLabel(account), cwd: record.thread.cwd });
     this.#run(record, account, recorder, { text, handoff, controller }).catch((error) => console.error('Falha numa conversa do harness:', error.message));

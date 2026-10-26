@@ -10,13 +10,16 @@ import { addApproval, renderTurnHistory } from './messages.js';
 import { setChatAccount } from './models.js';
 import { projectForThread, selectProject, updateWorkingDirectory } from './projects.js';
 import { refreshQueue, renderQueue } from './queue.js';
+import { responderFor, setProviderClass } from './responders.js';
 import { runtime, state } from './state.js';
 import { renderThreads } from './thread-list.js';
 
 function updateRunningClock() {
   if (!state.busy) return;
   const elapsed = state.turnStartedAtMs ? Date.now() - state.turnStartedAtMs : 0;
-  $('#runningText').textContent = elapsed > 0 ? `Codex trabalhando há ${formatDuration(elapsed)}` : 'Codex está trabalhando…';
+  const who = responderFor(state.activeTurnId);
+  setProviderClass($('#runningIndicator'), who.provider);
+  $('#runningText').textContent = elapsed > 0 ? `${who.label} trabalhando há ${formatDuration(elapsed)}` : `${who.label} está trabalhando…`;
   for (const group of state.turnIntermediates.values()) {
     if (group.turnId === (state.activeTurnId || 'active') && group.durationMs == null) updateTurnIntermediateTitle(group);
   }

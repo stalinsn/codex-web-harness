@@ -2,6 +2,7 @@
 import { updateComposerControls } from './composer.js';
 import { $ } from './dom.js';
 import { effortLabel } from './format.js';
+import { setProviderClass } from './responders.js';
 import { state } from './state.js';
 
 export function getSelectedModel() { return state.models.find((model) => model.id === state.modelId) || state.models.find((model) => model.isDefault) || state.models[0] || null; }
@@ -48,7 +49,9 @@ export function populateAccountSelect() {
   select.replaceChildren(...(choices.length ? choices : [{ id: 'codex', label: 'Codex', available: true, primary: true }]).map((account) => {
     const option = document.createElement('option');
     option.value = account.id;
-    option.textContent = `${account.label}${account.available || account.primary ? '' : ' · indisponível'}`;
+    // Busy answering the open conversation is not "unavailable" from this chat's point of view.
+    const answeringHere = Boolean(state.selectedThreadId) && account.busyWith === `chat:${state.selectedThreadId}`;
+    option.textContent = `${account.label}${account.available || account.primary || answeringHere ? '' : ' · indisponível'}`;
     return option;
   }));
   select.value = state.chatAccountId;
@@ -64,6 +67,7 @@ export function applyChatAccount() {
   $('.model-wrap')?.classList.toggle('hidden', external);
   $('.effort-wrap')?.classList.toggle('hidden', external);
   $('.account-wrap')?.classList.toggle('external', external);
+  setProviderClass($('.account-wrap'), account?.provider || 'codex');
   const select = $('#accountSelect');
   if (select) select.title = external ? [account.providerLabel, account.model].filter(Boolean).join(' · ') : 'Codex (conta principal)';
 }

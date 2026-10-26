@@ -5,6 +5,7 @@ import { formatCountdown } from './format.js';
 import { renderInspectorSummary } from './inspector-layout.js';
 import { populateAccountSelect } from './models.js';
 import { renderRateLimitNotice } from './rate-limit.js';
+import { providerClass } from './responders.js';
 import { state } from './state.js';
 import { openWizard } from './wizard.js';
 
@@ -60,7 +61,7 @@ export function renderAccounts() {
   list.innerHTML = state.accounts.map((account, index) => {
     const status = statusOf(account);
     const details = [account.providerLabel, account.model].filter(Boolean).map(escapeHtml).join(' · ');
-    return `<li class="account-row tone-${status.tone}" data-account-id="${escapeHtml(account.id)}">
+    return `<li class="account-row tone-${status.tone} ${providerClass(account.provider)}" data-account-id="${escapeHtml(account.id)}">
       <span class="account-position">${index + 1}</span>
       <div class="account-main">
         <div class="account-title">

@@ -220,13 +220,13 @@ export class TaskOrchestrator {
   }
 
   /** One chat turn per segment in the task's conversation. */
-  async #segmentRecorder(task, segment, previous) {
+  async #segmentRecorder(task, segment, previous, account) {
     if (!this.localThreads || !task.threadId || !this.localThreads.has(task.threadId)) return null;
     const recorder = new TurnRecorder({ store: this.localThreads, threadId: task.threadId, emit: this.emit });
     const label = segment.id === 1 ? task.goal
       : segment.mode === 'nudge' ? `↪ Continuar (${segment.accountLabel})`
       : `↪ Etapa ${segment.id} em ${segment.accountLabel}${previous ? ` — ${previous.accountLabel}: ${OUTCOME_LABEL[previous.outcome] || previous.outcome}` : ''}. Retomando pelo registro de retomada.`;
-    await recorder.start({ text: label });
+    await recorder.start({ text: label, account });
     return recorder;
   }
 
@@ -291,7 +291,7 @@ export class TaskOrchestrator {
             policies: await this.#policies(task.cwd),
           });
           if (controller.signal.aborted) break;
-          const recorder = await this.#segmentRecorder(task, segment, previous);
+          const recorder = await this.#segmentRecorder(task, segment, previous, account);
           const logText = coalescer((event) => this.#log(task, event).catch(() => {}));
           const outcome = await this.accounts.runSegment(account, {
             taskId: task.id, prompt, cwd: task.cwd, sessionId: reuseSession, title: `Contínua · ${task.title}`, signal: controller.signal,

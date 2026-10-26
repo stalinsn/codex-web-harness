@@ -14,6 +14,7 @@ import { associateThreadWithSelectedProject, renderConversationContext } from '.
 import { refreshQueue, renderQueue } from './queue.js';
 import { clearResolvedRateLimitFailure, getEffectiveRateLimitBlock, isRateLimitError, recordRateLimitFailure } from './rate-limit.js';
 import { playCompletionSound } from './sound.js';
+import { rememberTurnAccount } from './responders.js';
 import { state } from './state.js';
 import { onTaskEvent, onTaskUpdated, refreshTasks } from './tasks.js';
 import { refreshThreadList, renderThreads } from './thread-list.js';
@@ -73,6 +74,7 @@ function handleCodexNotification(message) {
   }
   if (eventThreadId && eventThreadId !== state.selectedThreadId) return;
   if (message.method === 'turn/started') {
+    rememberTurnAccount(params.turn);
     if (params.turn?.id && state.completedTurnIds.has(params.turn.id)) return;
     state.turnStartedAtMs = params.turn?.startedAt ? Number(params.turn.startedAt) * 1000 : Date.now();
     state.activeTurnId = params.turn?.id || null;

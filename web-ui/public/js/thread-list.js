@@ -5,6 +5,7 @@ import { newChat, openThread } from './conversation.js';
 import { $, $$, escapeHtml, installIcons, toast } from './dom.js';
 import { updateThreadHeader } from './inspector.js';
 import { openThreadColorMenu, projectColor, projectForThread, renderProjects, threadBelongsToProject, threadColor, threadDisplayTitle } from './projects.js';
+import { providerClass } from './responders.js';
 import { state } from './state.js';
 
 export function closeThreadMenus() {
@@ -44,7 +45,7 @@ export function createThreadRow(thread, { nested = false, showUnassigned = false
   if (String(thread.id).startsWith('ext-')) {
     const account = state.accounts.find((item) => item.id === thread.accountId);
     const badge = document.createElement('span');
-    badge.className = 'thread-account-tag';
+    badge.className = `thread-account-tag ${thread.taskId ? 'provider-task' : providerClass(account?.provider)}`;
     badge.textContent = thread.taskId ? 'Contínua' : account?.label || 'Outra conta';
     badge.title = account ? `${account.label} · ${account.providerLabel}` : 'Conversa do harness';
     button.append(badge);
@@ -59,8 +60,8 @@ export function createThreadRow(thread, { nested = false, showUnassigned = false
     const indicator = document.createElement('span');
     indicator.className = 'thread-running-indicator';
     indicator.setAttribute('role', 'status');
-    indicator.setAttribute('aria-label', 'Codex trabalhando');
-    indicator.title = 'Codex trabalhando';
+    indicator.setAttribute('aria-label', 'Respondendo');
+    indicator.title = 'Respondendo';
     button.append(indicator);
   }
   button.addEventListener('click', () => openThread(thread.id));

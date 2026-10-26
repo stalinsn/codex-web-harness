@@ -1269,8 +1269,34 @@ body.resizing-inspector { cursor: col-resize; user-select: none; }
 .card-title-row > .refresh-mini { margin-left: auto; }
 
 /* Harness-held conversations (other accounts, continuous tasks) */
-.thread-account-tag { max-width: 84px; flex: none; overflow: hidden; padding: 2px 5px; color: #c9b8ff; font-size: 9px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; border: 1px solid #4b3f7a; border-radius: 5px; background: #241f38; }
+.thread-account-tag { max-width: 84px; flex: none; overflow: hidden; padding: 2px 5px; color: var(--provider-color, #c9b8ff); font-size: 9px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; border: 1px solid color-mix(in srgb, var(--provider-color, #b59aff) 45%, transparent); border-radius: 5px; background: color-mix(in srgb, var(--provider-color, #b59aff) 12%, transparent); }
 .account-wrap select { max-width: 150px; }
-.account-wrap.external { border-color: #4b3f7a; }
 .composer-settings .account-wrap { flex: 1 1 0; }
 .composer-settings .account-wrap.external { flex: 2 1 0; }
+
+/* ==========================================================================
+   Provider identity: who is answering (Codex neutral, Claude orange, Google blue)
+   ========================================================================== */
+
+:root {
+  --provider-codex: #b4b4bd;
+  --provider-claude: #e07a52;
+  --provider-google: #5b9cf8;
+  --provider-gemini: #8ab4f8;
+  --provider-custom: #b59aff;
+}
+.provider-codex { --provider-color: var(--provider-codex); --provider-avatar-bg: #26262b; --provider-avatar-border: #45454d; }
+.provider-claude-code { --provider-color: var(--provider-claude); --provider-avatar-bg: #3a2219; --provider-avatar-border: #8a4a32; }
+.provider-antigravity { --provider-color: var(--provider-google); --provider-avatar-bg: #182640; --provider-avatar-border: #355ea3; }
+.provider-gemini-cli { --provider-color: var(--provider-gemini); --provider-avatar-bg: #1a2742; --provider-avatar-border: #46669e; }
+.provider-custom { --provider-color: var(--provider-custom); --provider-avatar-bg: #241f38; --provider-avatar-border: #4b3f7a; }
+.provider-task { --provider-color: #c9cbd6; }
+
+.message.assistant[class*="provider-"] .message-avatar { color: var(--provider-color); border-color: var(--provider-avatar-border); background: var(--provider-avatar-bg); }
+.message.assistant[class*="provider-"] .assistant-label { color: var(--provider-color); }
+.running-indicator[class*="provider-"] .loader { border-top-color: var(--provider-color); }
+.running-indicator[class*="provider-"] #runningText { color: color-mix(in srgb, var(--provider-color) 70%, #c9cad2); }
+.composer-settings .account-wrap[class*="provider-"] { border-color: color-mix(in srgb, var(--provider-color) 55%, #3b3d47); box-shadow: inset 3px 0 0 var(--provider-color); }
+.composer-settings .account-wrap[class*="provider-"] .select-label { color: var(--provider-color); }
+.account-row[class*="provider-"] .account-position { color: var(--provider-avatar-bg); background: var(--provider-color); }
+.task-segments li[class*="provider-"] strong { color: var(--provider-color); }

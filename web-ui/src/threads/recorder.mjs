@@ -65,18 +65,20 @@ export class TurnRecorder {
   }
 
   /** Begin a turn with the user's message. */
-  async start({ text, content = null }) {
+  async start({ text, content = null, account = null }) {
     this.turnId = `turn-${randomUUID()}`;
+    // Who answers this turn (the client colours and labels the reply by provider).
+    const who = account ? { id: account.id, label: account.label, provider: account.provider } : null;
     const user = { type: 'userMessage', id: `${this.turnId}-user`, content: content || [{ type: 'text', text }] };
     const startedAt = nowSeconds();
     await this.store.update(this.threadId, (record) => {
-      record.turns.push({ id: this.turnId, status: 'inProgress', startedAt, items: [user] });
+      record.turns.push({ id: this.turnId, status: 'inProgress', startedAt, items: [user], ...(who ? { account: who } : {}) });
       record.thread.status = { type: 'active' };
       if (!record.thread.preview) record.thread.preview = String(text || '').slice(0, 160);
     });
     this.startedAt = startedAt;
     this.#notify('thread/status/changed', { status: { type: 'active' } });
-    this.#notify('turn/started', { turn: { id: this.turnId, startedAt } });
+    this.#notify('turn/started', { turn: { id: this.turnId, startedAt, ...(who ? { account: who } : {}) } });
     this.#notify('item/started', { turnId: this.turnId, item: user });
     return this.turnId;
   }

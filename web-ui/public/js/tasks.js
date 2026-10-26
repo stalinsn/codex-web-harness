@@ -5,6 +5,7 @@ import { openThread } from './conversation.js';
 import { $, debounce, escapeHtml, installIcons, toast } from './dom.js';
 import { formatCountdown } from './format.js';
 import { renderInspectorSummary } from './inspector-layout.js';
+import { providerClass } from './responders.js';
 import { state } from './state.js';
 
 const STATUS = {
@@ -70,7 +71,7 @@ function renderTaskDetail(task) {
   $('#taskDetailCwd').textContent = task.cwd;
   const waiting = task.status === 'waiting' && task.nextAttemptAt ? ` Próxima tentativa ${formatCountdown(task.nextAttemptAt / 1000)}.` : '';
   $('#taskDetailNote').textContent = [task.note, task.error && task.status === 'failed' ? task.error : ''].filter(Boolean).join(' ') + waiting;
-  $('#taskSegments').innerHTML = (task.segments || []).map((segment) => `<li class="segment-${escapeHtml(segment.outcome || 'running')}"><strong>${escapeHtml(segment.accountLabel)}</strong><span>${segment.outcome ? escapeHtml(OUTCOME[segment.outcome] || segment.outcome) : 'em andamento'}</span></li>`).join('') || '<li><span>Nenhuma etapa ainda.</span></li>';
+  $('#taskSegments').innerHTML = (task.segments || []).map((segment) => `<li class="segment-${escapeHtml(segment.outcome || 'running')} ${providerClass(segment.provider)}"><strong>${escapeHtml(segment.accountLabel)}</strong><span>${segment.outcome ? escapeHtml(OUTCOME[segment.outcome] || segment.outcome) : 'em andamento'}</span></li>`).join('') || '<li><span>Nenhuma etapa ainda.</span></li>';
   const log = $('#taskLog');
   log.replaceChildren(...(task.events || []).slice(-MAX_LOG_ROWS).map(logRow));
   log.scrollTop = log.scrollHeight;
