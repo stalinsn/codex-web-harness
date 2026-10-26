@@ -13,6 +13,7 @@ Uma interface web responsiva para conversar com o Codex CLI instalado na sua pr�
 - Rolagem na borda da conversa, preservando a posição durante a leitura e com atalho para voltar à última mensagem.
 - Ações para renomear, fixar, arquivar, restaurar e excluir conversas.
 - Menu lateral com seção de fixadas, abas de conversas e arquivadas, e busca por título no projeto atual ou em todos os projetos.
+- Cores de projetos e conversas sincronizadas no diretório privado `CODEX_HOME/web-label-colors.json`, compartilhadas entre navegadores autenticados.
 - Login privado com senha e código de uso único enviado por e-mail. Não há cadastro público.
 - Visão de uso e limites informados pela conta Codex.
 - Leitura protegida e atualizada automaticamente da saúde da VPS: CPU, RAM, disco, containers Docker e armazenamento.
@@ -71,7 +72,7 @@ Se a CLI estiver instalada fora de `~/.local/bin/codex`, defina `CODEX_BIN` com 
 
 Ajustes específicos da instalação ficam em `CODEX_HOME/web-config.json` (opcional, fora do Git): nomes amigáveis para projetos Docker no painel de saúde (`dockerProjectLabels`, aceita padrões `prefixo-*`) e as pastas medidas em armazenamento (`storagePaths`, aceita `~/`). Veja `deploy/web-config.example.json`. Reinicie o serviço após alterar.
 
-Os dados da aplicação, incluindo `web-auth.json`, `web-projects.json` e imagens anexadas, ficam dentro de `CODEX_HOME`. Faça backup desse diretório segundo sua política. Não adicione esses dados ao Git.
+Os dados da aplicação, incluindo `web-auth.json`, `web-projects.json`, `web-label-colors.json` e imagens anexadas, ficam dentro de `CODEX_HOME`. Faça backup desse diretório segundo sua política. Não adicione esses dados ao Git.
 
 ## Proteção de acesso
 

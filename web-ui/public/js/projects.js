@@ -77,6 +77,13 @@ export function threadColor(thread) {
   return PROJECT_COLOR_OPTIONS.some((option) => option.color === color) ? color : '';
 }
 
+function cacheLabelColors() {
+  try {
+    localStorage.setItem('codex-project-colors', JSON.stringify(state.projectColors));
+    localStorage.setItem('codex-thread-colors', JSON.stringify(state.threadColors));
+  } catch { /* server storage remains authoritative if this browser cannot cache */ }
+}
+
 function closeProjectColorMenus() {
   $$('.project-color-popover').forEach((popover) => {
     if (popover.matches(':popover-open')) popover.hidePopover();
@@ -87,15 +94,39 @@ function closeProjectColorMenus() {
 function setProjectColor(projectId, color) {
   if (color) state.projectColors[projectId] = color;
   else delete state.projectColors[projectId];
-  localStorage.setItem('codex-project-colors', JSON.stringify(state.projectColors));
+  cacheLabelColors();
   renderThreads(state.threads, $('#threadSearch').value.trim());
+  persistLabelColor('project', projectId, color);
 }
 
 function setThreadColor(threadId, color) {
   if (color) state.threadColors[threadId] = color;
   else delete state.threadColors[threadId];
-  localStorage.setItem('codex-thread-colors', JSON.stringify(state.threadColors));
+  cacheLabelColors();
   renderThreads(state.threads, $('#threadSearch').value.trim());
+  persistLabelColor('thread', threadId, color);
+}
+
+function persistLabelColor(scope, id, color) {
+  api(`/api/labels/${scope}/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ color }),
+  }).catch((error) => toast(`A cor foi aplicada neste navegador, mas não foi sincronizada com a VPS: ${error.message}`, 'error'));
+}
+
+export async function syncLabelColors() {
+  const labels = await api('/api/labels/migrate', {
+    method: 'POST',
+    body: JSON.stringify({ projectColors: state.projectColors, threadColors: state.threadColors }),
+  });
+  const projectColors = labels.projectColors || {};
+  const threadColors = labels.threadColors || {};
+  const changed = JSON.stringify(state.projectColors) !== JSON.stringify(projectColors)
+    || JSON.stringify(state.threadColors) !== JSON.stringify(threadColors);
+  state.projectColors = projectColors;
+  state.threadColors = threadColors;
+  cacheLabelColors();
+  if (changed) renderThreads(state.threads, $('#threadSearch')?.value.trim() || '');
 }
 
 function openProjectColorMenu(project, trigger) {

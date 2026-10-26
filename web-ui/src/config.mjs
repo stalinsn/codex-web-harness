@@ -17,6 +17,7 @@ export const config = Object.freeze({
   publicDir: resolve(process.env.CODEX_UI_PUBLIC || join(import.meta.dirname, '..', 'public')),
   uploadDir: join(CODEX_HOME, 'web-uploads'),
   projectsFile: join(CODEX_HOME, 'web-projects.json'),
+  labelsFile: join(CODEX_HOME, 'web-label-colors.json'),
   authFile: join(CODEX_HOME, 'web-auth.json'),
   authOrigin: process.env.CODEX_UI_ORIGIN ? new URL(process.env.CODEX_UI_ORIGIN).origin : null,
   // Header set by the local reverse proxy with the real client address (e.g. x-real-ip,

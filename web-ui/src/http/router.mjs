@@ -10,6 +10,7 @@ export class Router {
 
   get(pattern, handler) { return this.add('GET', pattern, handler); }
   post(pattern, handler) { return this.add('POST', pattern, handler); }
+  put(pattern, handler) { return this.add('PUT', pattern, handler); }
   delete(pattern, handler) { return this.add('DELETE', pattern, handler); }
 
   match(method, pathName) {

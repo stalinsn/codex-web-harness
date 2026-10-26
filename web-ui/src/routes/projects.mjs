@@ -3,12 +3,31 @@ import { randomUUID } from 'node:crypto';
 import { rmdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fail, json, readBody } from '../http/respond.mjs';
+import { LABEL_COLORS, getLabelColors, migrateLabelColors, setLabelColor } from '../labels.mjs';
 import { createProjectDirectory, findProjectForCwd, getProjects, saveProjects, validateCwd } from '../projects.mjs';
 
 const MAX_PROJECTS = 100;
 
 export function registerProjectRoutes(router, { codex }) {
   router.get('/api/projects', async ({ res }) => json(res, 200, { projects: await getProjects() }));
+
+  router.get('/api/labels', async ({ res }) => json(res, 200, await getLabelColors()));
+
+  router.post('/api/labels/migrate', async ({ req, res }) => {
+    const body = await readBody(req, 256 * 1024);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return fail(res, 400, 'Dados das etiquetas inválidos.');
+    const labels = await migrateLabelColors(body.projectColors, body.threadColors);
+    return json(res, 200, labels);
+  });
+
+  router.put(/^\/api\/labels\/(project|thread)\/([a-zA-Z0-9_-]{1,100})$/, async ({ req, res, params: [scope, id] }) => {
+    const body = await readBody(req, 4096);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return fail(res, 400, 'Dados da etiqueta inválidos.');
+    const color = body.color;
+    if (color !== '' && color !== null && !LABEL_COLORS.has(color)) return fail(res, 400, 'A cor selecionada não é válida.');
+    await setLabelColor(scope, id, color || '');
+    return json(res, 200, { ok: true });
+  });
 
   router.post('/api/projects', async ({ req, res }) => {
     const body = await readBody(req);

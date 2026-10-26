@@ -12,7 +12,7 @@ import { refreshUsage, refreshVpsHealth, renderUsage } from './inspector.js';
 import { closeSidebar, openSidebar, setConnection, setupComposerViewport, setupInspectorResize, showInspector } from './layout.js';
 import { scrollConversation } from './messages.js';
 import { populateModels, setChatAccount, setComposerEffort, setComposerModel } from './models.js';
-import { createProject, openProjectDialog, pathIsWithin, renderProjects, selectProject, updateProjectDirectoryField, updateWorkingDirectory } from './projects.js';
+import { createProject, openProjectDialog, pathIsWithin, renderProjects, selectProject, syncLabelColors, updateProjectDirectoryField, updateWorkingDirectory } from './projects.js';
 import { clearResolvedRateLimitFailure } from './rate-limit.js';
 import { enhanceComposerSelects } from './custom-selects.js';
 import { prepareCompletionSound } from './sound.js';
@@ -33,6 +33,7 @@ export async function bootstrap() {
     state.threads = data.threads || [];
     state.activeThreadIds = new Set(state.threads.filter((thread) => thread.status?.type === 'active').map((thread) => thread.id));
     state.projects = data.projects || [];
+    await syncLabelColors().catch((error) => toast(`Não foi possível sincronizar as cores das etiquetas com a VPS: ${error.message}`, 'error'));
     state.defaultCwd = data.defaultCwd || '/';
     state.projectsRoot = data.projectsRoot || `${state.defaultCwd}/projects`;
     if (!state.projects.some((project) => project.id === state.selectedProjectId)) state.selectedProjectId = '';
@@ -156,6 +157,9 @@ export function bindEvents() {
   $('#threadList').addEventListener('scroll', closeThreadMenus, { passive: true });
   window.addEventListener('resize', closeThreadMenus);
   $('#threadSearch').addEventListener('input', debounce(() => refreshThreadList($('#threadSearch').value.trim()).catch((error) => toast(error.message, 'error')), 250));
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') syncLabelColors().catch(() => {});
+  });
   $('#refreshUsage').addEventListener('click', () => refreshUsage(true).then(() => toast('Uso atualizado.')).catch((error) => toast(error.message, 'error')));
   $('#refreshVpsHealth').addEventListener('click', () => refreshVpsHealth(true));
   $('#toggleUsage').addEventListener('click', () => showInspector(true));
