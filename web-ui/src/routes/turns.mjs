@@ -53,7 +53,7 @@ async function sendLocalTurn(res, body, { providerChat, codex }) {
     ...fileParts.map((part) => part.text),
     ...(imageParts.length ? [`Imagens anexadas (leia os arquivos):\n${imageParts.map((part) => `- ${part.path}`).join('\n')}`] : []),
   ].join('\n\n');
-  const result = await providerChat.send({ threadId, accountId: body.accountId, text, extraText, content });
+  const result = await providerChat.send({ threadId, accountId: body.accountId, text, extraText, content, model: body.model, effort: body.effort });
   return json(res, 202, result.queued ? result : { threadId, turn: { id: result.turnId } });
 }
 

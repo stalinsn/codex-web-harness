@@ -15,6 +15,7 @@ const TRANSCRIPT_TURNS = 8;
 const TRANSCRIPT_BYTES = 24_000;
 const MAX_POLICY = 12_000;
 const MAX_QUEUE = 20;
+const ANTIGRAVITY_ENCODED_EFFORT = /-(low|medium|high|xhigh|max)$/i;
 
 const readText = (path, max) => readFile(path, 'utf8').then((text) => text.slice(0, max), () => '');
 const textOf = (item) => (item.content || []).filter((part) => part.type === 'text').map((part) => part.text).join('\n');
@@ -75,19 +76,26 @@ export class ProviderChat {
     return [account.label, account.model].filter(Boolean).join(' · ');
   }
 
+  #withChatSelection(account, selection = {}) {
+    const model = typeof selection.model === 'string' ? selection.model.trim().slice(0, 100) : account.model;
+    let effort = typeof selection.effort === 'string' ? selection.effort.trim().slice(0, 30) : account.effort;
+    if (account.provider === 'antigravity' && ANTIGRAVITY_ENCODED_EFFORT.test(model || '')) effort = '';
+    return { ...account, model, effort };
+  }
+
   /**
    * Send a user message. Starts a turn, or queues it while one is running.
    * @returns {Promise<{threadId: string, turnId?: string, queued?: boolean, queuedSubmission?: object}>}
    */
-  async send({ threadId, accountId, text, extraText = '', content = null }) {
+  async send({ threadId, accountId, text, extraText = '', content = null, model, effort }) {
     const record = await this.store.get(threadId);
     if (!record) throw httpError('Conversa não encontrada.', 404);
     if (record.thread.taskId) throw httpError('Esta conversa pertence a uma execução contínua. Para orientar, use Retomar no painel Execuções contínuas.', 409);
-    const account = this.accountFor(record, accountId);
+    const account = this.#withChatSelection(this.accountFor(record, accountId), { model, effort });
     const message = [text, extraText].filter(Boolean).join('\n\n');
     if (this.running.has(threadId)) {
       if (record.queue.length >= MAX_QUEUE) throw httpError('A fila desta conversa está cheia.', 409);
-      const queued = { id: `q-${randomUUID()}`, accountId: account.id, input: content || [{ type: 'text', text: message }], prompt: message, createdAt: Date.now() };
+      const queued = { id: `q-${randomUUID()}`, accountId: account.id, model: account.model, effort: account.effort, input: content || [{ type: 'text', text: message }], prompt: message, createdAt: Date.now() };
       await this.store.update(threadId, (stored) => { stored.queue.push(queued); });
       this.emit('thread-queue-changed', { threadId });
       return { threadId, queued: true, queuedSubmission: queued };
@@ -116,7 +124,8 @@ export class ProviderChat {
   }
 
   async #prompt(record, account, text, { handoff = false } = {}) {
-    const sessionId = record.sessions[account.id] || '';
+    const selectionMatches = record.thread.accountId === account.id && record.thread.model === this.#modelLabel(account);
+    const sessionId = selectionMatches ? (record.sessions[account.id] || '') : '';
     if (sessionId && record.lastAccountId === account.id && !handoff) return { prompt: text, sessionId };
     const parts = [];
     if (account.provider !== 'codex') {
@@ -201,7 +210,7 @@ export class ProviderChat {
     if (!next || this.running.has(threadId)) return;
     const text = next.prompt || next.input.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
     try {
-      const account = this.accountFor(record, next.accountId);
+      const account = this.#withChatSelection(this.accountFor(record, next.accountId), next);
       if (!this.accounts.availability(account).ok) throw new Error(`${account.label} indisponível`);
       const started = this.#startTurn(record, account, { text, content: next.input });
       await this.store.update(threadId, (stored) => { stored.queue = stored.queue.filter((item) => item.id !== next.id); });

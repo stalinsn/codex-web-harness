@@ -138,6 +138,14 @@ async function antigravityCatalog(account) {
     if (!models.length) models = parseTextModels(output);
   } catch { /* Keep the safe CLI default if this version cannot list models. */ }
 
+  // Antigravity exposes Gemini effort tiers as distinct model IDs. Passing both
+  // the tiered model (for example, gemini-3.8-flash-high) and --effort is invalid.
+  models = models.map((model) => {
+    const encoded = /-(low|medium|high|xhigh|max)$/i.test(model.id)
+      || /\((low|medium|high|xhigh|max)\)\s*$/i.test(model.label || '');
+    return encoded ? { ...model, effortEncoded: true, efforts: [], defaultEffort: '' } : model;
+  });
+
   return {
     models,
     source: 'Antigravity CLI',

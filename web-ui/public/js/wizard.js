@@ -267,7 +267,12 @@ function modelForSelection(modelId) {
 function renderEffortOptions(model, currentEffort = '') {
   const select = $('#wizardEffortSelect');
   const efforts = model?.efforts || [];
-  select.replaceChildren(new Option('Padrão da CLI', ''));
+  select.replaceChildren(new Option(model?.effortEncoded ? 'Incluído no modelo' : 'Padrão da CLI', ''));
+  if (model?.effortEncoded) {
+    select.value = '';
+    select.disabled = true;
+    return;
+  }
   for (const effort of efforts) select.add(new Option(effort, effort));
   if (currentEffort && !efforts.includes(currentEffort)) select.add(new Option(`${currentEffort} · configuração atual`, currentEffort));
   select.value = currentEffort || '';
@@ -314,7 +319,7 @@ function updateEffortChoices(modelId) {
   const currentEffort = $('#wizardEffortSelect').value || account?.effort || '';
   const model = modelForSelection(modelId);
   const selected = model;
-  const keepEffort = selected?.efforts?.includes(currentEffort) ? currentEffort : selected?.defaultEffort || (account?.model === modelId ? currentEffort : '');
+  const keepEffort = selected?.effortEncoded ? '' : selected?.efforts?.includes(currentEffort) ? currentEffort : selected?.defaultEffort || (account?.model === modelId ? currentEffort : '');
   renderEffortOptions(selected, keepEffort);
 }
 

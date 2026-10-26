@@ -30,6 +30,7 @@ export const state = {
   threadListRequest: 0,
   accounts: [], rotation: null, providers: [], tasks: [], openTaskId: '',
   chatAccountId: localStorage.getItem('codex-chat-account') || 'codex',
+  chatModels: [], chatModelId: '', chatEffort: '', chatModelAccountId: '', chatModelsLoading: false,
   turnAccounts: new Map(),
 };
 

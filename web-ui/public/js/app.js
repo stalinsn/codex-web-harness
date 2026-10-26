@@ -11,7 +11,7 @@ import { bindInspectorLayout } from './inspector-layout.js';
 import { refreshUsage, refreshVpsHealth, renderUsage } from './inspector.js';
 import { closeSidebar, openSidebar, setConnection, setupComposerViewport, setupInspectorResize, showInspector } from './layout.js';
 import { scrollConversation } from './messages.js';
-import { populateModels, setChatAccount, updateEfforts } from './models.js';
+import { populateModels, setChatAccount, setComposerEffort, setComposerModel } from './models.js';
 import { createProject, openProjectDialog, pathIsWithin, renderProjects, selectProject, updateProjectDirectoryField, updateWorkingDirectory } from './projects.js';
 import { clearResolvedRateLimitFailure } from './rate-limit.js';
 import { enhanceComposerSelects } from './custom-selects.js';
@@ -118,9 +118,9 @@ export function bindEvents() {
     await addFiles(files);
   });
   $('#steerButton').addEventListener('click', steerMessage);
-  $('#modelSelect').addEventListener('change', () => { state.modelId = $('#modelSelect').value; localStorage.setItem('codex-model', state.modelId); updateEfforts(); localStorage.setItem('codex-effort', state.effort); updateComposerControls(); });
+  $('#modelSelect').addEventListener('change', () => setComposerModel($('#modelSelect').value));
   $('#accountSelect').addEventListener('change', () => { setChatAccount($('#accountSelect').value); updateComposerControls(); });
-  $('#effortSelect').addEventListener('change', () => { state.effort = $('#effortSelect').value; localStorage.setItem('codex-effort', state.effort); });
+  $('#effortSelect').addEventListener('change', () => setComposerEffort($('#effortSelect').value));
   $('#cwdControl').addEventListener('click', () => { $('#cwdInput').value = state.cwd; $('#pathDialog').showModal(); });
   $('#pathForm').addEventListener('submit', (event) => {
     if (event.submitter?.value === 'cancel') return;

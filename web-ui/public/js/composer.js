@@ -6,7 +6,7 @@ import { $, installIcons, toast } from './dom.js';
 import { formatBytes, formatCountdown } from './format.js';
 import { refreshUsage, updateThreadHeader } from './inspector.js';
 import { openImagePreview } from './layout.js';
-import { getSelectedModel } from './models.js';
+import { getComposerModelSelection, getSelectedModel } from './models.js';
 import { associateThreadWithSelectedProject } from './projects.js';
 import { refreshQueue } from './queue.js';
 import { getEffectiveRateLimitBlock, getRateLimitBlock, isRateLimitError, renderRateLimitNotice } from './rate-limit.js';
@@ -22,7 +22,9 @@ export function updateComposerControls() {
   const send = $('#sendButton');
   const modelSelect = $('#modelSelect');
   const effortSelect = $('#effortSelect');
-  if (modelSelect) modelSelect.disabled = !state.models.length;
+  const externalAccount = state.chatAccountId && state.chatAccountId !== 'codex';
+  const loadingModels = externalAccount && state.chatModelsLoading;
+  if (modelSelect) modelSelect.disabled = loadingModels || (externalAccount ? !state.chatModels.length : !state.models.length);
   if (effortSelect) effortSelect.disabled = !getSelectedModel()?.supportedReasoningEfforts?.length;
   if (send) {
     const transcriptReady = voice.phase === 'ready' && voice.transcriptInserted && Boolean($('#messageInput')?.value.trim());
@@ -32,8 +34,8 @@ export function updateComposerControls() {
       ? limitBlocked ? `Guardar ${transcriptReady ? 'texto' : 'áudio'} na fila até o limite liberar` : voiceLabel
       : state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem';
     send.setAttribute('aria-label', limitBlocked ? 'Guardar mensagem na fila até o limite liberar' : state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem');
-    send.disabled = state.sending || !['idle', 'ready'].includes(voice.phase) || (!hasDraft && !voice.blob);
-    $('#sendLabel').textContent = state.sending ? 'Enviando…' : (state.busy || limitBlocked) ? (voice.phase === 'ready' ? `${transcriptReady ? 'Texto' : 'Áudio'} à fila` : 'Fila') : voice.phase === 'ready' ? voiceLabel : 'Enviar';
+    send.disabled = state.sending || loadingModels || !['idle', 'ready'].includes(voice.phase) || (!hasDraft && !voice.blob);
+    $('#sendLabel').textContent = loadingModels ? 'Carregando…' : state.sending ? 'Enviando…' : (state.busy || limitBlocked) ? (voice.phase === 'ready' ? `${transcriptReady ? 'Texto' : 'Áudio'} à fila` : 'Fila') : voice.phase === 'ready' ? voiceLabel : 'Enviar';
     if (voice.phase === 'ready' && !state.sending) send.setAttribute('aria-label', send.title);
     send.classList.toggle('queue-mode', state.busy || limitBlocked);
     send.classList.toggle('audio-mode', sendingAudio);
@@ -50,7 +52,7 @@ export function updateComposerControls() {
     $('#stopTurn').disabled = state.interrupting;
     $('.stop-button-label', $('#stopTurn')).textContent = state.interrupting ? 'Parando…' : 'Parar';
   }
-  if ($('#composerHint')) $('#composerHint').textContent = voice.phase === 'recording'
+  if ($('#composerHint')) $('#composerHint').textContent = loadingModels ? 'Carregando modelos e esforços da conta…' : voice.phase === 'recording'
     ? 'Gravando · até 3 minutos'
     : limitBlocked ? `Limite de uso atingido${limitBlock.resetAt ? ` · libera ${formatCountdown(limitBlock.resetAt)}` : ''} · envios entram na fila`
     : voice.phase === 'ready' ? voice.transcriptInserted ? 'Revise sua transcrição e toque em Enviar texto' : 'Prévia pronta · ouça e toque em Enviar áudio'
@@ -137,6 +139,7 @@ export async function submitMessage(event, { allowVoice = false } = {}) {
   const currentThread = state.selectedThreadId;
   const files = [...state.files];
   const accountId = state.chatAccountId || 'codex';
+  const selection = getComposerModelSelection();
   // The browser-side limit queue only concerns the Codex account; other accounts answer directly.
   const rateLimitBlock = accountId === 'codex' && !String(currentThread || '').startsWith('ext-') ? getEffectiveRateLimitBlock() : null;
   if (rateLimitBlock) return queueDraftForRateLimit(text, files, currentThread, rateLimitBlock);
@@ -144,7 +147,7 @@ export async function submitMessage(event, { allowVoice = false } = {}) {
   try {
     const result = await api('/api/turn', {
       method: 'POST',
-      body: JSON.stringify({ threadId: currentThread, accountId, text, model: state.modelId, effort: state.effort, cwd: state.cwd, ...attachmentPayload(files) }),
+      body: JSON.stringify({ threadId: currentThread, accountId, text, model: selection.model, effort: selection.effort, cwd: state.cwd, ...attachmentPayload(files) }),
     });
     // Another account continuing a Codex conversation answers in a new harness conversation.
     if (currentThread && result.threadId && result.threadId !== currentThread) {
