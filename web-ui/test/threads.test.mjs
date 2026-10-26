@@ -50,3 +50,51 @@ test('transcripts keep the user messages and final answers', () => {
   ] }]);
   assert.equal(text, 'Usuário: Pergunta\n\nAssistente: Resposta');
 });
+
+test('concurrent updates of an evicted thread are not lost', async () => {
+  const store = await new LocalThreadStore({ dir: await mkdtemp(join(tmpdir(), 'harness-threads-')) }).load();
+  const { thread } = await store.create({ cwd: '/tmp', accountId: 'a', provider: 'claude-code' });
+  await store.flush(thread.id);
+  store.cache.delete(thread.id);
+  await Promise.all([
+    store.update(thread.id, (record) => { record.queue.push('A'); }),
+    store.update(thread.id, (record) => { record.queue.push('B'); }),
+  ]);
+  await store.flush(thread.id);
+  store.cache.delete(thread.id);
+  assert.deepEqual((await store.get(thread.id)).queue.sort(), ['A', 'B']);
+});
+
+test('one turn per conversation: a concurrent send is queued', async () => {
+  const { ProviderChat } = await import('../src/threads/provider-chat.mjs');
+  const store = await new LocalThreadStore({ dir: await mkdtemp(join(tmpdir(), 'harness-threads-')) }).load();
+  const account = { id: 'claude-1', label: 'Claude', provider: 'claude-code' };
+  let running = 0;
+  let maxRunning = 0;
+  const accounts = {
+    registry: { get: (id) => (id === account.id ? account : null), rotation: { order: [], autoContinue: false } },
+    availability: () => ({ ok: true }),
+    runSegment: async () => {
+      running += 1; maxRunning = Math.max(maxRunning, running);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      running -= 1;
+      return { status: 'completed', text: 'ok', sessionId: 's1' };
+    },
+  };
+  const chat = new ProviderChat({ store, accounts, emit: () => {} });
+  const { thread } = await store.create({ cwd: '/tmp', accountId: account.id, provider: account.provider });
+  const results = await Promise.all([chat.send({ threadId: thread.id, text: 'um' }), chat.send({ threadId: thread.id, text: 'dois' })]);
+  assert.equal(results.filter((result) => result.queued).length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(maxRunning, 1);
+  const record = await store.get(thread.id);
+  assert.deepEqual(record.turns.map((turn) => turn.status), ['completed', 'completed']);
+  assert.equal(record.queue.length, 0);
+});
+
+test('merged thread lists keep the Codex order and slot local threads by time', async () => {
+  const { mergeThreads } = await import('../src/routes/threads.mjs');
+  const codex = [{ id: 'a', updatedAt: 50 }, { id: 'b', updatedAt: 90 }, { id: 'c', updatedAt: 10 }];
+  const local = [{ id: 'x', updatedAt: 70 }, { id: 'y', updatedAt: 5 }];
+  assert.deepEqual(mergeThreads(codex, local).map((thread) => thread.id), ['x', 'a', 'b', 'c', 'y']);
+});

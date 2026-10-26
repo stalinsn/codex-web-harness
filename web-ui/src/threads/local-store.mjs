@@ -19,6 +19,8 @@ export class LocalThreadStore {
     this.index = new Map(); // id -> thread meta
     this.cache = new Map(); // id -> full record (LRU)
     this.timers = new Map();
+    this.loading = new Map(); // id -> in-flight read, so concurrent loads share one copy
+    this.writing = new Map(); // id -> in-flight write
   }
 
   async load() {
@@ -29,12 +31,12 @@ export class LocalThreadStore {
         const record = JSON.parse(await readFile(join(this.dir, file), 'utf8'));
         if (!isLocalThread(record?.thread?.id)) continue;
         // A turn cut by a restart cannot resume its process; close it.
+        this.index.set(record.thread.id, record.thread);
         if (record.thread.status?.type === 'active') {
           record.thread.status = { type: 'idle' };
           for (const turn of record.turns || []) if (turn.status === 'inProgress') Object.assign(turn, { status: 'interrupted', error: { message: 'O serviço foi reiniciado durante esta resposta.' } });
           await this.#write(record);
         }
-        this.index.set(record.thread.id, record.thread);
       } catch { /* skip unreadable file */ }
     }
     return this;
@@ -56,15 +58,25 @@ export class LocalThreadStore {
     if (!this.index.has(id)) return null;
     let record = this.cache.get(id);
     if (!record) {
-      record = JSON.parse(await readFile(this.#file(id), 'utf8'));
-      record.thread = this.index.get(id);
+      if (!this.loading.has(id)) {
+        this.loading.set(id, (async () => {
+          await this.writing.get(id);
+          const loaded = JSON.parse(await readFile(this.#file(id), 'utf8'));
+          loaded.thread = this.index.get(id);
+          this.cache.set(id, loaded);
+          return loaded;
+        })().finally(() => this.loading.delete(id)));
+      }
+      record = await this.loading.get(id);
+      if (!this.index.has(id)) return null;
     }
     this.cache.delete(id);
     this.cache.set(id, record);
-    while (this.cache.size > CACHE_SIZE) {
-      const [oldest] = this.cache.keys();
-      if (this.timers.has(oldest)) break;
-      this.cache.delete(oldest);
+    for (const candidate of this.cache.keys()) {
+      if (this.cache.size <= CACHE_SIZE) break;
+      // Never drop a record with unsaved or in-flight changes, nor one being used.
+      if (candidate === id || this.timers.has(candidate) || this.writing.has(candidate) || this.cache.get(candidate)?.thread?.status?.type === 'active') continue;
+      this.cache.delete(candidate);
     }
     return record;
   }
@@ -87,16 +99,20 @@ export class LocalThreadStore {
     record.thread.updatedAt = nowSeconds();
     this.index.set(id, record.thread);
     clearTimeout(this.timers.get(id));
-    this.timers.set(id, setTimeout(() => { this.timers.delete(id); this.#write(record).catch((error) => console.error('Falha ao salvar conversa local:', error.message)); }, SAVE_DELAY_MS));
+    this.timers.set(id, setTimeout(() => {
+      this.#write(record).catch((error) => console.error('Falha ao salvar conversa local:', error.message)).finally(() => this.timers.delete(id));
+    }, SAVE_DELAY_MS));
     return record;
   }
 
   async flush(id) {
-    if (!this.timers.has(id)) return;
-    clearTimeout(this.timers.get(id));
-    this.timers.delete(id);
-    const record = this.cache.get(id);
-    if (record) await this.#write(record);
+    if (this.timers.has(id)) {
+      clearTimeout(this.timers.get(id));
+      this.timers.delete(id);
+      const record = this.cache.get(id);
+      if (record) await this.#write(record);
+    }
+    await this.writing.get(id);
   }
 
   async remove(id) {
@@ -104,15 +120,25 @@ export class LocalThreadStore {
     this.timers.delete(id);
     this.index.delete(id);
     this.cache.delete(id);
+    await this.writing.get(id)?.catch(() => {});
     await rm(this.#file(id), { force: true });
   }
 
   #file(id) { return join(this.dir, `${id}.json`); }
 
-  async #write(record) {
-    const file = this.#file(record.thread.id);
-    const temporary = `${file}.${randomUUID()}.tmp`;
-    await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
-    await rename(temporary, file);
+  /** Writes of one thread are serialized; a removed thread is never written again. */
+  #write(record) {
+    const id = record.thread.id;
+    const previous = this.writing.get(id) || Promise.resolve();
+    const run = previous.catch(() => {}).then(async () => {
+      if (!this.index.has(id)) return;
+      const file = this.#file(id);
+      const temporary = `${file}.${randomUUID()}.tmp`;
+      await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
+      await rename(temporary, file);
+    });
+    const tracked = run.finally(() => { if (this.writing.get(id) === tracked) this.writing.delete(id); });
+    this.writing.set(id, tracked);
+    return tracked;
   }
 }

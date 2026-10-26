@@ -23,6 +23,15 @@ export function plainText(raw) {
   return String(raw).replace(ANSI, '').replace(/\r(?!\n)/g, '\n');
 }
 
+/**
+ * A token printed by a login command. Escape sequences become spaces (nothing gets glued
+ * onto the token) and the token must be followed by whitespace, so output that stops
+ * mid-token is not captured yet.
+ */
+export function captureToken(raw, pattern) {
+  return new RegExp(`${pattern}(?=\\s)`).exec(String(raw).replace(ANSI, ' '));
+}
+
 /** Links and device codes in the visible text; wrapped URLs are re-joined. */
 export function extractHints(text, cols) {
   const lines = plainText(text).split('\n').map((line) => line.replace(/[│┃║|]\s*$/, '').replace(/^\s*[│┃║|]\s?/, ''));
@@ -63,6 +72,7 @@ export class LoginSessions {
     const account = this.accounts.registry.get(accountId);
     if (!account) throw httpError('Conta não encontrada.', 404);
     assertManaged(account);
+    this.stopAccount(accountId, 'Substituída por uma nova conexão.');
     await prepareAccountDir(account);
     const setup = PROVIDERS[account.provider].setup || {};
     let commandLine;
@@ -84,7 +94,7 @@ export class LoginSessions {
       env = { ...env, ...(flow.env || {}) };
       cols = flow.cols || cols;
     }
-    for (const existing of this.sessions.values()) if (existing.accountId === accountId && existing.status === 'running') this.stop(existing.id);
+    this.stopAccount(accountId, 'Substituída por uma nova conexão.');
 
     const session = { id: randomUUID(), accountId, kind, flowId: flow?.id || '', cols, status: 'running', detail: '', hints: { links: [], codes: [] }, startedAt: Date.now(), output: '', pending: '', flushTimer: null, child: null, poll: null, timeout: null, captured: false };
     const shellCommand = `stty cols ${cols} rows ${ROWS} 2>/dev/null; ${commandLine}`;
@@ -95,6 +105,7 @@ export class LoginSessions {
       detached: true,
     });
     session.child = child;
+    child.stdin.on('error', () => { /* the terminal may already be gone */ });
     this.sessions.set(session.id, session);
 
     const onData = (chunk) => this.#append(session, account, flow, chunk.toString('utf8'));
@@ -110,7 +121,7 @@ export class LoginSessions {
 
   write(id, data) {
     const session = this.get(id);
-    if (session.status !== 'running') throw httpError('Esta sessão já terminou.', 409);
+    if (session.status !== 'running' || !session.child.stdin.writable) throw httpError('Esta sessão já terminou.', 409);
     const text = String(data ?? '');
     if (!text || text.length > 8192) throw httpError('Entrada inválida.', 400);
     session.child.stdin.write(text);
@@ -118,8 +129,12 @@ export class LoginSessions {
 
   stop(id, detail = 'Encerrada.') {
     const session = this.sessions.get(id);
-    if (!session || session.status !== 'running') return;
+    if (!session || !['running', 'exiting'].includes(session.status)) return;
     this.#finish(session, 'stopped', detail);
+  }
+
+  stopAccount(accountId, detail = 'Encerrada.') {
+    for (const session of this.sessions.values()) if (session.accountId === accountId) this.stop(session.id, detail);
   }
 
   stopAll() {
@@ -136,7 +151,7 @@ export class LoginSessions {
       this.#state(session);
     }
     if (flow?.capture && !session.captured) {
-      const match = new RegExp(flow.capture.pattern).exec(plainText(session.output));
+      const match = captureToken(session.output, flow.capture.pattern);
       if (match) {
         session.captured = true;
         saveSecret(account.dir, flow.capture.env, match[0])
@@ -164,17 +179,18 @@ export class LoginSessions {
   }
 
   async #succeed(session, account, detail) {
-    if (session.status !== 'running') return;
+    if (session.status !== 'running' && session.status !== 'exiting') return;
+    session.status = 'success-pending';
     Object.assign(this.accounts.registry.stateOf(account.id), { loggedIn: true, statusDetail: detail, checkedAt: Date.now() });
     await this.accounts.registry.saveState().catch(() => {});
     this.emit('accounts-changed', {});
     // Let the CLI print its own confirmation before closing the terminal.
     setTimeout(() => this.#finish(session, 'success', detail || 'Conta conectada.'), 1500);
-    session.status = 'success-pending';
   }
 
   async #onExit(session, account, code) {
     if (session.status === 'stopped' || session.status === 'success' || session.status === 'failed') return;
+    if (session.status === 'running') session.status = 'exiting';
     if (session.kind === 'install') return this.#finish(session, code === 0 ? 'success' : 'failed', code === 0 ? 'Instalação concluída.' : `A instalação terminou com código ${code}.`);
     const result = await checkCliLogin(account).catch(() => ({ loggedIn: false, detail: '' }));
     if (result.loggedIn) {
@@ -200,7 +216,7 @@ export class LoginSessions {
   }
 
   #state(session) {
-    const status = session.status === 'success-pending' ? 'running' : session.status;
+    const status = ['success-pending', 'exiting'].includes(session.status) ? 'running' : session.status;
     this.emit('login-state', { sessionId: session.id, accountId: session.accountId, kind: session.kind, status, detail: session.detail, hints: session.hints });
   }
 }

@@ -1,7 +1,9 @@
 // Routes for harness-held conversations (ids "ext-…"). Registered before the Codex
 // thread routes, so the same URLs serve both kinds and the client needs no changes.
 import { json, fail, readBody } from '../http/respond.mjs';
-import { PINNED_THREAD_SECTION_ID } from '../config.mjs';
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { PINNED_THREAD_SECTION_ID, config } from '../config.mjs';
 import { findProjectForCwd, getProjects, saveProjects } from '../projects.mjs';
 
 const LOCAL = '(ext-[a-f0-9-]{36})';
@@ -41,8 +43,15 @@ export function registerLocalThreadRoutes(router, { localThreads: store, provide
   });
   router.delete(route('delete'), async ({ res, params: [id] }) => {
     if (chat.isRunning(id)) return fail(res, 409, 'Aguarde a resposta terminar antes de excluir a conversa.');
-    await load(id);
+    const record = await load(id);
+    if (record.thread.taskId && record.thread.status?.type === 'active') return fail(res, 409, 'A execução contínua desta conversa ainda está rodando. Pare a execução antes de excluir.');
     await store.remove(id);
+    const projects = await getProjects();
+    if (projects.some((project) => project.threadIds.includes(id))) {
+      for (const project of projects) project.threadIds = project.threadIds.filter((threadId) => threadId !== id);
+      await saveProjects(projects);
+    }
+    await rm(join(config.uploadDir, id), { recursive: true, force: true });
     return json(res, 200, { ok: true });
   });
   router.post(route('interrupt'), async ({ res, params: [id] }) => json(res, 200, { ok: true, interrupted: await chat.interrupt(id) }));

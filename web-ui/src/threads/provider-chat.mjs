@@ -45,8 +45,19 @@ export class ProviderChat {
   isRunning(threadId) { return this.running.has(threadId); }
 
   accountFor(record, accountId) {
-    const account = this.accounts.registry.get(accountId || record.thread.accountId);
+    // "codex" (the chat's own account) cannot answer here; keep the conversation's account.
+    const wanted = accountId && accountId !== PRIMARY_ID ? accountId : record.thread.accountId;
+    const account = this.accounts.registry.get(wanted);
     if (!account || account.id === PRIMARY_ID) throw httpError('Escolha uma conta conectada para esta conversa.', 400);
+    return account;
+  }
+
+  /** Fail before creating anything when the account cannot answer now. */
+  assertUsable(accountId) {
+    const account = this.accounts.registry.get(accountId);
+    if (!account || account.primary) throw httpError('Escolha uma conta conectada para esta conversa.', 400);
+    const availability = this.accounts.availability(account);
+    if (!availability.ok) throw httpError(`${account.label}: ${availability.reason.toLowerCase()}. Escolha outra conta para continuar.`, 409);
     return account;
   }
 
@@ -71,6 +82,7 @@ export class ProviderChat {
   async send({ threadId, accountId, text, extraText = '', content = null }) {
     const record = await this.store.get(threadId);
     if (!record) throw httpError('Conversa não encontrada.', 404);
+    if (record.thread.taskId) throw httpError('Esta conversa pertence a uma execução contínua. Para orientar, use Retomar no painel Execuções contínuas.', 409);
     const account = this.accountFor(record, accountId);
     const message = [text, extraText].filter(Boolean).join('\n\n');
     if (this.running.has(threadId)) {
@@ -124,10 +136,14 @@ export class ProviderChat {
 
   async #startTurn(record, account, { text, content = null, handoff = false, label = '' }) {
     const threadId = record.thread.id;
-    const recorder = new TurnRecorder({ store: this.store, threadId, emit: this.emit });
-    const turnId = await recorder.start({ text: label || text, content: label ? null : content });
+    // Claim the thread before any await: one turn per conversation at a time.
+    if (this.running.has(threadId)) throw httpError('Esta conversa já está respondendo.', 409);
     const controller = new AbortController();
     this.running.set(threadId, { controller, accountId: account.id });
+    const recorder = new TurnRecorder({ store: this.store, threadId, emit: this.emit });
+    let turnId;
+    try { turnId = await recorder.start({ text: label || text, content: label ? null : content }); }
+    catch (error) { this.running.delete(threadId); throw error; }
     this.emit('turn-accepted', { threadId, turnId, model: this.#modelLabel(account), cwd: record.thread.cwd });
     this.#run(record, account, recorder, { text, handoff, controller }).catch((error) => console.error('Falha numa conversa do harness:', error.message));
     return turnId;
@@ -147,26 +163,34 @@ export class ProviderChat {
     } catch (error) {
       outcome = { status: 'failed', error: error.message, text: '', sessionId: '' };
     }
-    const status = outcome.status === 'completed' ? 'completed' : outcome.status === 'stopped' ? 'interrupted' : 'failed';
-    const limitNote = outcome.status === 'rate-limited' ? `Limite de uso atingido em ${account.label}.` : '';
-    await recorder.finish({ status, error: limitNote || (status === 'failed' ? outcome.error || 'A conta não concluiu a resposta.' : ''), finalText: status === 'completed' ? outcome.text : '' });
-    await this.store.update(threadId, (stored) => {
-      if (outcome.sessionId) stored.sessions[account.id] = outcome.sessionId;
-      stored.lastAccountId = account.id;
-      stored.thread.accountId = account.id;
-      stored.thread.provider = account.provider;
-      stored.thread.model = this.#modelLabel(account);
-    });
-    this.running.delete(threadId);
-
-    // On a usage limit, keep going on the next account of the rotation.
-    if (outcome.status === 'rate-limited' && this.accounts.registry.rotation.autoContinue) {
-      const next = this.accounts.pick(this.accounts.registry.rotation.order.filter((id) => id !== PRIMARY_ID), { exclude: [account.id] });
-      if (next) {
-        const fresh = await this.store.get(threadId);
-        await this.#startTurn(fresh, next, { text: 'Continue de onde a resposta anterior parou, sem refazer o que já foi feito.', handoff: true, label: `↪ Limite atingido em ${account.label}. Continuando em ${next.label}.` });
-        return;
+    let next = null;
+    let fresh = null;
+    try {
+      const status = outcome.status === 'completed' ? 'completed' : outcome.status === 'stopped' ? 'interrupted' : 'failed';
+      const limitNote = outcome.status === 'rate-limited' ? `Limite de uso atingido em ${account.label}.` : '';
+      await recorder.finish({ status, error: limitNote || (status === 'failed' ? outcome.error || 'A conta não concluiu a resposta.' : ''), finalText: status === 'completed' ? outcome.text : '' });
+      await this.store.update(threadId, (stored) => {
+        if (outcome.sessionId) stored.sessions[account.id] = outcome.sessionId;
+        stored.lastAccountId = account.id;
+        stored.thread.accountId = account.id;
+        stored.thread.provider = account.provider;
+        stored.thread.model = this.#modelLabel(account);
+      });
+      // On a usage limit, keep going on the next account of the rotation.
+      if (outcome.status === 'rate-limited' && this.accounts.registry.rotation.autoContinue) {
+        next = this.accounts.pick(this.accounts.registry.rotation.order.filter((id) => id !== PRIMARY_ID), { exclude: [account.id] });
+        if (next) fresh = await this.store.get(threadId);
       }
+    } catch (error) {
+      console.error('Falha ao concluir a resposta de uma conversa do harness:', error.message);
+      next = null;
+    } finally {
+      this.running.delete(threadId);
+    }
+    if (next && fresh) {
+      // No await between releasing the thread and claiming it again.
+      await this.#startTurn(fresh, next, { text: 'Continue de onde a resposta anterior parou, sem refazer o que já foi feito.', handoff: true, label: `↪ Limite atingido em ${account.label}. Continuando em ${next.label}.` }).catch(() => this.#drainQueue(threadId));
+      return;
     }
     await this.#drainQueue(threadId);
   }
@@ -175,13 +199,14 @@ export class ProviderChat {
     const record = await this.store.get(threadId);
     const [next] = record?.queue || [];
     if (!next || this.running.has(threadId)) return;
-    await this.store.update(threadId, (stored) => { stored.queue.shift(); });
-    this.emit('thread-queue-changed', { threadId });
     const text = next.prompt || next.input.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
     try {
       const account = this.accountFor(record, next.accountId);
       if (!this.accounts.availability(account).ok) throw new Error(`${account.label} indisponível`);
-      await this.#startTurn(record, account, { text, content: next.input });
+      const started = this.#startTurn(record, account, { text, content: next.input });
+      await this.store.update(threadId, (stored) => { stored.queue = stored.queue.filter((item) => item.id !== next.id); });
+      this.emit('thread-queue-changed', { threadId });
+      await started;
     } catch (error) {
       this.emit('codex-event', { method: 'error', params: { threadId, error: { message: `Não consegui enviar a mensagem da fila: ${error.message}` }, willRetry: false } });
     }

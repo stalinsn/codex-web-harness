@@ -28,6 +28,7 @@ async function sendLocalTurn(res, body, { providerChat, codex }) {
   if (!text && !body.images?.length && !body.files?.length) return fail(res, 400, 'Escreva uma mensagem ou anexe um arquivo.');
   let threadId = isLocalThread(body.threadId) ? body.threadId : '';
   if (!threadId) {
+    providerChat.assertUsable(String(body.accountId || ''));
     // Continuing a Codex conversation with another account: carry its context over.
     let seed = '';
     let name = '';

@@ -148,6 +148,9 @@ async function startSession(kind) {
     const path = kind === 'install' ? 'install' : 'login';
     const { session } = await api(`/api/accounts/${encodeURIComponent(wizard.accountId)}/${path}`, { method: 'POST', body: JSON.stringify({ flowId: wizard.flowId }) });
     attachSession(session);
+    // A state change may have arrived over SSE before this response: read it once.
+    const { session: current } = await api(`/api/login-sessions/${session.id}`);
+    if (wizard.session?.id === current.id && current.status !== 'running') onLoginState({ sessionId: current.id, ...current });
   } catch (error) { toast(error.message, 'error'); }
   finally { if (button) button.disabled = false; }
 }

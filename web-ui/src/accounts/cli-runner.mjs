@@ -60,18 +60,26 @@ export function runCliSegment({ account, prompt, cwd, sessionId = '', onEvent = 
     const timer = setTimeout(() => { outcome.error = 'A etapa excedeu o tempo máximo.'; stop(); }, timeoutMs);
     signal?.addEventListener('abort', stop, { once: true });
 
-    const appendText = (text, delta) => {
-      outcome.text = `${outcome.text}${outcome.text && !delta ? '\n' : ''}${text}`.slice(-20000);
+    // Assistant text by message block: streamed deltas and the full block share a key.
+    const texts = new Map();
+    let resultText = null;
+    const appendText = (text, delta, key) => {
+      const id = key || `k${texts.size}`;
+      const previous = texts.get(id) || '';
+      texts.delete(id);
+      texts.set(id, delta ? previous + text : text);
+      if (texts.size > 50) texts.delete(texts.keys().next().value);
+      if (resultText == null) outcome.text = [...texts.values()].join('\n').slice(-20000);
     };
     const handle = (event) => {
       // One limit notice per run: the CLI may report it as an event and again as the result.
       if (limited && (event.type === 'rate-limit' || (event.type === 'result' && !event.ok))) return;
-      if (event.type === 'text' && event.delta) { appendText(event.text, true); onEvent(event); return; }
+      if (event.type === 'text' && event.delta) { appendText(event.text, true, event.key); onEvent(event); return; }
       if (event.type === 'session' && event.sessionId) outcome.sessionId = event.sessionId;
-      if (event.type === 'text') appendText(event.text, false);
+      if (event.type === 'text') appendText(event.text, false, event.key);
       if (event.type === 'rate-limit') { limited = true; outcome.resetsAt = event.resetsAt || outcome.resetsAt; outcome.error = event.message || outcome.error; }
       if (event.type === 'result') {
-        if (event.text) outcome.text = event.text;
+        if (event.text) { resultText = event.text; outcome.text = event.text; }
         if (event.sessionId) outcome.sessionId = event.sessionId;
         if (event.ok) outcome.error = '';
         else if (!limited) outcome.error = event.text || 'A execução terminou com erro.';

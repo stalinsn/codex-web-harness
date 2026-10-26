@@ -52,6 +52,8 @@ export function populateAccountSelect() {
     return option;
   }));
   select.value = state.chatAccountId;
+  // Only worth the space once there is another account to choose.
+  $('.account-wrap')?.classList.toggle('hidden', choices.length <= 1);
   applyChatAccount();
 }
 

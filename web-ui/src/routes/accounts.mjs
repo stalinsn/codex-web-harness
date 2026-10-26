@@ -74,6 +74,7 @@ export function registerAccountRoutes(router, { accounts, logins }) {
   router.post(ACCOUNT_ACTION('logout'), async ({ res, params: [id] }) => {
     if (accounts.busy.has(id)) return fail(res, 409, 'A conta está executando uma tarefa. Pare a tarefa antes de sair.');
     const account = requireAccount(id);
+    logins.stopAccount(id, 'A conta foi desconectada.');
     accounts.dropAccount(account);
     await signOut(account);
     Object.assign(accounts.registry.stateOf(id), { loggedIn: false, statusDetail: 'Desconectada pelo painel.', checkedAt: Date.now(), cooldownUntil: 0, percent: null });

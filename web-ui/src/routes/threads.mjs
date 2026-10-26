@@ -11,7 +11,14 @@ const DECISIONS = ['accept', 'acceptForSession', 'decline', 'cancel'];
 
 /** Codex threads and harness-held threads in one list, most recent first. */
 export function mergeThreads(codexThreads, localThreads) {
-  return [...codexThreads, ...localThreads].sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0));
+  // Keep the app-server's own order; slot harness threads in by update time.
+  const merged = [];
+  let local = 0;
+  for (const thread of codexThreads) {
+    while (local < localThreads.length && (Number(localThreads[local].updatedAt) || 0) > (Number(thread.updatedAt) || 0)) merged.push(localThreads[local++]);
+    merged.push(thread);
+  }
+  return [...merged, ...localThreads.slice(local)];
 }
 
 export function registerThreadRoutes(router, { codex, events, localThreads }) {
