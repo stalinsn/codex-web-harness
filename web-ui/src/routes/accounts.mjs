@@ -61,10 +61,9 @@ export function registerAccountRoutes(router, { accounts, logins }) {
     const state = accounts.registry.stateOf(id);
     return json(res, 200, { setup: await setupInfo(account), loggedIn: state.loggedIn, statusDetail: state.statusDetail });
   });
-  router.get(ACCOUNT_ACTION('models'), async ({ res, params: [id], url }) => {
+  router.get(ACCOUNT_ACTION('models'), async ({ res, params: [id] }) => {
     const account = requireAccount(id);
-    const selectedModel = String(url.searchParams.get('model') || '').slice(0, 100);
-    return json(res, 200, await getAccountModelCatalog(account, accounts, selectedModel));
+    return json(res, 200, await getAccountModelCatalog(account, accounts));
   });
   router.post(ACCOUNT_ACTION('login'), async ({ req, res, params: [id] }) => {
     const body = await readBody(req, 4096);

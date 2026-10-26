@@ -8,6 +8,8 @@ import { accountEnv, commandFor } from './cli-runner.mjs';
 const execFileAsync = promisify(execFile);
 const CLAUDE_MODELS = ['best', 'fable', 'opus', 'sonnet', 'haiku'];
 const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'];
+const MODEL_EFFORT_SUFFIX = /-(low|medium|high|xhigh|max)$/i;
 
 function parseJsonOutput(output) {
   const value = String(output || '').trim();
@@ -41,7 +43,7 @@ function normalizeModels(payload) {
   const items = findArray(payload, ['models', 'availableModels', 'available_models', 'data', 'items']);
   if (!items) return [];
   const seen = new Set();
-  return items.map((item) => {
+  const models = items.map((item) => {
     if (typeof item === 'string') return { id: item, label: item, efforts: [], defaultEffort: '' };
     const id = item?.id || item?.model || item?.slug || item?.name;
     if (typeof id !== 'string' || !id || seen.has(id)) return null;
@@ -54,6 +56,40 @@ function normalizeModels(payload) {
       defaultEffort: item.defaultReasoningEffort || item.default_reasoning_effort || '',
     };
   }).filter(Boolean);
+  return inferModelEfforts(models);
+}
+
+function inferModelEfforts(models) {
+  const groups = new Map();
+  const effortFor = (model) => model.id.match(MODEL_EFFORT_SUFFIX)?.[1]?.toLowerCase()
+    || model.label.match(/\((low|medium|high|xhigh|max)\)\s*$/i)?.[1]?.toLowerCase()
+    || '';
+  for (const model of models) {
+    const effort = effortFor(model);
+    if (!effort) continue;
+    const family = model.id.replace(MODEL_EFFORT_SUFFIX, '');
+    groups.set(family, [...(groups.get(family) || []), effort]);
+  }
+  return models.map((model) => {
+    const effort = effortFor(model);
+    const family = model.id.replace(MODEL_EFFORT_SUFFIX, '');
+    const inferred = EFFORT_ORDER.filter((item) => (groups.get(family) || []).includes(item));
+    return {
+      ...model,
+      efforts: model.efforts.length ? model.efforts : inferred,
+      defaultEffort: model.defaultEffort || effort,
+    };
+  });
+}
+
+function parseTextModels(output) {
+  const models = [];
+  for (const line of String(output || '').split(/\r?\n/)) {
+    const match = line.trim().match(/^([a-z0-9][a-z0-9._-]*[._-][a-z0-9._-]*)[\t ]+(.+?)\s*$/i);
+    if (!match) continue;
+    models.push({ id: match[1], label: match[2], isDefault: false, efforts: [], defaultEffort: '' });
+  }
+  return inferModelEfforts(models);
 }
 
 function normalizeEffortPayload(payload) {
@@ -67,7 +103,7 @@ function normalizeEffortPayload(payload) {
   return available ? [...new Set([...available.matchAll(/\b(low|medium|high|xhigh|max)\b/gi)].map((match) => match[1].toLowerCase()))] : [];
 }
 
-async function run(account, args, timeout = 12000) {
+async function runText(account, args, timeout = 12000) {
   const { stdout } = await execFileAsync(commandFor(account), args, {
     cwd: config.homeDir,
     env: accountEnv(account),
@@ -75,7 +111,7 @@ async function run(account, args, timeout = 12000) {
     maxBuffer: 512 * 1024,
     windowsHide: true,
   });
-  return parseJsonOutput(stdout);
+  return stdout;
 }
 
 async function codexCatalog(account, accounts) {
@@ -94,28 +130,19 @@ async function codexCatalog(account, accounts) {
   return { models, source: 'Codex app-server', note: models.length ? 'Catálogo do cliente Codex. Ele pode não refletir o acesso liberado para a conta; o Codex confirma isso ao iniciar uma tarefa.' : 'O Codex não informou modelos nesta sessão; você pode usar o padrão da CLI.' };
 }
 
-async function antigravityCatalog(account, selectedModel) {
+async function antigravityCatalog(account) {
   let models = [];
-  let listAvailable = false;
   try {
-    models = normalizeModels(await run(account, ['models', '--output-format', 'json']));
-    listAvailable = models.length > 0;
-  } catch { /* Older CLI versions may not support machine-readable catalogs. */ }
-
-  if (selectedModel && models.some((item) => item.id === selectedModel)) {
-    try {
-      const payload = await run(account, ['--model', selectedModel, '-p', '/effort', '--output-format', 'json']);
-      const efforts = normalizeEffortPayload(payload);
-      const model = models.find((item) => item.id === selectedModel);
-      if (efforts.length) model.efforts = efforts;
-    } catch { /* Keep any effort values included in the model list. */ }
-  }
+    const output = await runText(account, ['models']);
+    models = normalizeModels(parseJsonOutput(output)) || [];
+    if (!models.length) models = parseTextModels(output);
+  } catch { /* Keep the safe CLI default if this version cannot list models. */ }
 
   return {
     models,
     source: 'Antigravity CLI',
-    note: listAvailable
-      ? 'Modelos detectados na CLI. O nível de esforço é atualizado conforme o modelo selecionado.'
+    note: models.length
+      ? 'Modelos detectados pelo comando agy models. As variantes de esforço listadas foram identificadas na própria saída da CLI.'
       : 'Esta versão do agy não retornou uma lista legível. Você pode usar o padrão da CLI; nenhuma opção foi presumida.',
   };
 }
@@ -128,9 +155,9 @@ function claudeCatalog() {
   };
 }
 
-export async function getAccountModelCatalog(account, accounts, selectedModel = '') {
+export async function getAccountModelCatalog(account, accounts) {
   if (account.provider === 'codex') return codexCatalog(account, accounts);
-  if (account.provider === 'antigravity') return antigravityCatalog(account, selectedModel);
+  if (account.provider === 'antigravity') return antigravityCatalog(account);
   if (account.provider === 'claude-code') return claudeCatalog();
   return {
     models: [],
@@ -139,4 +166,4 @@ export async function getAccountModelCatalog(account, accounts, selectedModel = 
   };
 }
 
-export { normalizeEffortPayload, normalizeModels };
+export { normalizeEffortPayload, normalizeModels, parseTextModels };

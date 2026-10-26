@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { codexUsage } from '../src/accounts/codex-usage.mjs';
 import { getParser, looksRateLimited, resetFromText } from '../src/accounts/parsers.mjs';
-import { normalizeEffortPayload, normalizeModels } from '../src/accounts/model-catalog.mjs';
+import { normalizeEffortPayload, normalizeModels, parseTextModels } from '../src/accounts/model-catalog.mjs';
 import { expandArgs } from '../src/accounts/providers.mjs';
 import { buildSegmentPrompt, goalFromThread, outcomeMarker } from '../src/tasks/prompt.mjs';
 
@@ -23,6 +23,16 @@ test('provider model catalogs normalize Codex and Antigravity JSON shapes', () =
   ]);
   assert.deepEqual(normalizeEffortPayload({ result: { availableEfforts: ['low', { name: 'high' }] } }), ['low', 'high']);
   assert.deepEqual(normalizeEffortPayload({ response: 'Effort is adjustable. Available effort tiers: low, medium, high, xhigh.' }), ['low', 'medium', 'high', 'xhigh']);
+});
+
+test('Antigravity CLI tabular model output exposes model variants and their effort choices', () => {
+  const models = parseTextModels(`Fetching available models...\ngemini-3.8-flash-high\tGemini 3.8 Flash (High)\ngemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\ngemini-3.8-flash-low\tGemini 3.8 Flash (Low)\nclaude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)`);
+  assert.deepEqual(models, [
+    { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)', isDefault: false, efforts: ['low', 'medium', 'high'], defaultEffort: 'high' },
+    { id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)', isDefault: false, efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
+    { id: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)', isDefault: false, efforts: ['low', 'medium', 'high'], defaultEffort: 'low' },
+    { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Thinking)', isDefault: false, efforts: [], defaultEffort: '' },
+  ]);
 });
 
 test('claude stream-json: session, text, tools, limit and result', () => {

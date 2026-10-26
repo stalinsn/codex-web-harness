@@ -283,7 +283,8 @@ function renderModelOptions(catalog, account) {
   select.replaceChildren(new Option('Padrão da CLI', ''));
   for (const model of models) select.add(new Option(`${model.label || model.id}${model.isDefault ? ' · padrão' : ''}`, model.id));
   select.value = account?.model && models.some((item) => item.id === account.model) ? account.model : '';
-  renderEffortOptions(modelForSelection(select.value), account?.effort || '');
+  const selectedModel = modelForSelection(select.value);
+  renderEffortOptions(selectedModel, account?.effort || selectedModel?.defaultEffort || '');
   $('#wizardModelsNote').textContent = catalog.note || 'Sem catálogo disponível; deixe no padrão da CLI.';
   $('#wizardModelsSource').textContent = catalog.source ? `Origem: ${catalog.source}` : '';
 }
@@ -295,33 +296,25 @@ async function loadModelSettings(account = state.accounts.find((item) => item.id
   $('#wizardModelsNote').textContent = 'Consultando os modelos disponíveis…';
   $('#wizardModelsSource').textContent = '';
   $('#wizardSaveModels').disabled = true;
-  const model = previousModel || account?.model || '';
   try {
-    wizard.catalog = await api(`/api/accounts/${encodeURIComponent(wizard.accountId)}/models${model ? `?model=${encodeURIComponent(model)}` : ''}`);
+    wizard.catalog = await api(`/api/accounts/${encodeURIComponent(wizard.accountId)}/models`);
   } catch (error) {
     wizard.catalog = { models: [], source: '', note: `${error.message} Você ainda pode manter o padrão da CLI.` };
   }
   renderModelOptions(wizard.catalog, account);
-  const selectedModel = modelForSelection(model) ? model : '';
+  const selectedModel = modelForSelection(previousModel || account?.model) ? (previousModel || account?.model) : '';
   $('#wizardModelSelect').value = selectedModel;
-  renderEffortOptions(modelForSelection(selectedModel), previousEffort || account?.effort || '');
+  const selected = modelForSelection(selectedModel);
+  renderEffortOptions(selected, previousEffort || account?.effort || selected?.defaultEffort || '');
   $('#wizardSaveModels').disabled = false;
 }
 
-async function updateEffortChoices(modelId) {
+function updateEffortChoices(modelId) {
   const account = state.accounts.find((item) => item.id === wizard.accountId);
   const currentEffort = $('#wizardEffortSelect').value || account?.effort || '';
   const model = modelForSelection(modelId);
-  if (wizard.setup?.provider === 'antigravity' && modelId && (!model?.efforts?.length)) {
-    $('#wizardModelsNote').textContent = 'Consultando os níveis de esforço deste modelo…';
-    try {
-      wizard.catalog = await api(`/api/accounts/${encodeURIComponent(wizard.accountId)}/models?model=${encodeURIComponent(modelId)}`);
-      $('#wizardModelsNote').textContent = wizard.catalog.note || '';
-      $('#wizardModelsSource').textContent = wizard.catalog.source ? `Origem: ${wizard.catalog.source}` : '';
-    } catch (error) { $('#wizardModelsNote').textContent = `${error.message} O modelo ainda pode usar o esforço padrão da CLI.`; }
-  }
-  const selected = modelForSelection(modelId);
-  const keepEffort = selected?.efforts?.includes(currentEffort) || account?.model === modelId ? currentEffort : '';
+  const selected = model;
+  const keepEffort = selected?.efforts?.includes(currentEffort) ? currentEffort : selected?.defaultEffort || (account?.model === modelId ? currentEffort : '');
   renderEffortOptions(selected, keepEffort);
 }
 
