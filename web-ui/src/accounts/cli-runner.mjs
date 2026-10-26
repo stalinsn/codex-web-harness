@@ -82,7 +82,7 @@ export function runCliSegment({ account, prompt, cwd, sessionId = '', onEvent = 
         if (event.text) { resultText = event.text; outcome.text = event.text; }
         if (event.sessionId) outcome.sessionId = event.sessionId;
         if (event.ok) outcome.error = '';
-        else if (!limited) outcome.error = event.text || 'A execução terminou com erro.';
+        else if (!limited) outcome.error ||= event.error || event.text || 'A execução terminou com erro.';
       }
       if (event.type === 'error') outcome.error = event.message;
       onEvent(event);

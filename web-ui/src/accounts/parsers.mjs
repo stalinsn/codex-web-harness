@@ -87,7 +87,7 @@ function claudeParser() {
 }
 
 const pickText = (event) => {
-  for (const value of [event.text, event.delta, event.response, event.result, event.content, event.message?.content, event.message]) {
+  for (const value of [event.text, event.delta, event.response, event.result?.response, event.result, event.content, event.message?.content, event.message]) {
     if (typeof value === 'string' && value) return value;
     if (Array.isArray(value)) {
       const joined = value.map((part) => (typeof part === 'string' ? part : part?.text || '')).join('');
@@ -101,16 +101,44 @@ const pickText = (event) => {
 function genericParser() {
   let block = 0;
   let lastWasDelta = false;
+  const seenTools = new Set();
   return function parseGeneric(line) {
     let event;
     try { event = JSON.parse(line); } catch { return line.trim() ? [{ type: 'text', text: line, key: `line:${block++}` }] : []; }
     if (!event || typeof event !== 'object') return [];
     const out = [];
-    const sessionId = event.session_id || event.sessionId || event.conversation_id || event.conversationId;
+    const resultPayload = event.result && typeof event.result === 'object' ? event.result : null;
+    const sessionId = event.session_id || event.sessionId || event.conversation_id || event.conversationId || resultPayload?.conversation_id || resultPayload?.conversationId;
     const kind = String(event.type || event.event || '').toLowerCase();
+    if (kind === 'step_update' && event.step_update && typeof event.step_update === 'object') {
+      const step = event.step_update;
+      const stepType = String(step.step_type || '').toLowerCase();
+      if (stepType === 'agent_response') {
+        if (typeof step.text_delta === 'string' && step.text_delta) {
+          out.push({ type: 'text', text: step.text_delta, key: `agy:step:${step.step_index ?? 'response'}`, delta: true });
+        }
+        return out;
+      }
+      if (stepType === 'tool') {
+        const info = step.tool_info || {};
+        const id = String(step.step_index ?? info.call_id ?? info.id ?? `agy:tool:${block++}`);
+        const parameters = info.parameters || info.input || {};
+        if (!seenTools.has(id)) {
+          seenTools.add(id);
+          out.push({ type: 'tool', id, name: info.name || step.tool_name || 'ferramenta', input: parameters, detail: short(parameters.command || parameters.CommandLine || parameters.file_path || parameters.path || parameters) });
+        }
+        if (String(step.state || '').toUpperCase() === 'DONE' && (typeof info.output === 'string' || info.error)) {
+          const toolError = typeof info.error === 'string' ? info.error : info.error?.message || '';
+          out.push({ type: 'tool-result', id, output: toolError || info.output || '', isError: Boolean(toolError) });
+        }
+        return out;
+      }
+      return out;
+    }
     if (sessionId && (kind === 'init' || kind === 'system' || kind === 'result' || !kind)) out.push({ type: 'session', sessionId });
     const isTool = /tool/.test(kind);
-    const errorText = typeof event.error === 'string' ? event.error : event.error?.message || (kind === 'error' ? pickText(event) : '');
+    const errorValue = event.error ?? resultPayload?.error;
+    const errorText = typeof errorValue === 'string' ? errorValue : errorValue?.message || (kind === 'error' ? pickText(event) : '');
     const toolId = event.tool_id || event.toolId || event.call_id || event.id;
     const isDelta = event.delta === true;
     if (!isDelta || !['message', 'content', 'assistant'].includes(kind)) { if (lastWasDelta) block += 1; lastWasDelta = false; }
@@ -130,9 +158,15 @@ function genericParser() {
       const text = pickText(event) || event.subject || '';
       if (text) out.push({ type: 'reasoning', text, key: `thought:${block++}` });
     } else if (kind === 'result' || 'response' in event) {
-      const text = pickText(event);
-      const ok = !errorText && !/error|fail/i.test(String(event.status || ''));
-      out.push({ type: 'result', ok, text, sessionId: sessionId || '', usage: event.stats || event.usage || null });
+      const resultStatus = String(resultPayload?.status || event.status || '').toUpperCase();
+      const text = typeof resultPayload?.response === 'string' ? resultPayload.response : pickText(event);
+      const resultError = errorText || (resultStatus && resultStatus !== 'SUCCESS' ? `Antigravity encerrou a execução com status ${resultStatus}.` : '');
+      if (resultError) {
+        if (looksRateLimited(resultError) || /RESOURCE_EXHAUSTED/.test(JSON.stringify(errorValue || ''))) out.push({ type: 'rate-limit', resetsAt: resetFromText(resultError), message: resultError });
+        else out.push({ type: 'error', message: resultError });
+      }
+      const ok = resultStatus ? resultStatus === 'SUCCESS' : !resultError && !/error|fail/i.test(String(event.status || ''));
+      out.push({ type: 'result', ok, text, error: resultError, sessionId: sessionId || '', usage: resultPayload?.usage || event.stats || event.usage || null });
     } else if (kind === 'message' || kind === 'content' || kind === 'assistant') {
       const role = event.role || event.message?.role;
       if (role !== 'user') {

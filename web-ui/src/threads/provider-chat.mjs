@@ -161,16 +161,25 @@ export class ProviderChat {
   async #run(record, account, recorder, { text, handoff, controller }) {
     const threadId = record.thread.id;
     let outcome;
+    let eventRecording = Promise.resolve();
     try {
       const { prompt, sessionId } = await this.#prompt(record, account, text, { handoff });
       outcome = await this.accounts.runSegment(account, {
         taskId: `chat:${threadId}`, prompt, cwd: record.thread.cwd, sessionId, title: record.thread.name || record.thread.preview || 'Conversa', signal: controller.signal,
         // Codex accounts are mirrored item by item (onCodexMessage); CLIs go through the parser events.
-        onEvent: (event) => { if (event.type !== 'session' && (account.provider !== 'codex' || event.type === 'error')) recorder.handle(event).catch(() => {}); },
+        onEvent: (event) => {
+          if (event.type !== 'session' && (account.provider !== 'codex' || event.type === 'error')) {
+            eventRecording = eventRecording.then(() => recorder.handle(event)).catch((error) => console.error('Falha ao registrar evento da CLI:', error.message));
+          }
+        },
         onCodexMessage: (message) => recorder.mirrorCodex(message).catch(() => {}),
       });
     } catch (error) {
       outcome = { status: 'failed', error: error.message, text: '', sessionId: '' };
+    }
+    await eventRecording;
+    if (outcome.status === 'completed' && !String(outcome.text || '').trim() && !recorder.lastAgentItem) {
+      outcome = { ...outcome, status: 'failed', error: 'A CLI encerrou sem devolver uma resposta de texto. Verifique o formato de saída do provedor.' };
     }
     let next = null;
     let fresh = null;
