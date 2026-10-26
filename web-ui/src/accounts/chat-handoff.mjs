@@ -68,6 +68,6 @@ export class ChatHandoff {
     if (Date.now() - last < REPEAT_GUARD_MS || !this.#hasAlternative()) return;
     this.continued.set(threadId, Date.now());
     const task = await this.orchestrator.create({ fromThreadId: threadId, order: this.rotation.order.filter((id) => id !== PRIMARY_ID) });
-    this.emit('handoff-started', { threadId, taskId: task.id, reason, title: task.title });
+    this.emit('handoff-started', { threadId, taskId: task.id, taskThreadId: task.threadId, reason, title: task.title });
   }
 }

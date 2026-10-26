@@ -1,11 +1,14 @@
 // Turn CLI stdout lines into normalized events:
 //   { type: 'session', sessionId }
-//   { type: 'text', text }                       assistant prose
-//   { type: 'tool', name, detail }               tool / command use
+//   { type: 'text', text, key, delta? }          assistant prose; same key = same message block
+//   { type: 'reasoning', text, key }             thinking / reasoning summary
+//   { type: 'tool', id, name, input, detail }    tool call (shell, edits, search…)
+//   { type: 'tool-result', id, output, isError } result of a tool call
 //   { type: 'usage', percent, resetsAt }         quota telemetry (no limit hit yet)
 //   { type: 'rate-limit', resetsAt, message }    the account hit its limit
 //   { type: 'result', ok, text, sessionId }      end of the run
 //   { type: 'error', message }
+// getParser() returns a fresh, stateful parser per run (streams carry ids across lines).
 const LIMIT_TEXT = /rate[ -]?limit|usage limit|quota|too many requests|resource[_ ]exhausted|\b429\b|limit (?:reached|exceeded)|out of credits|limite.{0,30}atingid/i;
 
 export const looksRateLimited = (text) => LIMIT_TEXT.test(String(text || ''));
@@ -27,37 +30,60 @@ function percentOf(value) {
   return number <= 1 ? Math.round(number * 1000) / 10 : Math.round(number * 10) / 10;
 }
 
-function parseClaude(line) {
-  let event;
-  try { event = JSON.parse(line); } catch { return [{ type: 'text', text: line }]; }
-  if (!event || typeof event !== 'object') return [];
-  switch (event.type) {
-    case 'system':
-      return event.session_id ? [{ type: 'session', sessionId: event.session_id }] : [];
-    case 'assistant':
-      return (Array.isArray(event.message?.content) ? event.message.content : []).flatMap((block) => {
-        if (!block || typeof block !== 'object') return [];
-        if (block.type === 'text' && block.text) return [{ type: 'text', text: block.text }];
-        if (block.type === 'tool_use') return [{ type: 'tool', name: block.name, detail: short(block.input?.command || block.input?.file_path || block.input) }];
+const resultText = (content) => (typeof content === 'string' ? content : Array.isArray(content) ? content.map((part) => (typeof part === 'string' ? part : part?.text || '')).join('\n') : '');
+
+function claudeParser() {
+  let messageId = 'm0';
+  return function parseClaude(line) {
+    let event;
+    try { event = JSON.parse(line); } catch { return [{ type: 'text', text: line, key: `raw:${Math.random()}` }]; }
+    if (!event || typeof event !== 'object') return [];
+    switch (event.type) {
+      case 'system':
+        return event.session_id ? [{ type: 'session', sessionId: event.session_id }] : [];
+      case 'stream_event': {
+        const inner = event.event || {};
+        if (inner.type === 'message_start' && inner.message?.id) messageId = inner.message.id;
+        if (inner.type !== 'content_block_delta') return [];
+        const key = `${messageId}:${inner.index ?? 0}`;
+        if (inner.delta?.type === 'text_delta' && inner.delta.text) return [{ type: 'text', text: inner.delta.text, key, delta: true }];
+        if (inner.delta?.type === 'thinking_delta' && inner.delta.thinking) return [{ type: 'reasoning', text: inner.delta.thinking, key, delta: true }];
         return [];
-      });
-    case 'rate_limit_event': {
-      const info = event.rate_limit_info || {};
-      const resetsAt = Number(info.resetsAt) || 0;
-      if (/rate_?limited|rejected|exceeded/i.test(String(info.status || ''))) return [{ type: 'rate-limit', resetsAt, message: `Limite da assinatura (${info.rateLimitType || 'uso'})` }];
-      const percent = percentOf(info.utilization);
-      return percent == null ? [] : [{ type: 'usage', percent, resetsAt }];
+      }
+      case 'assistant': {
+        const id = event.message?.id || messageId;
+        const content = Array.isArray(event.message?.content) ? event.message.content : [];
+        return content.flatMap((block, index) => {
+          if (!block || typeof block !== 'object') return [];
+          const key = `${id}:${index}`;
+          if (block.type === 'text' && block.text) return [{ type: 'text', text: block.text, key }];
+          if (block.type === 'thinking' && block.thinking) return [{ type: 'reasoning', text: block.thinking, key }];
+          if (block.type === 'tool_use') return [{ type: 'tool', id: block.id || key, name: block.name, input: block.input || {}, detail: short(block.input?.command || block.input?.file_path || block.input) }];
+          return [];
+        });
+      }
+      case 'user': {
+        const content = Array.isArray(event.message?.content) ? event.message.content : [];
+        return content.filter((block) => block?.type === 'tool_result').map((block) => ({ type: 'tool-result', id: block.tool_use_id, output: resultText(block.content), isError: Boolean(block.is_error) }));
+      }
+      case 'rate_limit_event': {
+        const info = event.rate_limit_info || {};
+        const resetsAt = Number(info.resetsAt) || 0;
+        if (/rate_?limited|rejected|exceeded/i.test(String(info.status || ''))) return [{ type: 'rate-limit', resetsAt, message: `Limite da assinatura (${info.rateLimitType || 'uso'})` }];
+        const percent = percentOf(info.utilization);
+        return percent == null ? [] : [{ type: 'usage', percent, resetsAt }];
+      }
+      case 'result': {
+        const text = String(event.result || '');
+        const out = [];
+        if (event.is_error && looksRateLimited(text)) out.push({ type: 'rate-limit', resetsAt: resetFromText(text), message: text.replace(/\|\d{10}\b/, '') });
+        out.push({ type: 'result', ok: !event.is_error && event.subtype !== 'error', text, sessionId: event.session_id || '', usage: event.usage || null });
+        return out;
+      }
+      default:
+        return [];
     }
-    case 'result': {
-      const text = String(event.result || '');
-      const out = [];
-      if (event.is_error && looksRateLimited(text)) out.push({ type: 'rate-limit', resetsAt: resetFromText(text), message: text.replace(/\|\d{10}\b/, '') });
-      out.push({ type: 'result', ok: !event.is_error && event.subtype !== 'error', text, sessionId: event.session_id || '' });
-      return out;
-    }
-    default:
-      return [];
-  }
+  };
 }
 
 const pickText = (event) => {
@@ -71,41 +97,63 @@ const pickText = (event) => {
   return '';
 };
 
-/** Tolerant parser for Gemini CLI / Antigravity style JSONL (init, message, tool_use, error, result). */
-function parseGeneric(line) {
-  let event;
-  try { event = JSON.parse(line); } catch { return line.trim() ? [{ type: 'text', text: line }] : []; }
-  if (!event || typeof event !== 'object') return [];
-  const out = [];
-  const sessionId = event.session_id || event.sessionId || event.conversation_id || event.conversationId;
-  const kind = String(event.type || event.event || '').toLowerCase();
-  if (sessionId && (kind === 'init' || kind === 'system' || kind === 'result' || !kind)) out.push({ type: 'session', sessionId });
-  const isTool = /tool/.test(kind);
-  const errorText = typeof event.error === 'string' ? event.error : event.error?.message || (kind === 'error' ? pickText(event) : '');
-  // Errors from tools (npm, curl, …) are the agent's business, never the account's quota.
-  if (errorText && isTool) out.push({ type: 'tool', name: event.tool_name || event.name || event.tool || 'ferramenta', detail: short(`erro: ${errorText}`) });
-  else if (errorText) {
-    if (looksRateLimited(errorText) || /RESOURCE_EXHAUSTED/.test(JSON.stringify(event.error || ''))) out.push({ type: 'rate-limit', resetsAt: resetFromText(errorText), message: errorText });
-    else out.push({ type: 'error', message: errorText });
-  }
-  if ((kind === 'tool_use' || kind === 'tool_call') && !errorText) out.push({ type: 'tool', name: event.tool_name || event.name || event.tool || 'ferramenta', detail: short(event.parameters || event.args || event.input) });
-  else if (kind === 'result' || 'response' in event || 'status' in event && 'response' in event) {
-    const text = pickText(event);
-    const ok = !errorText && !/error|fail/i.test(String(event.status || ''));
-    out.push({ type: 'result', ok, text, sessionId: sessionId || '' });
-  } else if (kind === 'message' || kind === 'content' || kind === 'assistant') {
-    const role = event.role || event.message?.role;
-    if (role !== 'user') { const text = pickText(event); if (text) out.push({ type: 'text', text, delta: event.delta === true }); }
-  }
-  return out;
+/** Tolerant parser for Gemini CLI / Antigravity style JSONL (init, message, thought, tool_use, tool_result, error, result). */
+function genericParser() {
+  let block = 0;
+  let lastWasDelta = false;
+  return function parseGeneric(line) {
+    let event;
+    try { event = JSON.parse(line); } catch { return line.trim() ? [{ type: 'text', text: line, key: `line:${block++}` }] : []; }
+    if (!event || typeof event !== 'object') return [];
+    const out = [];
+    const sessionId = event.session_id || event.sessionId || event.conversation_id || event.conversationId;
+    const kind = String(event.type || event.event || '').toLowerCase();
+    if (sessionId && (kind === 'init' || kind === 'system' || kind === 'result' || !kind)) out.push({ type: 'session', sessionId });
+    const isTool = /tool/.test(kind);
+    const errorText = typeof event.error === 'string' ? event.error : event.error?.message || (kind === 'error' ? pickText(event) : '');
+    const toolId = event.tool_id || event.toolId || event.call_id || event.id;
+    const isDelta = event.delta === true;
+    if (!isDelta || !['message', 'content', 'assistant'].includes(kind)) { if (lastWasDelta) block += 1; lastWasDelta = false; }
+    // Errors from tools (npm, curl, …) are the agent's business, never the account's quota.
+    if (errorText && isTool) out.push({ type: 'tool-result', id: toolId, output: errorText, isError: true });
+    else if (errorText) {
+      if (looksRateLimited(errorText) || /RESOURCE_EXHAUSTED/.test(JSON.stringify(event.error || ''))) out.push({ type: 'rate-limit', resetsAt: resetFromText(errorText), message: errorText });
+      else out.push({ type: 'error', message: errorText });
+    }
+    if (errorText && isTool) return out;
+    if (kind === 'tool_use' || kind === 'tool_call') {
+      const input = event.parameters || event.args || event.input || {};
+      out.push({ type: 'tool', id: toolId || `tool:${block}`, name: event.tool_name || event.name || event.tool || 'ferramenta', input, detail: short(input.command || input.file_path || input.path || input) });
+    } else if (kind === 'tool_result' || kind === 'tool_response') {
+      out.push({ type: 'tool-result', id: toolId, output: typeof event.output === 'string' ? event.output : pickText(event) || short(event.output ?? event.result ?? '', 4000), isError: /error|fail/i.test(String(event.status || '')) });
+    } else if (kind === 'thought' || kind === 'thinking' || kind === 'reasoning') {
+      const text = pickText(event) || event.subject || '';
+      if (text) out.push({ type: 'reasoning', text, key: `thought:${block++}` });
+    } else if (kind === 'result' || 'response' in event) {
+      const text = pickText(event);
+      const ok = !errorText && !/error|fail/i.test(String(event.status || ''));
+      out.push({ type: 'result', ok, text, sessionId: sessionId || '', usage: event.stats || event.usage || null });
+    } else if (kind === 'message' || kind === 'content' || kind === 'assistant') {
+      const role = event.role || event.message?.role;
+      if (role !== 'user') {
+        const text = pickText(event);
+        if (text) {
+          if (isDelta) { lastWasDelta = true; out.push({ type: 'text', text, key: `msg:${block}`, delta: true }); }
+          else out.push({ type: 'text', text, key: `msg:${block++}` });
+        }
+      }
+    }
+    return out;
+  };
 }
 
-function parseText(line) {
-  return line.trim() ? [{ type: 'text', text: line }] : [];
+function textParser() {
+  let line = 0;
+  return (text) => (text.trim() ? [{ type: 'text', text, key: `line:${line++}` }] : []);
 }
 
-export const PARSERS = { claude: parseClaude, generic: parseGeneric, text: parseText };
+const PARSERS = { claude: claudeParser, generic: genericParser, text: textParser };
 
 export function getParser(name) {
-  return PARSERS[name] || parseGeneric;
+  return (PARSERS[name] || genericParser)();
 }

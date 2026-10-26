@@ -69,7 +69,8 @@ test('parsers survive odd lines and keep tool errors away from quota detection',
   assert.deepEqual(getParser('claude')('null'), []);
   assert.deepEqual(getParser('claude')('{"type":"assistant","message":{"content":"x"}}'), []);
   const tool = getParser('generic')('{"type":"tool_result","status":"error","error":{"message":"npm ERR! 429 Too Many Requests"}}');
-  assert.equal(tool[0].type, 'tool');
+  assert.equal(tool[0].type, 'tool-result');
+  assert.equal(tool[0].isError, true);
   assert.equal(getParser('generic')('{"type":"message","role":"assistant","content":"HARNESS_","delta":true}')[0].delta, true);
 });
 
@@ -92,5 +93,5 @@ test('CLI runner: pre-aborted runs do not start, deltas join without separators'
   const outcome = await runCliSegment({ account: { ...account, args: ['-c', lines.map((line) => `echo '${line}'`).join('; ')] }, prompt: 'x', cwd: '/tmp', onEvent: (event) => events.push(event) });
   assert.equal(outcome.status, 'completed');
   assert.match(outcome.text, /HARNESS_STATUS: DONE/);
-  assert.equal(events.filter((event) => event.type === 'text').length, 1);
+  assert.deepEqual(events.filter((event) => event.type === 'text').map((event) => event.key), ['msg:0', 'msg:0']);
 });

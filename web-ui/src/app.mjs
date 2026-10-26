@@ -6,16 +6,19 @@ import { Router } from './http/router.mjs';
 import { applySecurityHeaders } from './http/security.mjs';
 import { registerAccountRoutes } from './routes/accounts.mjs';
 import { handleAuthApi } from './routes/auth.mjs';
+import { registerLocalThreadRoutes } from './routes/local-threads.mjs';
 import { registerProjectRoutes } from './routes/projects.mjs';
 import { registerSystemRoutes } from './routes/system.mjs';
 import { registerTaskRoutes } from './routes/tasks.mjs';
 import { registerThreadRoutes } from './routes/threads.mjs';
 import { registerTurnRoutes } from './routes/turns.mjs';
 
-export function createRequestHandler({ auth, codex, events, assets, accounts, orchestrator, logins }) {
+export function createRequestHandler({ auth, codex, events, assets, accounts, orchestrator, logins, localThreads, providerChat }) {
   const router = new Router();
-  const deps = { codex, events, accounts, orchestrator, logins };
+  const deps = { codex, events, accounts, orchestrator, logins, localThreads, providerChat };
   registerSystemRoutes(router, deps);
+  // Harness-held conversations first: their /api/threads/ext-… routes shadow the Codex ones.
+  registerLocalThreadRoutes(router, deps);
   registerProjectRoutes(router, deps);
   registerThreadRoutes(router, deps);
   registerTurnRoutes(router, deps);

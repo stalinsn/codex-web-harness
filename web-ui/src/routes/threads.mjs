@@ -9,14 +9,20 @@ const ID = '([a-zA-Z0-9_-]{1,100})';
 const thread = (suffix) => new RegExp(`^/api/threads/${ID}/${suffix}$`);
 const DECISIONS = ['accept', 'acceptForSession', 'decline', 'cancel'];
 
-export function registerThreadRoutes(router, { codex, events }) {
+/** Codex threads and harness-held threads in one list, most recent first. */
+export function mergeThreads(codexThreads, localThreads) {
+  return [...codexThreads, ...localThreads].sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0));
+}
+
+export function registerThreadRoutes(router, { codex, events, localThreads }) {
   router.get('/api/threads', async ({ res, url }) => {
     const params = { limit: 50, sortKey: 'updated_at', sortDirection: 'desc' };
     const search = url.searchParams.get('search')?.trim();
     if (search) params.searchTerm = search;
     if (url.searchParams.get('archived') === 'true') params.archived = true;
     const result = await codex.rpc('thread/list', params);
-    return json(res, 200, { threads: result.data || [], nextCursor: result.nextCursor || null });
+    const local = localThreads.list({ archived: params.archived === true, search: search || '' });
+    return json(res, 200, { threads: mergeThreads(result.data || [], local), nextCursor: result.nextCursor || null });
   });
 
   router.get(thread('context-usage'), ({ res, params: [threadId] }) => json(res, 200, { contextUsage: codex.threadContextUsage.get(threadId) || null }));

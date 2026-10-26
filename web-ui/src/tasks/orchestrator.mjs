@@ -8,6 +8,7 @@ import { config } from '../config.mjs';
 import { HANDOFF_FILE } from '../accounts/codex-usage.mjs';
 import { httpError } from '../http/respond.mjs';
 import { validateCwd } from '../projects.mjs';
+import { TurnRecorder } from '../threads/recorder.mjs';
 import { fitPrompt, goalFromThread, outcomeMarker } from './prompt.mjs';
 
 const TASK_ID = /^[a-f0-9-]{36}$/;
@@ -19,6 +20,25 @@ const RETRY_WHEN_NOTHING_KNOWN_MS = 5 * 60 * 1000;
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
 const tasksDir = () => join(config.codexHome, 'web-tasks');
+
+/** Streamed text arrives in chunks; log it as whole messages. */
+function coalescer(log) {
+  let key = '';
+  let text = '';
+  const flush = () => { if (text) log({ type: 'text', text }); key = ''; text = ''; };
+  const handle = (event) => {
+    if (event.type === 'text' && event.delta) {
+      if (event.key !== key) flush();
+      key = event.key;
+      text += event.text;
+      return;
+    }
+    flush();
+    log(event);
+  };
+  handle.flush = flush;
+  return handle;
+}
 const OUTCOME_LABEL = { completed: 'concluiu a etapa', 'rate-limited': 'limite de uso atingido', failed: 'falhou', stopped: 'foi interrompida' };
 
 async function readText(path, max = 200_000) {
@@ -29,7 +49,8 @@ async function readText(path, max = 200_000) {
 }
 
 export class TaskOrchestrator {
-  constructor({ accounts, primaryCodex, emit }) {
+  constructor({ accounts, primaryCodex, emit, localThreads }) {
+    this.localThreads = localThreads;
     this.accounts = accounts;
     this.primaryCodex = primaryCodex;
     this.emit = emit;
@@ -89,6 +110,7 @@ export class TaskOrchestrator {
       cwd: canonical,
       order: knownOrder?.length ? knownOrder : null,
       fromThreadId: fromThreadId || '',
+      threadId: '',
       status: 'queued',
       createdAt: now,
       updatedAt: now,
@@ -100,6 +122,12 @@ export class TaskOrchestrator {
       segments: [],
     };
     await mkdir(join(tasksDir(), task.id), { recursive: true, mode: 0o700 });
+    // The whole task reads as one conversation in the chat, whichever account runs it.
+    if (this.localThreads) {
+      const record = await this.localThreads.create({ cwd: canonical, accountId: '', provider: '', name: `Contínua · ${task.title}`, taskId: task.id });
+      task.threadId = record.thread.id;
+      this.emit('thread-created', { thread: record.thread });
+    }
     this.tasks.set(task.id, task);
     await this.#save(task);
     this.#schedule(task, 0);
@@ -147,6 +175,7 @@ export class TaskOrchestrator {
       currentAccountId: task.currentAccountId, currentAccountLabel: account?.label || '', nextAttemptAt: task.nextAttemptAt,
       segmentCount: task.segments.length, lastOutcome: last?.outcome || '', note: task.note, error: task.error, fromThreadId: task.fromThreadId,
       order: task.order,
+      threadId: task.threadId || '',
     };
   }
 
@@ -188,6 +217,17 @@ export class TaskOrchestrator {
   async #tailLog(id) {
     const text = await readText(join(tasksDir(), id, 'events.jsonl'), MAX_LOG_BYTES);
     return text.trim().split('\n').slice(-RECENT_EVENTS).flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } });
+  }
+
+  /** One chat turn per segment in the task's conversation. */
+  async #segmentRecorder(task, segment, previous) {
+    if (!this.localThreads || !task.threadId || !this.localThreads.has(task.threadId)) return null;
+    const recorder = new TurnRecorder({ store: this.localThreads, threadId: task.threadId, emit: this.emit });
+    const label = segment.id === 1 ? task.goal
+      : segment.mode === 'nudge' ? `↪ Continuar (${segment.accountLabel})`
+      : `↪ Etapa ${segment.id} em ${segment.accountLabel}${previous ? ` — ${previous.accountLabel}: ${OUTCOME_LABEL[previous.outcome] || previous.outcome}` : ''}. Retomando pelo registro de retomada.`;
+    await recorder.start({ text: label });
+    return recorder;
   }
 
   /** Keep .harness/ out of git status without touching tracked files. */
@@ -251,10 +291,24 @@ export class TaskOrchestrator {
             policies: await this.#policies(task.cwd),
           });
           if (controller.signal.aborted) break;
+          const recorder = await this.#segmentRecorder(task, segment, previous);
+          const logText = coalescer((event) => this.#log(task, event).catch(() => {}));
           const outcome = await this.accounts.runSegment(account, {
             taskId: task.id, prompt, cwd: task.cwd, sessionId: reuseSession, title: `Contínua · ${task.title}`, signal: controller.signal,
-            onEvent: (event) => { if (event.type !== 'session') this.#log(task, event).catch(() => {}); else segment.sessionId = event.sessionId; },
+            onEvent: (event) => {
+              if (event.type === 'session') { segment.sessionId = event.sessionId; return; }
+              logText(event);
+              if (recorder && (account.provider !== 'codex' || event.type === 'error')) recorder.handle(event).catch(() => {});
+            },
+            onCodexMessage: recorder ? (message) => recorder.mirrorCodex(message).catch(() => {}) : null,
           }).catch((error) => ({ status: 'failed', error: error.message, text: '', sessionId: '', resetsAt: 0 }));
+          logText.flush();
+          if (recorder) {
+            const turnStatus = outcome.status === 'completed' ? 'completed' : outcome.status === 'stopped' ? 'interrupted' : 'failed';
+            const note = outcome.status === 'rate-limited' ? `Limite de uso atingido em ${account.label}; a próxima conta continua.` : turnStatus === 'failed' ? outcome.error || 'A etapa falhou.' : '';
+            await recorder.finish({ status: turnStatus, error: note, finalText: turnStatus === 'completed' ? outcome.text : '' }).catch(() => {});
+            await this.localThreads.update(task.threadId, (record) => { Object.assign(record.thread, { accountId: account.id, provider: account.provider, model: account.label }); }).catch(() => {});
+          }
 
           Object.assign(segment, { endedAt: Date.now(), outcome: outcome.status, resetsAt: outcome.resetsAt || 0, sessionId: outcome.sessionId || segment.sessionId, summary: String(outcome.text || '').slice(-4000), error: outcome.error || '' });
           await this.#log(task, { type: 'segment-end', outcome: outcome.status, error: outcome.error || '' });

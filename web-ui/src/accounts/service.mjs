@@ -183,7 +183,8 @@ export class AccountService {
   }
 
   /** Run one segment and update the account's bookkeeping. */
-  async runSegment(account, { taskId, prompt, cwd, sessionId, title, onEvent, signal }) {
+  async runSegment(account, { taskId, prompt, cwd, sessionId, title, onEvent, onCodexMessage = null, signal }) {
+    const reservedHere = this.busy.get(account.id) !== taskId;
     if (!this.reserve(account.id, taskId)) throw new Error('A conta já está executando outra tarefa.');
     const state = this.registry.stateOf(account.id);
     state.segments += 1;
@@ -196,11 +197,12 @@ export class AccountService {
     };
     try {
       const outcome = account.provider === 'codex'
-        ? await runCodexSegment({ server: this.codexServerFor(account), prompt, cwd, model: account.model, effort: account.effort, threadId: sessionId, title, onEvent: handleEvent, signal, handoff: { enabled: this.registry.rotation.proactiveHandoff, atPercent: this.registry.rotation.switchAtPercent } })
+        ? await runCodexSegment({ server: this.codexServerFor(account), prompt, cwd, model: account.model, effort: account.effort, threadId: sessionId, title, onEvent: handleEvent, onRaw: onCodexMessage, signal, handoff: { enabled: this.registry.rotation.proactiveHandoff, atPercent: this.registry.rotation.switchAtPercent } })
         : await runCliSegment({ account, prompt, cwd, sessionId, onEvent: handleEvent, signal });
       if (outcome.status === 'rate-limited') await this.markLimited(account.id, { resetsAt: outcome.resetsAt, message: outcome.error });
       return outcome;
     } finally {
+      if (reservedHere) this.release(account.id, taskId);
       await this.registry.saveState().catch(() => {});
       this.emit('accounts-changed', {});
     }

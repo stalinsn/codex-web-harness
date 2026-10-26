@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { config } from '../config.mjs';
 import { fail, json, readBody } from '../http/respond.mjs';
 import { attachThreadToProject, validateCwd } from '../projects.mjs';
+import { isLocalThread } from '../threads/local-store.mjs';
+import { transcriptOf } from '../threads/provider-chat.mjs';
 import { cleanupTurnUploads, saveFiles, saveImages, validateAttachments } from '../uploads.mjs';
 
 const THREAD_ID = /^[a-zA-Z0-9_-]{1,100}$/;
@@ -19,7 +21,42 @@ async function buildInput(threadId, text, body) {
   return { input, cleanup: () => cleanupTurnUploads(config.uploadDir, threadId, imageParts, fileParts) };
 }
 
-export function registerTurnRoutes(router, { codex, events }) {
+/** A message for a harness-held conversation (non-Codex account or extra Codex account). */
+async function sendLocalTurn(res, body, { providerChat, codex }) {
+  const text = typeof body.text === 'string' ? body.text.trim() : '';
+  validateAttachments(body);
+  if (!text && !body.images?.length && !body.files?.length) return fail(res, 400, 'Escreva uma mensagem ou anexe um arquivo.');
+  let threadId = isLocalThread(body.threadId) ? body.threadId : '';
+  if (!threadId) {
+    // Continuing a Codex conversation with another account: carry its context over.
+    let seed = '';
+    let name = '';
+    let cwdHint = body.cwd;
+    if (typeof body.threadId === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(body.threadId)) {
+      const read = await codex.rpc('thread/read', { threadId: body.threadId });
+      const turns = await codex.rpc('thread/turns/list', { threadId: body.threadId, limit: 20, sortDirection: 'desc', itemsView: 'full' });
+      seed = transcriptOf([...(turns.data || [])].reverse());
+      name = `${read.thread?.name || read.thread?.preview || 'Conversa'} (continuação)`.slice(0, 120);
+      cwdHint = read.thread?.cwd || cwdHint;
+    }
+    const cwd = await validateCwd(cwdHint || config.defaultCwd);
+    const record = await providerChat.create({ accountId: String(body.accountId || ''), cwd, name, seed });
+    threadId = record.thread.id;
+    try { await attachThreadToProject(threadId, cwd); } catch { console.error('Não foi possível associar a nova conversa ao projeto.'); }
+  }
+  const imageParts = await saveImages(config.uploadDir, threadId, body.images || []);
+  const fileParts = await saveFiles(config.uploadDir, threadId, body.files || []);
+  const content = [...(text ? [{ type: 'text', text }] : []), ...imageParts, ...fileParts];
+  // CLIs read attachments from disk: point them at the stored files.
+  const extraText = [
+    ...fileParts.map((part) => part.text),
+    ...(imageParts.length ? [`Imagens anexadas (leia os arquivos):\n${imageParts.map((part) => `- ${part.path}`).join('\n')}`] : []),
+  ].join('\n\n');
+  const result = await providerChat.send({ threadId, accountId: body.accountId, text, extraText, content });
+  return json(res, 202, result.queued ? result : { threadId, turn: { id: result.turnId } });
+}
+
+export function registerTurnRoutes(router, { codex, events, providerChat }) {
   router.post(/^\/api\/threads\/([a-zA-Z0-9_-]{1,100})\/steer$/, async ({ req, res, params: [threadId] }) => {
     const body = await readBody(req);
     const text = typeof body.text === 'string' ? body.text.trim() : '';
@@ -40,6 +77,8 @@ export function registerTurnRoutes(router, { codex, events }) {
 
   router.post('/api/turn', async ({ req, res }) => {
     const body = await readBody(req);
+    const accountId = typeof body.accountId === 'string' ? body.accountId : '';
+    if (isLocalThread(body.threadId) || (accountId && accountId !== 'codex')) return sendLocalTurn(res, body, { providerChat, codex });
     const text = typeof body.text === 'string' ? body.text.trim() : '';
     const selectedModel = codex.findModel(body.model || codex.defaultModelId());
     if (!selectedModel) return fail(res, 400, 'Selecione um modelo disponível para a conta autenticada.');

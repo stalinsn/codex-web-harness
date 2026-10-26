@@ -31,7 +31,7 @@ export const PROVIDERS = {
     kind: 'cli',
     bin: 'claude',
     isolation: { env: 'CLAUDE_CONFIG_DIR' },
-    args: ['-p', '{prompt}', '--output-format', 'stream-json', '--verbose', ['--model', '{model}'], ['--permission-mode', '{permissionMode}']],
+    args: ['-p', '{prompt}', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ['--model', '{model}'], ['--permission-mode', '{permissionMode}']],
     resumeArgs: ['--resume', '{sessionId}'],
     permissionMode: 'acceptEdits',
     parser: 'claude',

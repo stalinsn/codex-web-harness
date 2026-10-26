@@ -15,7 +15,7 @@ async function waitReady(server, timeoutMs = 60000) {
 const SEGMENT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const stoppedEarly = (threadId = '') => ({ status: 'stopped', text: '', sessionId: threadId, threadId, resetsAt: 0, error: '' });
 
-export async function runCodexSegment({ server, prompt, cwd, model, effort, threadId = '', title = '', onEvent = () => {}, signal, handoff = { enabled: false, atPercent: 95 }, timeoutMs = SEGMENT_TIMEOUT_MS }) {
+export async function runCodexSegment({ server, prompt, cwd, model, effort, threadId = '', title = '', onEvent = () => {}, signal, handoff = { enabled: false, atPercent: 95 }, timeoutMs = SEGMENT_TIMEOUT_MS, onRaw = null }) {
   if (signal?.aborted) return stoppedEarly(threadId);
   await waitReady(server);
   if (signal?.aborted) return stoppedEarly(threadId);
@@ -80,6 +80,7 @@ export async function runCodexSegment({ server, prompt, cwd, model, effort, thre
       }
       const eventThread = params.threadId || params.turn?.threadId;
       if (eventThread !== threadId) return;
+      if (onRaw && message.method !== 'turn/completed' && message.method !== 'turn/started') onRaw(message);
       if (message.method === 'item/agentMessage/delta') {
         const id = params.itemId || 'message';
         streams.set(id, `${streams.get(id) || ''}${params.delta || ''}`);

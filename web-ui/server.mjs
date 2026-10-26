@@ -11,6 +11,8 @@ import { config } from './src/config.mjs';
 import { EventHub } from './src/events.mjs';
 import { StaticAssets } from './src/http/static.mjs';
 import { TaskOrchestrator } from './src/tasks/orchestrator.mjs';
+import { LocalThreadStore } from './src/threads/local-store.mjs';
+import { ProviderChat } from './src/threads/provider-chat.mjs';
 
 const ACCOUNT_POLL_MS = 5 * 60 * 1000;
 
@@ -20,12 +22,14 @@ const codex = new CodexAppServer({ bin: config.codexBin, homeDir: config.homeDir
 const auth = new AuthManager(config.authFile);
 const registry = await new AccountRegistry().load();
 const accounts = new AccountService({ registry, primaryCodex: codex, emit });
-const orchestrator = new TaskOrchestrator({ accounts, primaryCodex: codex, emit });
+const localThreads = await new LocalThreadStore().load();
+const orchestrator = new TaskOrchestrator({ accounts, primaryCodex: codex, emit, localThreads });
 const chatHandoff = new ChatHandoff({ primaryCodex: codex, accounts, orchestrator, emit });
 accounts.onOrchestratedThread = (threadId) => chatHandoff.markOrchestrated(threadId);
 const logins = new LoginSessions({ accounts, emit });
+const providerChat = new ProviderChat({ store: localThreads, accounts, emit });
 const assets = new StaticAssets({ publicDir: config.publicDir, prefix: config.prefix, dev: config.dev });
-const server = createServer(createRequestHandler({ auth, codex, events, assets, accounts, orchestrator, logins }));
+const server = createServer(createRequestHandler({ auth, codex, events, assets, accounts, orchestrator, logins, localThreads, providerChat }));
 
 await Promise.all([auth.initialize(), assets.load()]);
 
@@ -41,6 +45,7 @@ setInterval(() => { if (codex.ready) codex.refreshAccountData(true).catch(() => 
 function stop() {
   orchestrator.stopAll();
   logins.stopAll();
+  providerChat.stopAll();
   accounts.stop();
   codex.stop();
   server.close(() => process.exit(0));
