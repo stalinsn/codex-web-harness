@@ -1,6 +1,7 @@
 // Continuous tasks: list, creation, live detail and the "continue elsewhere" action.
 import { hasAlternativeAccount } from './accounts.js';
 import { api } from './api.js';
+import { openThread } from './conversation.js';
 import { $, debounce, escapeHtml, installIcons, toast } from './dom.js';
 import { formatCountdown } from './format.js';
 import { renderInspectorSummary } from './inspector-layout.js';
@@ -75,6 +76,8 @@ function renderTaskDetail(task) {
   log.scrollTop = log.scrollHeight;
   $('#taskHandoff').textContent = task.handoff || 'O registro ainda não foi criado.';
   const active = ACTIVE.has(task.status);
+  $('#openTaskThread').hidden = !task.threadId;
+  $('#openTaskThread').dataset.threadId = task.threadId || '';
   $('#stopTask').hidden = !active;
   $('#resumeTask').hidden = active;
   $('#taskNoteField').hidden = active;
@@ -170,6 +173,12 @@ export function bindTaskEvents() {
   $('#stopTask').addEventListener('click', () => taskCommand('stop'));
   $('#resumeTask').addEventListener('click', () => taskCommand('resume'));
   $('#continueElsewhere').addEventListener('click', continueElsewhere);
+  $('#openTaskThread').addEventListener('click', () => {
+    const threadId = $('#openTaskThread').dataset.threadId;
+    if (!threadId) return;
+    $('#taskDetailDialog').close();
+    openThread(threadId).catch((error) => toast(error.message, 'error'));
+  });
   installIcons($('.tasks-card'));
   installIcons($('#taskDetailDialog'));
 }

@@ -3,6 +3,7 @@ import { api } from './api.js';
 import { $, debounce, escapeHtml, installIcons, toast } from './dom.js';
 import { formatCountdown } from './format.js';
 import { renderInspectorSummary } from './inspector-layout.js';
+import { populateAccountSelect } from './models.js';
 import { renderRateLimitNotice } from './rate-limit.js';
 import { state } from './state.js';
 import { openWizard } from './wizard.js';
@@ -49,6 +50,7 @@ function usageMeter(account) {
 
 export function renderAccounts() {
   renderInspectorSummary();
+  populateAccountSelect();
   const list = $('#accountList');
   if (!list) return;
   // Live updates must not close a menu the user is reading; render when it closes.

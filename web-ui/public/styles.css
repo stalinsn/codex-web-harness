@@ -1267,3 +1267,10 @@ body.resizing-inspector { cursor: col-resize; user-select: none; }
 .card-title-row { display: flex; align-items: center; }
 .card-title-row > .card-toggle { margin-left: 2px; }
 .card-title-row > .refresh-mini { margin-left: auto; }
+
+/* Harness-held conversations (other accounts, continuous tasks) */
+.thread-account-tag { max-width: 84px; flex: none; overflow: hidden; padding: 2px 5px; color: #c9b8ff; font-size: 9px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; border: 1px solid #4b3f7a; border-radius: 5px; background: #241f38; }
+.account-wrap select { max-width: 150px; }
+.account-wrap.external { border-color: #4b3f7a; }
+.composer-settings .account-wrap { flex: 1 1 0; }
+.composer-settings .account-wrap.external { flex: 2 1 0; }

@@ -34,11 +34,19 @@ export function createThreadRow(thread, { nested = false, showUnassigned = false
     badge.style.setProperty('--project-color', projectTagColor || '#9ca7dc');
     badge.textContent = project.name;
     button.append(badge);
-  } else if (!project && showUnassigned) {
+  } else if (!project && showUnassigned && !String(thread.id).startsWith('ext-')) {
     const badge = document.createElement('span');
     badge.className = `thread-project-tag thread-unassigned-tag${color ? ' has-thread-color' : ''}`;
     if (color) badge.style.setProperty('--thread-color', color);
     badge.textContent = 'Sem projeto';
+    button.append(badge);
+  }
+  if (String(thread.id).startsWith('ext-')) {
+    const account = state.accounts.find((item) => item.id === thread.accountId);
+    const badge = document.createElement('span');
+    badge.className = 'thread-account-tag';
+    badge.textContent = thread.taskId ? 'Contínua' : account?.label || 'Outra conta';
+    badge.title = account ? `${account.label} · ${account.providerLabel}` : 'Conversa do harness';
     button.append(badge);
   }
   if (pinned) {

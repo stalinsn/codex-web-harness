@@ -7,6 +7,7 @@ import { formatDuration } from './format.js';
 import { loadContextUsage, updateThreadHeader } from './inspector.js';
 import { closeSidebar } from './layout.js';
 import { addApproval, renderTurnHistory } from './messages.js';
+import { setChatAccount } from './models.js';
 import { projectForThread, selectProject, updateWorkingDirectory } from './projects.js';
 import { refreshQueue, renderQueue } from './queue.js';
 import { runtime, state } from './state.js';
@@ -208,6 +209,7 @@ export async function openThread(threadId) {
   state.selectedThreadId = threadId;
   state.loadingThreadId = threadId;
   const summary = state.threads.find((item) => item.id === threadId);
+  setChatAccount(threadId.startsWith('ext-') ? summary?.accountId || state.chatAccountId : 'codex');
   state.activeThreadProjectId = projectForThread(summary)?.id || '';
   state.queueItems = [];
   renderQueue();

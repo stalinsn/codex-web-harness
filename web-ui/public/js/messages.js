@@ -13,6 +13,14 @@ function makeAvatar() {
   return '<div class="message-avatar" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M16 3.2 27.1 9.6v12.8L16 28.8 4.9 22.4V9.6L16 3.2Z"/><path d="m11.2 11.2 4.8 4.8-4.8 4.8M20.8 11.2 16 16l4.8 4.8"/></svg></div>';
 }
 
+/** Who answers in the open conversation: Codex, or the account of a harness conversation. */
+function assistantLabel() {
+  const threadId = String(state.selectedThreadId || '');
+  if (!threadId.startsWith('ext-')) return 'Codex';
+  const thread = state.selectedThread?.id === threadId ? state.selectedThread : state.threads.find((item) => item.id === threadId);
+  return state.accounts.find((account) => account.id === thread?.accountId)?.label || 'Assistente';
+}
+
 export function makeMessage(role, { text = '', images = [], files = [], time = null, id = '', turnId = '', phase = '', finalAnswer = true, parent = null } = {}) {
   $('#welcome').classList.add('hidden');
   const row = document.createElement('article');
@@ -23,7 +31,10 @@ export function makeMessage(role, { text = '', images = [], files = [], time = n
     row.dataset.finalAnswer = finalAnswer ? 'true' : 'false';
     if (phase) row.dataset.phase = phase;
   }
-  if (role === 'assistant') row.innerHTML = `${makeAvatar()}<div class="message-body"><div class="assistant-label">Codex</div><div class="message-content"></div><div class="message-meta"></div></div>`;
+  if (role === 'assistant') {
+    row.innerHTML = `${makeAvatar()}<div class="message-body"><div class="assistant-label"></div><div class="message-content"></div><div class="message-meta"></div></div>`;
+    $('.assistant-label', row).textContent = assistantLabel();
+  }
   else row.innerHTML = '<div class="message-body"><div class="message-content"></div><div class="message-images"></div><div class="message-meta"></div></div>';
   if (role === 'assistant') $('.message-content', row).innerHTML = markdown(text);
   else $('.message-content', row).textContent = text;

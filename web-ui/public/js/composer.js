@@ -1,6 +1,6 @@
 // Composer controls, attachments, sending and steering.
 import { api } from './api.js';
-import { setBusy } from './conversation.js';
+import { openThread, setBusy } from './conversation.js';
 import { queueDraftForRateLimit } from './deferred-queue.js';
 import { $, installIcons, toast } from './dom.js';
 import { formatBytes, formatCountdown } from './format.js';
@@ -16,7 +16,8 @@ import { clearRecordedAudio, prepareVoicePreview, sendVoiceRecording, touchCompo
 
 export function updateComposerControls() {
   const hasDraft = Boolean($('#messageInput')?.value.trim() || state.files.length);
-  const limitBlock = getEffectiveRateLimitBlock();
+  const usesCodex = (state.chatAccountId || 'codex') === 'codex' && !String(state.selectedThreadId || '').startsWith('ext-');
+  const limitBlock = usesCodex ? getEffectiveRateLimitBlock() : null;
   const limitBlocked = Boolean(limitBlock);
   const send = $('#sendButton');
   const modelSelect = $('#modelSelect');
@@ -135,14 +136,24 @@ export async function submitMessage(event, { allowVoice = false } = {}) {
   if (!text && !state.files.length) return;
   const currentThread = state.selectedThreadId;
   const files = [...state.files];
-  const rateLimitBlock = getEffectiveRateLimitBlock();
+  const accountId = state.chatAccountId || 'codex';
+  // The browser-side limit queue only concerns the Codex account; other accounts answer directly.
+  const rateLimitBlock = accountId === 'codex' && !String(currentThread || '').startsWith('ext-') ? getEffectiveRateLimitBlock() : null;
   if (rateLimitBlock) return queueDraftForRateLimit(text, files, currentThread, rateLimitBlock);
   state.sending = true; updateComposerControls();
   try {
     const result = await api('/api/turn', {
       method: 'POST',
-      body: JSON.stringify({ threadId: currentThread, text, model: state.modelId, effort: state.effort, cwd: state.cwd, ...attachmentPayload(files) }),
+      body: JSON.stringify({ threadId: currentThread, accountId, text, model: state.modelId, effort: state.effort, cwd: state.cwd, ...attachmentPayload(files) }),
     });
+    // Another account continuing a Codex conversation answers in a new harness conversation.
+    if (currentThread && result.threadId && result.threadId !== currentThread) {
+      if (textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
+      if (files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
+      toast('A conversa continua com a outra conta, levando o contexto desta.');
+      await openThread(result.threadId);
+      return true;
+    }
     state.rateLimitFailure = null;
     renderRateLimitNotice();
     state.selectedThreadId = result.threadId;

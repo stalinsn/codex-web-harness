@@ -202,6 +202,7 @@
             </div>
             <div class="composer-settings">
               <button type="button" class="cwd-control" id="cwdControl" title="Pasta de trabalho"><span class="icon" data-icon="folder"></span><span id="cwdLabel">/home/codex</span><span class="icon" data-icon="chevron"></span></button>
+              <label class="select-wrap account-wrap"><span class="select-label">Conta</span><select id="accountSelect" aria-label="Conta para a próxima mensagem"><option value="codex">Codex</option></select></label>
               <label class="select-wrap model-wrap"><span class="select-label">Modelo</span><select id="modelSelect" aria-label="Modelo para a próxima mensagem"><option>Carregando…</option></select></label>
               <label class="select-wrap effort-wrap"><span class="select-label">Esforço</span><select id="effortSelect" aria-label="Esforço para a próxima mensagem"></select></label>
             </div>
@@ -368,6 +369,7 @@
         <textarea id="taskResumeNote" rows="3" maxlength="10000" placeholder="Ex.: Pode aplicar a migração no ambiente de homologação."></textarea>
       </label>
       <div class="dialog-actions">
+        <button class="secondary-button" id="openTaskThread" type="button">Abrir conversa</button>
         <button class="secondary-button" id="stopTask" type="button">Parar</button>
         <button class="primary-button" id="resumeTask" type="button">Retomar</button>
       </div>

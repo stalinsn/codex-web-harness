@@ -38,3 +38,38 @@ export function updateEfforts() {
   select.value = state.effort;
   select.title = supported.find((item) => (item.reasoningEffort || item) === state.effort)?.description || `Raciocínio ${effortLabel(state.effort).toLowerCase()}`;
 }
+
+/** Accounts the next message can go to: Codex (the chat's own) plus connected accounts. */
+export function populateAccountSelect() {
+  const select = $('#accountSelect');
+  if (!select) return;
+  const choices = state.accounts.filter((account) => account.primary || (account.enabled && account.loggedIn !== false));
+  if (!choices.some((account) => account.id === state.chatAccountId)) state.chatAccountId = 'codex';
+  select.replaceChildren(...(choices.length ? choices : [{ id: 'codex', label: 'Codex', available: true, primary: true }]).map((account) => {
+    const option = document.createElement('option');
+    option.value = account.id;
+    option.textContent = `${account.label}${account.available || account.primary ? '' : ' · indisponível'}`;
+    return option;
+  }));
+  select.value = state.chatAccountId;
+  applyChatAccount();
+}
+
+/** Model and effort only apply to the Codex account; other accounts use their own settings. */
+export function applyChatAccount() {
+  const account = state.accounts.find((item) => item.id === state.chatAccountId);
+  const external = Boolean(account && !account.primary);
+  $('.model-wrap')?.classList.toggle('hidden', external);
+  $('.effort-wrap')?.classList.toggle('hidden', external);
+  $('.account-wrap')?.classList.toggle('external', external);
+  const select = $('#accountSelect');
+  if (select) select.title = external ? [account.providerLabel, account.model].filter(Boolean).join(' · ') : 'Codex (conta principal)';
+}
+
+export function setChatAccount(accountId) {
+  state.chatAccountId = accountId || 'codex';
+  try { localStorage.setItem('codex-chat-account', state.chatAccountId); } catch { /* optional */ }
+  const select = $('#accountSelect');
+  if (select && [...select.options].some((option) => option.value === state.chatAccountId)) select.value = state.chatAccountId;
+  applyChatAccount();
+}

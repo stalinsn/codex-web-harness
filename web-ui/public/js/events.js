@@ -53,7 +53,8 @@ function handleCodexNotification(message) {
   }
   if (message.method === 'error') {
     const errorMessage = params.error?.message || 'Ocorreu um erro no turno.';
-    if (isRateLimitError(errorMessage)) {
+    // Limits of other accounts are handled by the server's rotation, not by the Codex limit notice.
+    if (isRateLimitError(errorMessage) && !String(eventThreadId || '').startsWith('ext-')) {
       recordRateLimitFailure(errorMessage);
       if (eventThreadId && eventThreadId === state.selectedThreadId && params.willRetry !== true) {
         state.activeThreadIds.delete(eventThreadId);
@@ -212,7 +213,7 @@ export function connectEvents() {
     else if (event.type === 'turn-completed') {
       const turnId = event.data.turn?.id;
       const turnError = event.data.turn?.error?.message || event.data.turn?.error || event.data.turn?.failureReason || event.data.turn?.status?.message || '';
-      if (isRateLimitError(turnError)) recordRateLimitFailure(turnError);
+      if (isRateLimitError(turnError) && !String(event.data.threadId || '').startsWith('ext-')) recordRateLimitFailure(turnError);
       const isSelected = event.data.threadId === state.selectedThreadId;
       const superseded = isSelected && state.activeTurnId && turnId && state.activeTurnId !== turnId;
       if (!superseded && !['interrupted', 'failed', 'error'].includes(turnStatus(event.data.turn))) playCompletionSound(turnId);

@@ -29,6 +29,7 @@ export const state = {
   followLatest: true,
   threadListRequest: 0,
   accounts: [], rotation: null, providers: [], tasks: [], openTaskId: '',
+  chatAccountId: localStorage.getItem('codex-chat-account') || 'codex',
 };
 
 export const authUi = { mode: 'login', step: 'credentials', challengeId: '', setupRequired: false, countdown: null, started: false };
