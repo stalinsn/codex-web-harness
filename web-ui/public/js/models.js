@@ -3,6 +3,7 @@ import { updateComposerControls } from './composer.js';
 import { $ } from './dom.js';
 import { effortLabel } from './format.js';
 import { setProviderClass } from './responders.js';
+import { syncComposerSelect } from './custom-selects.js';
 import { state } from './state.js';
 
 export function getSelectedModel() { return state.models.find((model) => model.id === state.modelId) || state.models.find((model) => model.isDefault) || state.models[0] || null; }
@@ -18,6 +19,7 @@ export function populateModels() {
   });
   if (!state.models.some((model) => model.id === state.modelId)) state.modelId = getSelectedModel()?.id || '';
   select.value = state.modelId;
+  syncComposerSelect(select);
   updateEfforts();
   updateComposerControls();
 }
@@ -26,7 +28,7 @@ export function updateEfforts() {
   const model = getSelectedModel();
   const select = $('#effortSelect');
   select.replaceChildren();
-  if (!model) return;
+  if (!model) { syncComposerSelect(select); return; }
   const supported = model.supportedReasoningEfforts || [];
   supported.forEach((item) => {
     const value = item.reasoningEffort || item;
@@ -38,6 +40,7 @@ export function updateEfforts() {
   if (!supported.some((item) => (item.reasoningEffort || item) === state.effort)) state.effort = model.defaultReasoningEffort || (supported[0]?.reasoningEffort || supported[0]) || '';
   select.value = state.effort;
   select.title = supported.find((item) => (item.reasoningEffort || item) === state.effort)?.description || `Raciocínio ${effortLabel(state.effort).toLowerCase()}`;
+  syncComposerSelect(select);
 }
 
 /** Accounts the next message can go to: Codex (the chat's own) plus connected accounts. */
@@ -55,6 +58,7 @@ export function populateAccountSelect() {
     return option;
   }));
   select.value = state.chatAccountId;
+  syncComposerSelect(select);
   // Only worth the space once there is another account to choose.
   $('.account-wrap')?.classList.toggle('hidden', choices.length <= 1);
   applyChatAccount();
@@ -69,7 +73,10 @@ export function applyChatAccount() {
   $('.account-wrap')?.classList.toggle('external', external);
   setProviderClass($('.account-wrap'), account?.provider || 'codex');
   const select = $('#accountSelect');
-  if (select) select.title = external ? [account.providerLabel, account.model].filter(Boolean).join(' · ') : 'Codex (conta principal)';
+  if (select) {
+    select.title = external ? [account.providerLabel, account.model].filter(Boolean).join(' · ') : 'Codex (conta principal)';
+    syncComposerSelect(select);
+  }
 }
 
 export function setChatAccount(accountId) {
@@ -77,5 +84,6 @@ export function setChatAccount(accountId) {
   try { localStorage.setItem('codex-chat-account', state.chatAccountId); } catch { /* optional */ }
   const select = $('#accountSelect');
   if (select && [...select.options].some((option) => option.value === state.chatAccountId)) select.value = state.chatAccountId;
+  syncComposerSelect(select);
   applyChatAccount();
 }

@@ -14,6 +14,7 @@ import { scrollConversation } from './messages.js';
 import { populateModels, setChatAccount, updateEfforts } from './models.js';
 import { createProject, openProjectDialog, pathIsWithin, renderProjects, selectProject, updateProjectDirectoryField, updateWorkingDirectory } from './projects.js';
 import { clearResolvedRateLimitFailure } from './rate-limit.js';
+import { enhanceComposerSelects } from './custom-selects.js';
 import { prepareCompletionSound } from './sound.js';
 import { state, voice } from './state.js';
 import { bindTaskEvents, refreshTasks } from './tasks.js';
@@ -59,6 +60,7 @@ export async function bootstrap() {
 }
 
 export function bindEvents() {
+  enhanceComposerSelects();
   bindAccountEvents();
   bindTaskEvents();
   bindWizardEvents();
