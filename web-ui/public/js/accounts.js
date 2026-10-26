@@ -60,7 +60,7 @@ export function renderAccounts() {
   const total = state.accounts.length;
   list.innerHTML = state.accounts.map((account, index) => {
     const status = statusOf(account);
-    const details = [account.providerLabel, account.model].filter(Boolean).map(escapeHtml).join(' · ');
+    const details = [account.providerLabel, account.model, account.effort ? `esforço ${account.effort}` : ''].filter(Boolean).map(escapeHtml).join(' · ');
     return `<li class="account-row tone-${status.tone} ${providerClass(account.provider)}" data-account-id="${escapeHtml(account.id)}">
       <span class="account-position">${index + 1}</span>
       <div class="account-main">
@@ -71,6 +71,7 @@ export function renderAccounts() {
             <button type="button" class="account-move" data-action="down" aria-label="Descer na fila" title="Descer na fila" ${index === total - 1 ? 'disabled' : ''}>↓</button>
             <details class="account-menu"><summary aria-label="Ações da conta" title="Ações da conta">⋯</summary><div class="account-menu-items">
               ${account.primary ? '' : `<button type="button" data-action="connect">${account.loggedIn ? 'Reconectar' : 'Conectar'}</button>`}
+              ${!account.primary && account.loggedIn ? '<button type="button" data-action="models">Modelos e esforço desta conta</button>' : ''}
               <button type="button" data-action="check">Verificar login</button>
               ${account.loginCommand ? '<button type="button" data-action="copy-login">Copiar comando de login (terminal)</button>' : ''}
               ${account.cooldownUntil || account.percent != null ? '<button type="button" data-action="reset">Liberar agora</button>' : ''}
@@ -118,6 +119,7 @@ async function accountAction(account, action) {
   }
   if (action === 'copy-login') return copyText(account.loginCommand);
   if (action === 'connect') return openWizard({ accountId: account.id });
+  if (action === 'models') return openWizard({ accountId: account.id, configureModels: true });
   if (action === 'logout') {
     if (!window.confirm(`Sair de “${account.label}”? O login salvo desta conta na VPS será apagado; a conta continua na fila, desconectada.`)) return;
     applyAccounts(await api(`/api/accounts/${id}/logout`, { method: 'POST', body: '{}' }));

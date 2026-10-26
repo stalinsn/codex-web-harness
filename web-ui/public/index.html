@@ -272,41 +272,20 @@
         <button class="icon-button" id="closeWizard" type="button" aria-label="Fechar"><span class="icon" data-icon="close"></span></button>
       </div>
       <ol class="wizard-steps" id="wizardSteps" aria-label="Etapas">
-        <li data-step="provider">Provedor</li><li data-step="details">Identificação</li><li data-step="connect">Conexão</li><li data-step="done">Pronto</li>
+        <li data-step="provider">Provedor</li><li data-step="connect">Conexão</li><li data-step="models">Modelos</li><li data-step="done">Pronto</li>
       </ol>
 
       <section class="wizard-step" data-step="provider">
-        <p>Escolha o tipo de conta. A conta principal do Codex (a do chat) continua como está; as novas ganham uma pasta de login própria na VPS.</p>
+        <p>Escolha um provedor para iniciar. O harness cria a conta e prepara o login oficial; basta tocar em “Iniciar conexão”. Não precisa preencher usuário, senha, modelo ou esforço.</p>
         <div class="provider-grid" id="providerGrid"></div>
       </section>
-
-      <form class="wizard-step" data-step="details" id="wizardDetails" novalidate>
-        <label class="project-field">Nome exibido
-          <input id="wizardLabel" type="text" maxlength="60" autocomplete="off" placeholder="Claude · conta pessoal" />
-        </label>
-        <label class="project-field">Identificador <small>(letras minúsculas, números e hífens)</small>
-          <input id="wizardId" type="text" maxlength="40" autocomplete="off" required />
-        </label>
-        <div class="account-dialog-row">
-          <label class="project-field">Modelo <small>(opcional)</small>
-            <input id="wizardModel" type="text" maxlength="100" autocomplete="off" placeholder="padrão da CLI" />
-          </label>
-          <label class="project-field">Esforço <small>(opcional)</small>
-            <input id="wizardEffort" type="text" maxlength="30" autocomplete="off" placeholder="high" />
-          </label>
-        </div>
-        <div class="dialog-actions">
-          <button class="secondary-button" type="button" data-wizard-back>Voltar</button>
-          <button class="primary-button" type="submit" id="wizardCreate">Continuar</button>
-        </div>
-      </form>
 
       <section class="wizard-step" data-step="connect">
         <div class="wizard-cli" id="wizardCli"></div>
         <p class="wizard-notes" id="wizardNotes"></p>
         <div class="wizard-flows" id="wizardFlows" role="radiogroup" aria-label="Forma de conexão"></div>
         <ol class="wizard-flow-steps" id="wizardFlowSteps"></ol>
-        <div class="wizard-start-row"><button class="primary-button" id="wizardStart" type="button">Iniciar conexão</button></div>
+        <div class="wizard-start-row"><button class="secondary-button" id="wizardConfigure" type="button" hidden>Configurar modelo e esforço</button><button class="primary-button" id="wizardStart" type="button">Iniciar conexão</button></div>
         <div class="wizard-session" id="wizardSession" hidden>
           <p class="wizard-session-status" id="wizardSessionStatus" role="status" aria-live="polite"></p>
           <div class="wizard-hints" id="wizardHints"></div>
@@ -326,6 +305,27 @@
             <button class="secondary-button" type="submit">Salvar</button>
           </form>
         </details>
+      </section>
+
+      <section class="wizard-step" data-step="models">
+        <p>Modelos e esforço são salvos só para esta conta. A ordem da fila e a troca automática entre provedores ficam separadas em “Contas e fila”.</p>
+        <p>Selecione as opções informadas pela CLI. Se deixar no padrão, o provedor escolhe modelo e esforço automaticamente.</p>
+        <form id="wizardModelsForm" novalidate>
+          <div class="account-dialog-row">
+            <label class="project-field">Modelo
+              <select id="wizardModelSelect"><option value="">Padrão da CLI</option></select>
+            </label>
+            <label class="project-field">Esforço de raciocínio
+              <select id="wizardEffortSelect"><option value="">Padrão da CLI</option></select>
+            </label>
+          </div>
+          <p class="wizard-model-note" id="wizardModelsNote" role="status" aria-live="polite"></p>
+          <div class="wizard-model-footer"><small id="wizardModelsSource"></small><button class="secondary-button" id="wizardModelsRefresh" type="button">Atualizar opções</button></div>
+          <div class="dialog-actions">
+            <button class="secondary-button" id="wizardModelsSkip" type="button">Usar padrão</button>
+            <button class="primary-button" type="submit" id="wizardSaveModels">Salvar e continuar</button>
+          </div>
+        </form>
       </section>
 
       <section class="wizard-step wizard-done" data-step="done">

@@ -31,7 +31,7 @@ export const PROVIDERS = {
     kind: 'cli',
     bin: 'claude',
     isolation: { env: 'CLAUDE_CONFIG_DIR' },
-    args: ['-p', '{prompt}', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ['--model', '{model}'], ['--permission-mode', '{permissionMode}']],
+    args: ['-p', '{prompt}', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ['--model', '{model}'], ['--effort', '{effort}'], ['--permission-mode', '{permissionMode}']],
     resumeArgs: ['--resume', '{sessionId}'],
     permissionMode: 'acceptEdits',
     parser: 'claude',
@@ -41,16 +41,16 @@ export const PROVIDERS = {
     usage: 'events',
     setup: {
       install: 'npm install -g @anthropic-ai/claude-code',
-      notes: 'O token de longa duração (claude setup-token) é o caminho mais estável num servidor: fica salvo só na pasta desta conta.',
+      notes: 'Conecte pelo login oficial da Claude com /login. O harness não pede nem armazena a senha da sua conta. A disponibilidade de modelo depende do plano e é confirmada pelo Claude ao iniciar uma tarefa.',
       flows: [
         {
-          id: 'token', label: 'Token de longa duração (recomendado)', command: ['claude', 'setup-token'], cols: 320,
-          capture: { pattern: 'sk-ant-oat[0-9]*-[A-Za-z0-9_-]{20,}', env: 'CLAUDE_CODE_OAUTH_TOKEN' },
-          steps: ['Toque em Iniciar e abra o link que aparecer.', 'Entre na conta Claude (Pro/Max) e autorize.', 'Se a página mostrar um código, copie e cole no campo abaixo do terminal.', 'O harness guarda o token gerado nesta conta automaticamente.'],
+          id: 'interactive', label: 'Entrar com a conta Claude (recomendado)', command: ['claude'], cols: 320,
+          steps: ['Toque em Iniciar. Se aparecerem perguntas de tema ou de confiança na pasta, responda com as setas e Enter.', 'Digite /login e envie; escolha a conta Claude.', 'Abra o link, autorize e cole o código de volta.', 'Quando o login concluir, o harness detecta e encerra a tela.'],
         },
         {
-          id: 'interactive', label: 'Login interativo (/login)', command: ['claude'], cols: 320,
-          steps: ['Toque em Iniciar. Se aparecerem perguntas de tema ou de confiança na pasta, responda com as setas e Enter.', 'Digite /login e envie; escolha a conta Claude.', 'Abra o link, autorize e cole o código de volta.', 'Quando o login concluir, o harness detecta e encerra a tela.'],
+          id: 'token', label: 'Conectar com token de longa duração', command: ['claude', 'setup-token'], cols: 320,
+          capture: { pattern: 'sk-ant-oat[0-9]*-[A-Za-z0-9_-]{20,}', env: 'CLAUDE_CODE_OAUTH_TOKEN' },
+          steps: ['Gere o token usando a CLI oficial da Anthropic.', 'Cole o token no terminal para o harness salvá-lo apenas nesta conta.'],
         },
       ],
       secret: { env: 'CLAUDE_CODE_OAUTH_TOKEN', label: 'Já tenho um token (gerado com claude setup-token em outro computador)', placeholder: 'sk-ant-oat01-…' },
@@ -70,7 +70,7 @@ export const PROVIDERS = {
     usage: 'errors',
     setup: {
       install: 'curl -fsSL https://antigravity.google/cli/install.sh | bash',
-      notes: 'Em servidores sem chaveiro do sistema o agy pode não conseguir guardar o login. Se o terminal mostrar erro de keyring, use a chave de API ou instale gnome-keyring na VPS.',
+      notes: 'A conexão usa o fluxo oficial de autorização Google; o harness não pede a senha Google. Em servidores sem chaveiro do sistema o agy pode não conseguir guardar o login. Se o terminal mostrar erro de keyring, configure o chaveiro da VPS ou use uma chave de API do Gemini (cobrada separadamente).',
       flows: [{
         id: 'google', label: 'Conta Google', command: ['agy'], cols: 320,
         steps: ['Toque em Iniciar: o agy mostra um link de autorização.', 'Abra o link, entre na conta Google desta conta e autorize.', 'Copie o código exibido e cole no campo abaixo do terminal.', 'O harness confere o login e encerra a tela.'],

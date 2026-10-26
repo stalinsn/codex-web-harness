@@ -1,6 +1,7 @@
 // /api/accounts: registered agent accounts, their status/usage and the rotation queue.
 import { fail, json, readBody } from '../http/respond.mjs';
 import { PROVIDERS } from '../accounts/providers.mjs';
+import { getAccountModelCatalog } from '../accounts/model-catalog.mjs';
 import { prepareAccountDir, saveManualSecret, setupInfo, signOut } from '../accounts/setup.mjs';
 
 const ACCOUNT = /^\/api\/accounts\/([a-z0-9][a-z0-9-]{0,39})$/;
@@ -59,6 +60,11 @@ export function registerAccountRoutes(router, { accounts, logins }) {
     const account = requireAccount(id);
     const state = accounts.registry.stateOf(id);
     return json(res, 200, { setup: await setupInfo(account), loggedIn: state.loggedIn, statusDetail: state.statusDetail });
+  });
+  router.get(ACCOUNT_ACTION('models'), async ({ res, params: [id], url }) => {
+    const account = requireAccount(id);
+    const selectedModel = String(url.searchParams.get('model') || '').slice(0, 100);
+    return json(res, 200, await getAccountModelCatalog(account, accounts, selectedModel));
   });
   router.post(ACCOUNT_ACTION('login'), async ({ req, res, params: [id] }) => {
     const body = await readBody(req, 4096);

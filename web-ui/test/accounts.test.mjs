@@ -2,12 +2,27 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { codexUsage } from '../src/accounts/codex-usage.mjs';
 import { getParser, looksRateLimited, resetFromText } from '../src/accounts/parsers.mjs';
+import { normalizeEffortPayload, normalizeModels } from '../src/accounts/model-catalog.mjs';
 import { expandArgs } from '../src/accounts/providers.mjs';
 import { buildSegmentPrompt, goalFromThread, outcomeMarker } from '../src/tasks/prompt.mjs';
 
 test('arg templates fill placeholders and drop empty optional groups', () => {
   const template = ['-p', '{prompt}', ['--model', '{model}'], ['--effort', '{effort}']];
   assert.deepEqual(expandArgs(template, { prompt: 'oi', model: 'opus', effort: '' }), ['-p', 'oi', '--model', 'opus']);
+});
+
+test('provider model catalogs normalize Codex and Antigravity JSON shapes', () => {
+  const models = normalizeModels({ data: [
+    { id: 'gemini-pro', displayName: 'Gemini Pro', isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: 'high' }, 'low'] },
+    { model: 'gemini-fast', name: 'Gemini Fast' },
+    { id: 'gemini-pro', displayName: 'duplicate' },
+  ] });
+  assert.deepEqual(models, [
+    { id: 'gemini-pro', label: 'Gemini Pro', isDefault: true, efforts: ['high', 'low'], defaultEffort: '' },
+    { id: 'gemini-fast', label: 'Gemini Fast', isDefault: false, efforts: [], defaultEffort: '' },
+  ]);
+  assert.deepEqual(normalizeEffortPayload({ result: { availableEfforts: ['low', { name: 'high' }] } }), ['low', 'high']);
+  assert.deepEqual(normalizeEffortPayload({ response: 'Effort is adjustable. Available effort tiers: low, medium, high, xhigh.' }), ['low', 'medium', 'high', 'xhigh']);
 });
 
 test('claude stream-json: session, text, tools, limit and result', () => {

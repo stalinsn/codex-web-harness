@@ -1,4 +1,4 @@
-// Step-by-step account connection: provider → identification → login terminal → done.
+// Quick account connection: choose a provider → authenticate → optionally tune model.
 // The login runs on the VPS inside a pseudo-terminal; this view mirrors it with
 // xterm.js (loaded on demand), surfaces links/codes and sends keystrokes back.
 import { applyAccounts, refreshAccounts } from './accounts.js';
@@ -8,14 +8,15 @@ import { $, $$, escapeHtml, installIcons, toast } from './dom.js';
 import { state } from './state.js';
 
 const BLURBS = {
-  codex: 'Outra conta ChatGPT/Codex. Login por código de dispositivo; usa a mesma configuração da conta principal.',
-  'claude-code': 'Assinatura Claude Pro/Max. Gera um token de longa duração guardado só nesta conta.',
-  antigravity: 'Conta Google no Antigravity CLI (agy). Login por link + código, ou chave de API.',
+  codex: 'Outra conta ChatGPT/Codex. Login oficial por código de dispositivo; os modelos são lidos da CLI.',
+  'claude-code': 'Entre com sua conta Claude pelo fluxo oficial. Modelos e esforços seguem as opções da CLI.',
+  antigravity: 'Entre com sua conta Google por autorização oficial. O agy informa os modelos disponíveis.',
   'gemini-cli': 'Gemini CLI com login Google ou chave de API.',
 };
 const KEYS = { enter: '\r', up: '\x1b[A', down: '\x1b[B', tab: '\t', esc: '\x1b', ctrlc: '\x03' };
-const wizard = { step: 'provider', provider: '', accountId: '', setup: null, flowId: '', session: null, term: null };
+const wizard = { step: 'provider', provider: '', accountId: '', setup: null, flowId: '', session: null, term: null, catalog: null, finishing: false };
 let xtermLoading = null;
+let accountCreationPending = false;
 
 function loadXterm() {
   if (window.Terminal) return Promise.resolve();
@@ -39,7 +40,7 @@ function loadXterm() {
 function showStep(step) {
   wizard.step = step;
   $$('#accountWizard .wizard-step').forEach((section) => { section.hidden = section.dataset.step !== step; });
-  const order = ['provider', 'details', 'connect', 'done'];
+  const order = ['provider', 'connect', 'models', 'done'];
   $$('#wizardSteps li').forEach((item) => {
     const index = order.indexOf(item.dataset.step);
     item.classList.toggle('current', item.dataset.step === step);
@@ -65,34 +66,28 @@ function suggestId(provider) {
   return `${base}-${Date.now() % 1000}`;
 }
 
-function chooseProvider(provider) {
+async function chooseProvider(provider) {
+  if (accountCreationPending) return;
+  accountCreationPending = true;
   wizard.provider = provider;
   const label = state.providers.find((item) => item.id === provider)?.label || provider;
-  $('#wizardTitle').textContent = `Nova conta · ${label}`;
-  $('#wizardId').value = suggestId(provider);
-  $('#wizardLabel').value = '';
-  $('#wizardModel').value = '';
-  $('#wizardEffort').value = '';
-  showStep('details');
-  $('#wizardLabel').focus();
-}
-
-async function createAccount(event) {
-  event.preventDefault();
-  const button = $('#wizardCreate');
-  button.disabled = true;
+  const id = suggestId(provider);
+  const number = id.match(/-(\d+)$/)?.[1] || '1';
+  const displayName = { codex: 'Codex', 'claude-code': 'Claude', antigravity: 'Antigravity', 'gemini-cli': 'Gemini' }[provider] || label;
+  $$('#providerGrid [data-provider]').forEach((button) => { button.disabled = true; });
   try {
     const data = await api('/api/accounts', { method: 'POST', body: JSON.stringify({
       provider: wizard.provider,
-      id: $('#wizardId').value.trim().toLowerCase(),
-      label: $('#wizardLabel').value.trim(),
-      model: $('#wizardModel').value.trim(),
-      effort: $('#wizardEffort').value.trim(),
+      id,
+      label: `${displayName} ${number}`,
     }) });
     applyAccounts(data);
     await openConnect(data.account.id);
   } catch (error) { toast(error.message, 'error'); }
-  finally { button.disabled = false; }
+  finally {
+    accountCreationPending = false;
+    $$('#providerGrid [data-provider]').forEach((button) => { button.disabled = false; });
+  }
 }
 
 function renderFlowSteps() {
@@ -115,6 +110,7 @@ function renderConnect() {
   renderFlowSteps();
   $('#wizardStart').disabled = !installed || !setup.flows.length;
   $('#wizardStart').hidden = false;
+  $('#wizardConfigure').hidden = !account?.loggedIn;
   $('#wizardStart').textContent = account?.loggedIn ? 'Reconectar' : 'Iniciar conexão';
   $('#wizardSecret').hidden = !setup.secret;
   if (setup.secret) {
@@ -127,6 +123,10 @@ function renderConnect() {
 async function openConnect(accountId) {
   wizard.accountId = accountId;
   wizard.session = null;
+  wizard.catalog = null;
+  $('#wizardModelSelect').replaceChildren(new Option('Padrão da CLI', ''));
+  $('#wizardEffortSelect').replaceChildren(new Option('Padrão da CLI', ''));
+  $('#wizardEffortSelect').disabled = true;
   $('#wizardSession').hidden = true;
   const { setup } = await api(`/api/accounts/${encodeURIComponent(accountId)}/setup`);
   wizard.setup = setup;
@@ -205,12 +205,97 @@ async function sendInput(data) {
 }
 
 async function finishConnected() {
-  await refreshAccounts().catch(() => {});
-  const index = state.accounts.findIndex((account) => account.id === wizard.accountId);
-  const account = state.accounts[index];
-  $('#wizardDoneTitle').textContent = `${account?.label || 'Conta'} conectada`;
-  $('#wizardDoneText').textContent = index >= 0 ? `Ela está na posição ${index + 1} da fila de uso. Você pode mudar a ordem no painel Contas e fila.` : '';
-  showStep('done');
+  if (wizard.finishing) return;
+  wizard.finishing = true;
+  try {
+    await refreshAccounts().catch(() => {});
+    const account = state.accounts.find((item) => item.id === wizard.accountId);
+    await loadModelSettings(account);
+  } finally { wizard.finishing = false; }
+}
+
+function modelForSelection(modelId) {
+  return wizard.catalog?.models?.find((item) => item.id === modelId) || null;
+}
+
+function renderEffortOptions(model, currentEffort = '') {
+  const select = $('#wizardEffortSelect');
+  const efforts = model?.efforts || [];
+  select.replaceChildren(new Option('Padrão da CLI', ''));
+  for (const effort of efforts) select.add(new Option(effort, effort));
+  if (currentEffort && !efforts.includes(currentEffort)) select.add(new Option(`${currentEffort} · configuração atual`, currentEffort));
+  select.value = currentEffort || '';
+  select.disabled = !model || efforts.length === 0;
+}
+
+function renderModelOptions(catalog, account) {
+  const select = $('#wizardModelSelect');
+  const models = [...(catalog.models || [])];
+  if (account?.model && !models.some((item) => item.id === account.model)) {
+    models.unshift({ id: account.model, label: `${account.model} · configuração atual`, efforts: [] });
+  }
+  select.replaceChildren(new Option('Padrão da CLI', ''));
+  for (const model of models) select.add(new Option(`${model.label || model.id}${model.isDefault ? ' · padrão' : ''}`, model.id));
+  select.value = account?.model && models.some((item) => item.id === account.model) ? account.model : '';
+  renderEffortOptions(modelForSelection(select.value), account?.effort || '');
+  $('#wizardModelsNote').textContent = catalog.note || 'Sem catálogo disponível; deixe no padrão da CLI.';
+  $('#wizardModelsSource').textContent = catalog.source ? `Origem: ${catalog.source}` : '';
+}
+
+async function loadModelSettings(account = state.accounts.find((item) => item.id === wizard.accountId)) {
+  const previousModel = $('#wizardModelSelect').value;
+  const previousEffort = $('#wizardEffortSelect').value;
+  showStep('models');
+  $('#wizardModelsNote').textContent = 'Consultando os modelos disponíveis…';
+  $('#wizardModelsSource').textContent = '';
+  $('#wizardSaveModels').disabled = true;
+  const model = previousModel || account?.model || '';
+  try {
+    wizard.catalog = await api(`/api/accounts/${encodeURIComponent(wizard.accountId)}/models${model ? `?model=${encodeURIComponent(model)}` : ''}`);
+  } catch (error) {
+    wizard.catalog = { models: [], source: '', note: `${error.message} Você ainda pode manter o padrão da CLI.` };
+  }
+  renderModelOptions(wizard.catalog, account);
+  const selectedModel = modelForSelection(model) ? model : '';
+  $('#wizardModelSelect').value = selectedModel;
+  renderEffortOptions(modelForSelection(selectedModel), previousEffort || account?.effort || '');
+  $('#wizardSaveModels').disabled = false;
+}
+
+async function updateEffortChoices(modelId) {
+  const account = state.accounts.find((item) => item.id === wizard.accountId);
+  const currentEffort = $('#wizardEffortSelect').value || account?.effort || '';
+  const model = modelForSelection(modelId);
+  if (wizard.setup?.provider === 'antigravity' && modelId && (!model?.efforts?.length)) {
+    $('#wizardModelsNote').textContent = 'Consultando os níveis de esforço deste modelo…';
+    try {
+      wizard.catalog = await api(`/api/accounts/${encodeURIComponent(wizard.accountId)}/models?model=${encodeURIComponent(modelId)}`);
+      $('#wizardModelsNote').textContent = wizard.catalog.note || '';
+      $('#wizardModelsSource').textContent = wizard.catalog.source ? `Origem: ${wizard.catalog.source}` : '';
+    } catch (error) { $('#wizardModelsNote').textContent = `${error.message} O modelo ainda pode usar o esforço padrão da CLI.`; }
+  }
+  const selected = modelForSelection(modelId);
+  const keepEffort = selected?.efforts?.includes(currentEffort) || account?.model === modelId ? currentEffort : '';
+  renderEffortOptions(selected, keepEffort);
+}
+
+async function saveModelSettings(event) {
+  event.preventDefault();
+  const button = $('#wizardSaveModels');
+  button.disabled = true;
+  try {
+    const data = await api(`/api/accounts/${encodeURIComponent(wizard.accountId)}`, {
+      method: 'POST',
+      body: JSON.stringify({ model: $('#wizardModelSelect').value, effort: $('#wizardEffortSelect').value }),
+    });
+    applyAccounts(data);
+    const index = state.accounts.findIndex((account) => account.id === wizard.accountId);
+    const account = state.accounts[index];
+    $('#wizardDoneTitle').textContent = `${account?.label || 'Conta'} conectada`;
+    $('#wizardDoneText').textContent = index >= 0 ? `Configuração salva. A conta está na posição ${index + 1} da fila. Você pode mudar a ordem no painel Contas e fila.` : 'Configuração salva.';
+    showStep('done');
+  } catch (error) { toast(error.message, 'error'); }
+  finally { button.disabled = false; }
 }
 
 export function onLoginOutput({ sessionId, data }) {
@@ -246,11 +331,15 @@ async function saveSecret(event) {
 }
 
 /** Open the wizard: from the start, or straight at the connection step of an account. */
-export async function openWizard({ accountId = '' } = {}) {
+export async function openWizard({ accountId = '', configureModels = false } = {}) {
+  wizard.finishing = false;
   renderProviders();
   $('#accountWizard').showModal();
   if (accountId) {
-    try { await openConnect(accountId); }
+    try {
+      await openConnect(accountId);
+      if (configureModels) await loadModelSettings();
+    }
     catch (error) { toast(error.message, 'error'); $('#accountWizard').close(); }
     return;
   }
@@ -264,10 +353,18 @@ export function bindWizardEvents() {
     const card = event.target.closest('[data-provider]');
     if (card) chooseProvider(card.dataset.provider);
   });
-  $('#wizardDetails').addEventListener('submit', createAccount);
-  $('[data-wizard-back]').addEventListener('click', () => showStep('provider'));
   $('#wizardFlows').addEventListener('change', (event) => { wizard.flowId = event.target.value; renderFlowSteps(); });
   $('#wizardStart').addEventListener('click', () => startSession('login'));
+  $('#wizardConfigure').addEventListener('click', () => loadModelSettings());
+  $('#wizardModelSelect').addEventListener('change', (event) => updateEffortChoices(event.target.value));
+  $('#wizardModelsRefresh').addEventListener('click', () => loadModelSettings());
+  $('#wizardModelsForm').addEventListener('submit', saveModelSettings);
+  $('#wizardModelsSkip').addEventListener('click', () => {
+    const account = state.accounts.find((item) => item.id === wizard.accountId);
+    $('#wizardDoneTitle').textContent = `${account?.label || 'Conta'} conectada`;
+    $('#wizardDoneText').textContent = 'A configuração atual da conta foi mantida.';
+    showStep('done');
+  });
   $('#wizardInputForm').addEventListener('submit', (event) => {
     event.preventDefault();
     const input = $('#wizardInput');
