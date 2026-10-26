@@ -165,7 +165,6 @@ function startApplication() {
   if (authUi.started) return;
   authUi.started = true;
   setInterval(updateResetCountdowns, 60_000);
-  refreshVpsHealth();
   setInterval(() => { if (!document.hidden) refreshVpsHealth(); }, 60_000);
   bindEvents(); connectEvents(); bootstrap();
   setInterval(() => { if (!document.hidden && state.busy && Date.now() - state.lastExecutionEventAt > 20_000) syncExecutionState().catch(() => {}); }, 15_000);

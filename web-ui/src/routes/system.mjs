@@ -19,8 +19,15 @@ export function registerSystemRoutes(router, { codex, localThreads }) {
   router.get('/api/server-health', async ({ res, url }) => json(res, 200, await getVpsHealth(url.searchParams.get('refresh') === 'true')));
   router.get('/api/health', ({ res }) => json(res, 200, { online: true, codex: codex.ready, service: 'codex-web-harness' }));
 
-  router.get('/api/bootstrap', async ({ res, url }) => {
+  router.get('/api/account-data', async ({ res, url }) => {
     await codex.refreshAccountData(url.searchParams.get('refresh') === 'true');
+    return json(res, 200, { models: codex.models, account: codex.account, rateLimits: codex.rateLimits, usage: codex.usage });
+  });
+
+  router.get('/api/bootstrap', async ({ res }) => {
+    // The shell can render from cached account data. Refresh stale quota data in the
+    // background so a page reload does not wait on several app-server RPCs.
+    codex.refreshAccountData().catch((error) => console.error('Não foi possível atualizar os dados da conta:', error.message));
     const threads = await codex.rpc('thread/list', { limit: 50, sortKey: 'updated_at', sortDirection: 'desc' });
     return json(res, 200, {
       models: codex.models,

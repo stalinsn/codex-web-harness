@@ -24,7 +24,7 @@ import { bindWizardEvents } from './wizard.js';
 
 export async function bootstrap() {
   try {
-    const data = await api('/api/bootstrap');
+    const data = await loadBootstrap();
     state.models = data.models || [];
     state.account = data.account;
     state.rateLimits = data.rateLimits;
@@ -33,7 +33,6 @@ export async function bootstrap() {
     state.threads = data.threads || [];
     state.activeThreadIds = new Set(state.threads.filter((thread) => thread.status?.type === 'active').map((thread) => thread.id));
     state.projects = data.projects || [];
-    await syncLabelColors().catch((error) => toast(`Não foi possível sincronizar as cores das etiquetas com a VPS: ${error.message}`, 'error'));
     state.defaultCwd = data.defaultCwd || '/';
     state.projectsRoot = data.projectsRoot || `${state.defaultCwd}/projects`;
     if (!state.projects.some((project) => project.id === state.selectedProjectId)) state.selectedProjectId = '';
@@ -46,17 +45,32 @@ export async function bootstrap() {
     if (startupProject) updateWorkingDirectory(startupProject.cwd);
     else if (!state.cwd) updateWorkingDirectory(state.defaultCwd);
     (data.pending || []).forEach((request) => state.pendingApprovals.set(String(request.id), request));
-    await loadDeferredQueue().catch((error) => toast(error.message, 'error'));
     populateModels(); renderUsage(); renderProjects(); renderThreads(); setConnection(true, 'Codex conectado');
+    syncLabelColors().catch((error) => toast(`Não foi possível sincronizar as cores das etiquetas com a VPS: ${error.message}`, 'error'));
+    loadDeferredQueue().then(() => {
+      if (state.deferredQueueItems.length) maybeDrainDeferredQueue().catch(() => {});
+    }).catch((error) => toast(error.message, 'error'));
+    setTimeout(() => refreshVpsHealth(), 1500);
     refreshAccounts().catch(() => {});
     refreshTasks().catch(() => {});
     if ($('#planBadge') && data.account?.planType) $('#planBadge').textContent = String(data.account.planType).replace(/^./, (char) => char.toUpperCase());
     const threadId = new URLSearchParams(location.hash.slice(1)).get('thread');
-    if (threadId) await openThread(threadId);
-    if (state.deferredQueueItems.length) maybeDrainDeferredQueue().catch(() => {});
+    if (threadId) openThread(threadId);
   } catch (error) {
     setConnection(false, 'Codex indisponível');
     toast(error.message, 'error');
+  }
+}
+
+async function loadBootstrap() {
+  const retryDelays = [250, 500, 1000, 1800, 3000, 5000, 5000, 5000];
+  for (let attempt = 0; ; attempt += 1) {
+    try { return await api('/api/bootstrap'); }
+    catch (error) {
+      if (error.status !== 503 || attempt >= retryDelays.length) throw error;
+      setConnection(false, 'Codex iniciando…');
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, retryDelays[attempt]));
+    }
   }
 }
 

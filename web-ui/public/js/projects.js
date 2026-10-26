@@ -126,7 +126,10 @@ export async function syncLabelColors() {
   state.projectColors = projectColors;
   state.threadColors = threadColors;
   cacheLabelColors();
-  if (changed) renderThreads(state.threads, $('#threadSearch')?.value.trim() || '');
+  if (changed) {
+    renderProjects();
+    renderThreads(state.threads, $('#threadSearch')?.value.trim() || '');
+  }
 }
 
 function openProjectColorMenu(project, trigger) {

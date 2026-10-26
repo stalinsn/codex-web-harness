@@ -32,6 +32,7 @@ export class CodexAppServer {
     this.rateLimits = null;
     this.usage = null;
     this.lastRefresh = 0;
+    this.accountRefreshPromise = null;
     this.listeners = new Set();
   }
 
@@ -134,18 +135,24 @@ export class CodexAppServer {
   async refreshAccountData(force = false) {
     if (!this.ready) throw new Error('O Codex ainda está iniciando.');
     if (!force && Date.now() - this.lastRefresh < ACCOUNT_REFRESH_MS) return;
-    const [models, account, rateLimits, usage] = await Promise.allSettled([
-      this.rpc('model/list', { limit: 100, includeHidden: false }),
-      this.rpc('account/read', { refreshToken: false }),
-      this.rpc('account/rateLimits/read'),
-      this.rpc('account/usage/read'),
-    ]);
-    if (models.status === 'fulfilled') this.models = models.value.data || [];
-    if (account.status === 'fulfilled') this.account = account.value.account || null;
-    if (rateLimits.status === 'fulfilled') this.rateLimits = rateLimits.value.rateLimitsByLimitId || rateLimits.value.rateLimits || null;
-    if (usage.status === 'fulfilled') this.usage = usage.value || null;
-    this.lastRefresh = Date.now();
-    this.emit('account-data', { account: this.account, rateLimits: this.rateLimits, usage: this.usage });
+    if (this.accountRefreshPromise) return this.accountRefreshPromise;
+    const request = (async () => {
+      const [models, account, rateLimits, usage] = await Promise.allSettled([
+        this.rpc('model/list', { limit: 100, includeHidden: false }),
+        this.rpc('account/read', { refreshToken: false }),
+        this.rpc('account/rateLimits/read'),
+        this.rpc('account/usage/read'),
+      ]);
+      if (models.status === 'fulfilled') this.models = models.value.data || [];
+      if (account.status === 'fulfilled') this.account = account.value.account || null;
+      if (rateLimits.status === 'fulfilled') this.rateLimits = rateLimits.value.rateLimitsByLimitId || rateLimits.value.rateLimits || null;
+      if (usage.status === 'fulfilled') this.usage = usage.value || null;
+      this.lastRefresh = Date.now();
+      this.emit('account-data', { models: this.models, account: this.account, rateLimits: this.rateLimits, usage: this.usage });
+    })();
+    this.accountRefreshPromise = request;
+    try { await request; }
+    finally { if (this.accountRefreshPromise === request) this.accountRefreshPromise = null; }
   }
 
   /**

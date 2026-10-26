@@ -10,7 +10,7 @@ import { applyAccountData, refreshUsage, renderContextUsage, renderUsage, update
 import { setConnection } from './layout.js';
 import { markdown } from './markdown.js';
 import { addApproval, getOrCreateStreamMessage, imageFromContent, makeMessage, placeStreamMessage, scrollConversation, splitAttachmentText } from './messages.js';
-import { getSelectedModel } from './models.js';
+import { getSelectedModel, populateModels } from './models.js';
 import { associateThreadWithSelectedProject, renderConversationContext } from './projects.js';
 import { refreshQueue, renderQueue } from './queue.js';
 import { clearResolvedRateLimitFailure, getEffectiveRateLimitBlock, isRateLimitError, recordRateLimitFailure } from './rate-limit.js';
@@ -186,7 +186,10 @@ export function connectEvents() {
     else if (event.type === 'codex-event') handleCodexNotification(event.data);
     else if (event.type === 'server-request') addApproval(event.data);
     else if (event.type === 'request-resolved') state.pendingApprovals.delete(event.data.requestId);
-    else if (event.type === 'account-data') applyAccountData(event.data);
+    else if (event.type === 'account-data') {
+      if (Array.isArray(event.data?.models)) { state.models = event.data.models; populateModels(); }
+      applyAccountData(event.data);
+    }
     else if (event.type === 'accounts-changed') refreshAccountsSoon();
     else if (event.type === 'login-output') onLoginOutput(event.data);
     else if (event.type === 'login-state') onLoginState(event.data);

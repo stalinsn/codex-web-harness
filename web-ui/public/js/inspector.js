@@ -174,7 +174,7 @@ export async function refreshVpsHealth(force = false) {
 export async function refreshUsage(force = true) {
   if (runtime.quotaRefreshPromise) return runtime.quotaRefreshPromise;
   const request = (async () => {
-    const data = await api(`/api/bootstrap${force ? '?refresh=true' : ''}`);
+    const data = await api(`/api/account-data${force ? '?refresh=true' : ''}`);
     state.account = data.account;
     state.rateLimits = data.rateLimits;
     state.usage = data.usage;
