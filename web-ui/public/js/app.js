@@ -22,6 +22,45 @@ import { closeThreadMenus, refreshThreadList, renderThreads } from './thread-lis
 import { clearRecordedAudio, prepareVoicePreview, renderVoice, startVoiceRecording, touchComposer, transcribeRecordedAudio, voiceTime } from './voice.js';
 import { bindWizardEvents } from './wizard.js';
 
+function closeComposerOptions() {
+  const panel = $('#composerOptionsPanel');
+  const toggle = $('#composerOptionsToggle');
+  if (!panel || !toggle) return;
+  try { if (toggle.classList.contains('is-open')) panel.hidePopover(); } catch {}
+  panel.classList.remove('is-fallback-open');
+  toggle.classList.remove('is-open');
+  toggle.setAttribute('aria-expanded', 'false');
+}
+
+function positionComposerOptions() {
+  const panel = $('#composerOptionsPanel');
+  const toggle = $('#composerOptionsToggle');
+  if (!panel || !toggle) return;
+  const anchor = toggle.getBoundingClientRect();
+  const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+  const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
+  panel.style.maxHeight = `${Math.max(150, Math.min(520, viewportHeight * .66, anchor.top - 24))}px`;
+  const width = panel.getBoundingClientRect().width || Math.min(470, viewportWidth - 24);
+  const left = Math.max(12, Math.min(anchor.right - width, viewportWidth - width - 12));
+  const height = panel.getBoundingClientRect().height;
+  panel.style.left = `${left}px`;
+  panel.style.top = `${Math.max(12, Math.min(anchor.top - height - 8, viewportHeight - height - 12))}px`;
+  panel.style.bottom = 'auto';
+}
+
+function openComposerOptions() {
+  const panel = $('#composerOptionsPanel');
+  const toggle = $('#composerOptionsToggle');
+  if (!panel || !toggle) return;
+  toggle.classList.add('is-open');
+  toggle.setAttribute('aria-expanded', 'true');
+  try {
+    if (typeof panel.showPopover === 'function') panel.showPopover();
+    else panel.classList.add('is-fallback-open');
+  } catch { panel.classList.add('is-fallback-open'); }
+  requestAnimationFrame(positionComposerOptions);
+}
+
 export async function bootstrap() {
   try {
     const data = await loadBootstrap();
@@ -87,6 +126,7 @@ export function bindEvents() {
     if (event.target === $('#imagePreviewDialog')) $('#imagePreviewDialog').close();
   });
   $('#messages').addEventListener('scroll', () => {
+    closeComposerOptions();
     const area = $('#messages');
     state.followLatest = area.scrollHeight - area.clientHeight - area.scrollTop < 80;
     $('#scrollToLatest').classList.toggle('hidden', state.followLatest);
@@ -98,7 +138,17 @@ export function bindEvents() {
     try { await api('/api/auth/logout', { method: 'POST', body: '{}' }); location.reload(); }
     catch (error) { button.disabled = false; toast(error.message, 'error'); }
   });
-  $('#composerForm').addEventListener('submit', submitMessage);
+  $('#composerForm').addEventListener('submit', (event) => { closeComposerOptions(); submitMessage(event); });
+  $('#composerOptionsToggle').addEventListener('click', () => {
+    const panel = $('#composerOptionsPanel');
+    if ($('#composerOptionsToggle').classList.contains('is-open')) closeComposerOptions();
+    else openComposerOptions();
+  });
+  document.addEventListener('pointerdown', (event) => {
+    const panel = $('#composerOptionsPanel');
+    const toggle = $('#composerOptionsToggle');
+    if (toggle.classList.contains('is-open') && !panel.contains(event.target) && !toggle.contains(event.target)) closeComposerOptions();
+  }, true);
   $('#accessModeSelect').addEventListener('change', async (event) => {
     const mode = event.target.value;
     if (!['manual', 'automatic'].includes(mode) || mode === state.accessMode) return;
@@ -160,7 +210,7 @@ export function bindEvents() {
   $('#modelSelect').addEventListener('change', () => setComposerModel($('#modelSelect').value));
   $('#accountSelect').addEventListener('change', () => { setChatAccount($('#accountSelect').value); updateComposerControls(); });
   $('#effortSelect').addEventListener('change', () => setComposerEffort($('#effortSelect').value));
-  $('#cwdControl').addEventListener('click', () => { $('#cwdInput').value = state.cwd; $('#pathDialog').showModal(); });
+  $('#cwdControl').addEventListener('click', () => { closeComposerOptions(); $('#cwdInput').value = state.cwd; $('#pathDialog').showModal(); });
   $('#pathForm').addEventListener('submit', (event) => {
     if (event.submitter?.value === 'cancel') return;
     event.preventDefault();
@@ -193,7 +243,7 @@ export function bindEvents() {
   });
   $('#threadSearchScope').addEventListener('change', () => renderThreads());
   $('#threadList').addEventListener('scroll', closeThreadMenus, { passive: true });
-  window.addEventListener('resize', closeThreadMenus);
+  window.addEventListener('resize', () => { closeThreadMenus(); closeComposerOptions(); });
   $('#threadSearch').addEventListener('input', debounce(() => refreshThreadList($('#threadSearch').value.trim()).catch((error) => toast(error.message, 'error')), 250));
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') syncLabelColors().catch(() => {});
@@ -231,7 +281,7 @@ export function bindEvents() {
   document.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); newChat(); }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); openSidebar(); $('#threadSearch').focus(); }
-    if (event.key === 'Escape') { closeSidebar(); showInspector(false); }
+    if (event.key === 'Escape') { closeComposerOptions(); closeSidebar(); showInspector(false); }
   });
   $('#cwdLabel').textContent = state.cwd; $('#inspectorCwd').textContent = state.cwd;
   updateComposerControls();

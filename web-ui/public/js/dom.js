@@ -15,6 +15,7 @@ export const icons = {
   archive: '<rect x="3" y="5" width="18" height="4" rx="1"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9m-8 3h2"/>',
   arrow: '<path d="M5 12h14m-6-6 6 6-6 6"/>',
   'arrow-up': '<path d="M12 19V5m-7 7 7-7 7 7"/>',
+  sliders: '<path d="M4 7h9m4 0h3M4 17h3m4 0h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
   paperclip: '<path d="m8 12.5 6.9-6.9a3.3 3.3 0 0 1 4.7 4.7l-8.4 8.4a5 5 0 0 1-7.1-7.1l8.3-8.3"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 10h18"/>',
   chevron: '<path d="m7 10 5 5 5-5"/>',

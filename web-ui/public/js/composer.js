@@ -15,6 +15,26 @@ import { state, voice } from './state.js';
 import { refreshThreadList } from './thread-list.js';
 import { clearRecordedAudio, prepareVoicePreview, sendVoiceRecording, touchComposer } from './voice.js';
 
+function renderComposerOptionsSummary() {
+  const summary = $('#composerOptionsSummary');
+  if (!summary) return;
+  const model = $('#modelSelect')?.selectedOptions?.[0]?.textContent.trim() || 'Modelo';
+  const shortModel = model.replace(/^GPT-6[-.]?/i, '').replace(/^Codex /i, '');
+  const effort = $('#effortSelect')?.selectedOptions?.[0]?.textContent.trim() || '';
+  const accountSelect = $('#accountSelect');
+  const account = accountSelect?.selectedOptions?.[0]?.textContent.trim() || '';
+  const codexAccount = !accountSelect || accountSelect.value === 'codex';
+  const permission = $('#accessModeSelect')?.value === 'automatic' ? 'Auto' : 'Manual';
+  const parts = [codexAccount ? permission : account, shortModel, effort].filter(Boolean);
+  summary.textContent = parts.join(' · ');
+  const toggle = $('#composerOptionsToggle');
+  if (toggle) {
+    toggle.classList.toggle('is-automatic', codexAccount && $('#accessModeSelect')?.value === 'automatic');
+    toggle.title = `Modelo: ${model}${effort ? `; esforço: ${effort}` : ''}${codexAccount ? `; permissões: ${permission}` : `; conta: ${account}`}; pasta: ${$('#cwdLabel')?.textContent.trim() || ''}`;
+    toggle.setAttribute('aria-label', `Configurações da mensagem: ${parts.join(', ')}`);
+  }
+}
+
 function renderAccessModeControl(usesCodex) {
   const control = $('#permissionModeControl');
   const select = $('#accessModeSelect');
@@ -45,6 +65,7 @@ export function updateComposerControls() {
   const effortSelect = $('#effortSelect');
   const externalAccount = state.chatAccountId && state.chatAccountId !== 'codex';
   const loadingModels = externalAccount && state.chatModelsLoading;
+  renderComposerOptionsSummary();
   if (modelSelect) modelSelect.disabled = loadingModels || (externalAccount ? !state.chatModels.length : !state.models.length);
   if (effortSelect) effortSelect.disabled = !getSelectedModel()?.supportedReasoningEfforts?.length;
   if (send) {

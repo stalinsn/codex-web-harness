@@ -96,7 +96,6 @@ function renderCommandActivity(item, append, turnId) {
   const statuses = [...group.items.values()];
   const running = statuses.some((status) => ['inProgress', 'running', 'pending'].includes(status));
   const failed = statuses.filter((status) => status === 'failed').length;
-  group.card.open = state.busy && turnGroup.turnId === (state.activeTurnId || 'active');
   group.title.textContent = `${running ? 'Comandos em execução' : 'Comandos executados'} · ${statuses.length}${failed ? ` · ${failed} falhou${failed > 1 ? 'ram' : ''}` : ''}`;
   if (append) scrollConversation();
   return entry;
