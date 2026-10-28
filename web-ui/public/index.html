@@ -194,6 +194,7 @@
             <div class="composer-toolbar">
               <div class="composer-tools">
                 <button type="button" class="composer-tool" id="attachImage" title="Anexar arquivos" aria-label="Anexar arquivos"><span class="icon" data-icon="paperclip"></span><span>Anexar</span></button>
+                <button type="button" class="composer-tool" id="attachGallery" title="Escolher fotos na galeria" aria-label="Escolher fotos na galeria"><span class="icon" data-icon="image"></span><span>Fotos</span></button>
                 <button type="button" class="composer-tool voice-input" id="voiceInput" title="Gravar áudio" aria-label="Gravar áudio"><span class="icon" data-icon="microphone"></span><span id="voiceButtonLabel">Gravar</span></button>
                 <details class="composer-options" id="composerOptions">
                   <summary class="composer-options-trigger" id="composerOptionsToggle" aria-expanded="false" aria-controls="composerOptionsPanel" aria-label="Abrir configurações da mensagem"><span class="icon" data-icon="sliders"></span><span class="composer-options-label">Ajustes</span><span class="composer-options-value" id="composerOptionsSummary"></span></summary>
@@ -211,7 +212,6 @@
                 </details>
                 <input type="file" id="imageInput" multiple hidden />
                 <input type="file" id="galleryInput" accept="image/*" multiple hidden />
-                <input type="file" id="cameraInput" accept="image/*" capture="environment" hidden />
                 <input type="file" id="audioInput" accept="audio/*,.m4a,.mp3,.wav,.webm,.ogg" hidden />
               </div>
               <button class="send-button" id="sendButton" type="submit" aria-label="Enviar mensagem"><span id="sendLabel">Enviar</span><span class="icon" data-icon="arrow-up"></span></button>
@@ -399,21 +399,6 @@
         <div class="quick-paths"><button type="button" data-path="/home/codex">Home</button><button type="button" data-path="/opt">/opt</button><button type="button" data-path="/var/www">/var/www</button></div>
         <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancelar</button><button class="primary-button" id="saveCwd" value="default">Usar pasta</button></div>
       </form>
-    </dialog>
-
-    <dialog class="attachment-picker" id="attachmentPicker" aria-labelledby="attachmentPickerTitle">
-      <div class="dialog-heading"><strong id="attachmentPickerTitle">Anexar</strong><button type="button" class="icon-button" id="closeAttachmentPicker" aria-label="Fechar anexos"><span class="icon" data-icon="close"></span></button></div>
-      <button type="button" class="attachment-source" id="chooseGallery"><span class="icon" data-icon="image"></span><span><strong>Galeria</strong><small>Escolher fotos do celular</small></span></button>
-      <button type="button" class="attachment-source" id="chooseCamera"><span class="icon" data-icon="camera"></span><span><strong>Tirar foto</strong><small>Câmera traseira ou selfie</small></span></button>
-      <button type="button" class="attachment-source" id="chooseFiles"><span class="icon" data-icon="folder"></span><span><strong>Arquivos</strong><small>Documentos, áudio e outros arquivos</small></span></button>
-    </dialog>
-
-    <dialog class="camera-dialog" id="cameraDialog" aria-labelledby="cameraTitle">
-      <div class="dialog-heading"><strong id="cameraTitle">Tirar foto</strong><button type="button" class="icon-button" id="closeCamera" aria-label="Fechar câmera"><span class="icon" data-icon="close"></span></button></div>
-      <video id="cameraVideo" autoplay muted playsinline aria-label="Prévia da câmera"></video>
-      <p id="cameraStatus" role="status">Abrindo câmera traseira…</p>
-      <div class="camera-actions"><button type="button" class="secondary-button" id="switchCamera">Alternar câmera</button><button type="button" class="primary-button" id="takePhoto">Capturar foto</button></div>
-      <button type="button" class="camera-native secondary-button" id="nativeCamera" hidden>Abrir câmera do celular</button>
     </dialog>
 
     <dialog class="image-preview-dialog" id="imagePreviewDialog" aria-label="Prévia da imagem">
