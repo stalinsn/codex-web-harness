@@ -24,5 +24,5 @@ export function applySecurityHeaders(res, { scriptHashes = [] } = {}) {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-  res.setHeader('Permissions-Policy', 'camera=(), geolocation=(), microphone=(self), payment=(), usb=()');
+  res.setHeader('Permissions-Policy', 'camera=(self), geolocation=(), microphone=(self), payment=(), usb=()');
 }

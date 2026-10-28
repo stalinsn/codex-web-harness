@@ -1,6 +1,7 @@
 // Entry point: bootstraps data, binds UI events and starts authentication.
 import { bindAccountEvents, refreshAccounts } from './accounts.js';
 import { api } from './api.js';
+import { bindAttachmentEvents } from './attachments.js';
 import { initializeAuthentication } from './auth.js';
 import { addFiles, steerMessage, submitMessage, updateComposerControls } from './composer.js';
 import { PREFIX } from './config.js';
@@ -125,6 +126,7 @@ async function loadBootstrap() {
 }
 
 export function bindEvents() {
+  bindAttachmentEvents();
   enhanceComposerSelects();
   bindAccountEvents();
   bindTaskEvents();
@@ -233,8 +235,6 @@ export function bindEvents() {
     $('#pathDialog').close();
   });
   $$('.quick-paths button').forEach((button) => button.addEventListener('click', () => { $('#cwdInput').value = button.dataset.path; }));
-  $('#attachImage').addEventListener('click', () => $('#imageInput').click());
-  $('#imageInput').addEventListener('change', async (event) => { await addFiles(event.target.files); event.target.value = ''; });
   $('#refreshThreads').addEventListener('click', () => refreshThreadList($('#threadSearch').value.trim()).catch((error) => toast(error.message, 'error')));
   $('#toggleArchived').addEventListener('click', async () => {
     if (state.archivedView) return;
