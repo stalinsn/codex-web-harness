@@ -1,4 +1,8 @@
 # Include inside the HTTPS server block for the chosen hostname.
+# Let the application supply Content-Security-Policy (including media-src blob:).
+# A second CSP is enforced in addition to the first and can block audio previews
+# and the generated import map. Keep gateway limits above normal asset loading
+# and transcription polling (production reference: 120/minute, burst 240).
 location /codex-agent/ {
     client_max_body_size 48m;
     proxy_pass http://127.0.0.1:7682/codex-agent/;
