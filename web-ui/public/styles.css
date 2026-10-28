@@ -231,6 +231,18 @@ kbd { margin-left: auto; padding: 2px 5px; color: #898a94; font-size: 10px; bord
 .command-entry + .command-entry { border-top: 1px solid #303137; }
 .command-name { display: block; max-height: 4.8em; overflow: auto; padding: 7px 8px; color: #d0d4e7; font-family: 'IBM Plex Mono', monospace; font-size: 10px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 6px; background: #17181c; }
 .command-entry .activity-output { max-height: 160px; margin-top: 6px; overflow-wrap: anywhere; }
+.action-group { padding: 0; overflow: hidden; }
+.action-group > summary { min-height: 40px; padding: 0 11px; list-style: none; cursor: pointer; }
+.action-group > summary::-webkit-details-marker, .action-detail-card > summary::-webkit-details-marker { display: none; }
+.action-group[open] > summary { border-bottom: 1px solid #33343a; }
+.action-group-title { min-width: 0; }
+.action-group-hint, .action-detail-hint { margin-left: auto; color: #858791; font-size: 10px; font-weight: 400; white-space: nowrap; }
+.action-group-content { display: grid; gap: 7px; padding: 8px; }
+.action-group-content > .activity-card { margin: 0; }
+.action-detail-card { padding: 0; overflow: hidden; }
+.action-detail-card > summary { min-height: 39px; padding: 0 10px; list-style: none; cursor: pointer; }
+.action-detail-card[open] > summary { border-bottom: 1px solid #33343a; }
+.action-detail-card .activity-output:not(.hidden) { max-height: 320px; margin: 0; border-radius: 0; }
 .turn-intermediates { min-height: 36px; padding: 0; overflow: visible; border: 0; border-bottom: 1px solid #303135; border-radius: 0; background: transparent; }
 .turn-intermediates > summary { min-height: 35px; justify-content: flex-start; padding: 6px 0 10px; color: #92939b; font-weight: 400; list-style: none; cursor: pointer; }
 .turn-intermediates > summary > .icon, .turn-intermediates-hint { display: none; }
@@ -555,6 +567,7 @@ body.resizing-inspector { cursor: col-resize; user-select: none; }
   .turn-intermediates > summary { min-height: 36px; gap: 7px; padding: 5px 0 9px; }
   .turn-intermediates-title { font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
   .turn-intermediates-hint { font-size: 9px; }
+  .action-group > summary, .action-detail-card > summary { min-height: 44px; }
   .turn-intermediate-content { gap: 5px; padding: 5px 7px 8px; }
   .reasoning-group { padding: 9px 10px; }
   .reasoning-steps { padding: 2px 9px 6px; }

@@ -58,9 +58,37 @@ export function registerIntermediate(turnId, itemId, append = true) {
   return group;
 }
 
+function registerAction(turnGroup, itemId, status = 'completed') {
+  let group = turnGroup.actionsGroup;
+  if (!group) {
+    const card = document.createElement('details');
+    card.className = 'activity-card action-group';
+    const heading = document.createElement('summary');
+    heading.className = 'activity-heading';
+    const icon = document.createElement('span'); icon.className = 'icon';
+    icon.innerHTML = `<svg viewBox="0 0 24 24">${icons.terminal}</svg>`;
+    const title = document.createElement('span'); title.className = 'action-group-title';
+    const hint = document.createElement('span'); hint.className = 'action-group-hint';
+    const content = document.createElement('div'); content.className = 'action-group-content';
+    heading.append(icon, title, hint); card.append(heading, content);
+    card.addEventListener('toggle', () => { hint.textContent = card.open ? 'Recolher ações' : 'Ver ações'; });
+    group = { card, title, hint, content, items: new Map() };
+    turnGroup.actionsGroup = group;
+    turnGroup.content.append(card);
+  }
+  group.items.set(String(itemId || `action-${group.items.size + 1}`), status || 'completed');
+  const statuses = [...group.items.values()];
+  const running = statuses.filter((value) => ['inProgress', 'running', 'pending', 'started', 'interacted'].includes(value)).length;
+  const failed = statuses.filter((value) => ['failed', 'errored'].includes(value)).length;
+  group.title.textContent = `Ações · ${statuses.length}${running ? ` · ${running} em andamento` : ''}${failed ? ` · ${failed} com falha` : ''}`;
+  group.hint.textContent = group.card.open ? 'Recolher ações' : 'Ver ações';
+  return group;
+}
+
 function renderCommandActivity(item, append, turnId) {
   const key = `${state.selectedThreadId}:${item.id}`;
   const turnGroup = registerIntermediate(turnId, `command:${item.id}`, append);
+  const actions = registerAction(turnGroup, `command:${item.id}`, item.status);
   const groupKey = turnGroup.key;
   let group = state.commandGroups.get(groupKey);
   if (!group) {
@@ -77,7 +105,7 @@ function renderCommandActivity(item, append, turnId) {
     card.addEventListener('toggle', () => { hint.textContent = card.open ? 'Recolher' : 'Ver detalhes'; });
     group = { card, title, content, items: new Map() };
     state.commandGroups.set(groupKey, group);
-    if (append) turnGroup.content.append(card);
+    if (append) actions.content.append(card);
   }
   let entry = state.activityCards.get(key);
   if (!entry) {
@@ -242,22 +270,31 @@ export function renderActivity(item, append = false, turnId = '') {
   if (item.type === 'commandExecution') return renderCommandActivity(item, append, turnId);
   const key = `${state.selectedThreadId}:${item.id}`;
   const turnGroup = registerIntermediate(turnId, `activity:${item.id || item.type}`, append);
+  const groupedAction = ['fileChange', 'webSearch', 'mcpToolCall'].includes(item.type);
+  const actions = groupedAction ? registerAction(turnGroup, `activity:${item.id || item.type}`, item.status) : null;
   let card = state.activityCards.get(key);
   if (!card) {
-    card = document.createElement('div');
-    card.className = 'activity-card';
-    const heading = document.createElement('div');
+    const collapsible = ['fileChange', 'mcpToolCall'].includes(item.type);
+    card = document.createElement(collapsible ? 'details' : 'div');
+    card.className = `activity-card${collapsible ? ' action-detail-card' : ''}`;
+    const heading = document.createElement(collapsible ? 'summary' : 'div');
     heading.className = 'activity-heading';
     const icon = document.createElement('span'); icon.className = 'icon';
-    const title = document.createElement('span');
+    const title = document.createElement('span'); title.className = 'activity-title';
     const agentRoster = document.createElement('div'); agentRoster.className = 'agent-roster hidden';
     const output = document.createElement('pre'); output.className = 'activity-output hidden';
-    heading.append(icon, title); card.append(heading, agentRoster, output);
+    heading.append(icon, title);
+    if (collapsible) {
+      const hint = document.createElement('span'); hint.className = 'action-detail-hint'; hint.textContent = 'Ver conteúdo';
+      heading.append(hint);
+      card.addEventListener('toggle', () => { hint.textContent = card.open ? 'Recolher' : 'Ver conteúdo'; });
+    }
+    card.append(heading, agentRoster, output);
     state.activityCards.set(key, card);
-    if (append) turnGroup.content.append(card);
+    if (append) (actions?.content || turnGroup.content).append(card);
   }
   const headingIcon = $('.icon', card);
-  const headingText = $('.activity-heading span:last-child', card);
+  const headingText = $('.activity-title', card);
   const output = $('.activity-output', card);
   if (item.type === 'fileChange') {
     headingIcon.innerHTML = `<svg viewBox="0 0 24 24">${icons.folder}</svg>`;
