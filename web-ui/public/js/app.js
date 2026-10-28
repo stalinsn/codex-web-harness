@@ -126,7 +126,6 @@ export function bindEvents() {
     if (event.target === $('#imagePreviewDialog')) $('#imagePreviewDialog').close();
   });
   $('#messages').addEventListener('scroll', () => {
-    closeComposerOptions();
     const area = $('#messages');
     state.followLatest = area.scrollHeight - area.clientHeight - area.scrollTop < 80;
     $('#scrollToLatest').classList.toggle('hidden', state.followLatest);
@@ -243,7 +242,16 @@ export function bindEvents() {
   });
   $('#threadSearchScope').addEventListener('change', () => renderThreads());
   $('#threadList').addEventListener('scroll', closeThreadMenus, { passive: true });
-  window.addEventListener('resize', () => { closeThreadMenus(); closeComposerOptions(); });
+  window.addEventListener('resize', () => {
+    closeThreadMenus();
+    if ($('#composerOptionsToggle').classList.contains('is-open')) requestAnimationFrame(positionComposerOptions);
+  });
+  window.visualViewport?.addEventListener('resize', () => {
+    if ($('#composerOptionsToggle').classList.contains('is-open')) requestAnimationFrame(positionComposerOptions);
+  });
+  window.visualViewport?.addEventListener('scroll', () => {
+    if ($('#composerOptionsToggle').classList.contains('is-open')) requestAnimationFrame(positionComposerOptions);
+  }, { passive: true });
   $('#threadSearch').addEventListener('input', debounce(() => refreshThreadList($('#threadSearch').value.trim()).catch((error) => toast(error.message, 'error')), 250));
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') syncLabelColors().catch(() => {});
