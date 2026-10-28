@@ -20,6 +20,8 @@ export const state = {
   cwd: localStorage.getItem('codex-cwd') || '', defaultCwd: '', projectsRoot: '', activeThreadProjectId: '', archivedView: false, loadingThreadId: null,
   historyThreadId: '', historyTurns: [], renderedHistorySnapshot: '', historyNextCursor: null, historyLoadedOlder: false, historyLoadingOlder: false,
   modelId: localStorage.getItem('codex-model') || '', effort: localStorage.getItem('codex-effort') || '',
+  accessMode: localStorage.getItem('codex-access-mode') === 'automatic' ? 'automatic' : 'manual',
+  defaultAccessMode: localStorage.getItem('codex-access-mode') === 'automatic' ? 'automatic' : 'manual', accessModeUpdating: false, accessModeUpdatingThreadId: '',
   files: [], busy: false, sending: false, interrupting: false, account: null, rateLimits: null, usage: null, contextUsage: null,
   queueItems: [], recoveredQueueItems: [], deferredQueueItems: [], rateLimitFailure: null, draftQueueGroupId: localStorage.getItem('codex-draft-queue-group') || '', turnStartedAtMs: null, turnTimer: null,
   streamedMessages: new Map(), activityCards: new Map(), commandGroups: new Map(), reasoningGroups: new Map(), turnIntermediates: new Map(), userMessageIds: new Set(), pendingApprovals: new Map(),

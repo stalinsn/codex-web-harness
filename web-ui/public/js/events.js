@@ -1,5 +1,6 @@
 // Server-sent events from the harness and Codex app-server notifications.
 import { refreshAccountsSoon } from './accounts.js';
+import { updateComposerControls } from './composer.js';
 import { rememberAgentThread, renderActivity, renderReasoningSummary, setReasoningPart, startProgressSegment, updateTurnIntermediateTitle } from './activity.js';
 import { PREFIX } from './config.js';
 import { loadThreadHistory, rememberCompletedTurn, setBusy, syncExecutionState, turnStatus } from './conversation.js';
@@ -23,6 +24,11 @@ import { onLoginOutput, onLoginState } from './wizard.js';
 
 function handleCodexNotification(message) {
   const params = message.params || {};
+  if (message.method === 'thread/settings/updated' && params.threadId === state.selectedThreadId && !state.accessModeUpdating && params.threadSettings) {
+    const settings = params.threadSettings;
+    state.accessMode = settings.approvalPolicy === 'never' && settings.sandboxPolicy?.type === 'dangerFullAccess' ? 'automatic' : 'manual';
+    updateComposerControls();
+  }
   if (message.method === 'account/rateLimits/updated') {
     const candidate = params.rateLimitsByLimitId || params.rateLimits || params;
     const values = candidate ? (Array.isArray(candidate) ? candidate : Object.values(candidate)) : [];

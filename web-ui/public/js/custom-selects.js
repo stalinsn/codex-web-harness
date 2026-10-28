@@ -109,7 +109,11 @@ function renderOptions(control) {
     option.setAttribute('aria-selected', String(index === select.selectedIndex));
     if (source.disabled) option.setAttribute('aria-disabled', 'true');
     option.dataset.index = String(index);
-    option.textContent = source.textContent.trim();
+    if (select.id === 'accessModeSelect' && source.title) {
+      const title = document.createElement('strong'); title.textContent = source.textContent.trim();
+      const description = document.createElement('small'); description.textContent = source.title;
+      option.append(title, description);
+    } else option.textContent = source.textContent.trim();
     if (index === select.selectedIndex) option.classList.add('is-selected');
     menu.append(option);
   });

@@ -1,6 +1,7 @@
 // Conversation list, history, actions, approvals, the follow-up queue and uploaded files.
 import { randomUUID } from 'node:crypto';
 import { PINNED_THREAD_SECTION_ID, config } from '../config.mjs';
+import { ACCESS_MODES } from '../codex/access-mode.mjs';
 import { isWriterLockError } from '../codex/app-server.mjs';
 import { fail, json, readBody } from '../http/respond.mjs';
 import { serveFile, serveImage } from '../uploads.mjs';
@@ -42,7 +43,17 @@ export function registerThreadRoutes(router, { codex, events, localThreads }) {
     if (cursor) params.cursor = cursor;
     const result = await codex.rpc('thread/turns/list', params);
     const read = await codex.rpc('thread/read', { threadId });
-    return json(res, 200, { thread: read.thread, turns: [...(result.data || [])].reverse(), nextCursor: result.nextCursor || null });
+    return json(res, 200, { thread: read.thread, turns: [...(result.data || [])].reverse(), nextCursor: result.nextCursor || null, accessMode: codex.accessModeForThread(threadId) });
+  });
+
+  router.post(thread('access-mode'), async ({ req, res, params: [threadId] }) => {
+    const body = await readBody(req);
+    if (!ACCESS_MODES.has(body.mode)) return fail(res, 400, 'Escolha Pedir aprovação ou Automático.');
+    try { return json(res, 200, await codex.setThreadAccessMode(threadId, body.mode)); }
+    catch (error) {
+      if (isWriterLockError(error)) return fail(res, 409, 'Esta conversa está aberta em outra sessão do Codex. Altere as permissões nessa sessão.');
+      throw error;
+    }
   });
 
   router.post(thread('archive'), async ({ res, params: [threadId] }) => {

@@ -1,5 +1,6 @@
 // Composer controls, attachments, sending and steering.
 import { api } from './api.js';
+import { syncComposerSelect } from './custom-selects.js';
 import { openThread, setBusy } from './conversation.js';
 import { queueDraftForRateLimit } from './deferred-queue.js';
 import { $, installIcons, toast } from './dom.js';
@@ -14,9 +15,29 @@ import { state, voice } from './state.js';
 import { refreshThreadList } from './thread-list.js';
 import { clearRecordedAudio, prepareVoicePreview, sendVoiceRecording, touchComposer } from './voice.js';
 
+function renderAccessModeControl(usesCodex) {
+  const control = $('#permissionModeControl');
+  const select = $('#accessModeSelect');
+  const note = $('#accessModeNote');
+  if (!control || !select || !note) return;
+  control.classList.toggle('hidden', !usesCodex);
+  note.classList.toggle('hidden', !usesCodex);
+  if (!usesCodex) return;
+  const automatic = state.accessMode === 'automatic';
+  select.value = state.accessMode;
+  select.disabled = state.accessModeUpdating;
+  control.classList.toggle('is-automatic', automatic);
+  note.classList.toggle('is-automatic', automatic);
+  note.textContent = state.accessModeUpdating ? 'Atualizando as permissões desta conversa…' : automatic
+    ? state.busy ? 'Comandos pendentes desta conversa serão liberados; acesso completo vale no próximo turno.' : 'Comandos e alterações seguem sem pedir aprovação nesta conversa.'
+    : state.busy ? 'Pedidos de aprovação voltam a aparecer; a execução atual conserva as permissões com que começou.' : 'Codex pede sua aprovação quando necessário.';
+  syncComposerSelect(select);
+}
+
 export function updateComposerControls() {
   const hasDraft = Boolean($('#messageInput')?.value.trim() || state.files.length);
   const usesCodex = (state.chatAccountId || 'codex') === 'codex' && !String(state.selectedThreadId || '').startsWith('ext-');
+  renderAccessModeControl(usesCodex);
   const limitBlock = usesCodex ? getEffectiveRateLimitBlock() : null;
   const limitBlocked = Boolean(limitBlock);
   const send = $('#sendButton');
@@ -34,7 +55,7 @@ export function updateComposerControls() {
       ? limitBlocked ? `Guardar ${transcriptReady ? 'texto' : 'áudio'} na fila até o limite liberar` : voiceLabel
       : state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem';
     send.setAttribute('aria-label', limitBlocked ? 'Guardar mensagem na fila até o limite liberar' : state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem');
-    send.disabled = state.sending || loadingModels || !['idle', 'ready'].includes(voice.phase) || (!hasDraft && !voice.blob);
+    send.disabled = state.sending || state.accessModeUpdating || loadingModels || !['idle', 'ready'].includes(voice.phase) || (!hasDraft && !voice.blob);
     $('#sendLabel').textContent = loadingModels ? 'Carregando…' : state.sending ? 'Enviando…' : (state.busy || limitBlocked) ? (voice.phase === 'ready' ? `${transcriptReady ? 'Texto' : 'Áudio'} à fila` : 'Fila') : voice.phase === 'ready' ? voiceLabel : 'Enviar';
     if (voice.phase === 'ready' && !state.sending) send.setAttribute('aria-label', send.title);
     send.classList.toggle('queue-mode', state.busy || limitBlocked);
@@ -123,6 +144,7 @@ export function attachmentPayload(files) {
 export async function submitMessage(event, { allowVoice = false } = {}) {
   event?.preventDefault();
   if (state.sending) return;
+  if (state.accessModeUpdating) { toast('Aguarde a atualização das permissões antes de enviar.', 'error'); return false; }
   if (voice.phase === 'ready' && !allowVoice) {
     if (voice.transcriptInserted && $('#messageInput').value.trim()) {
       const sent = await submitMessage(event, { allowVoice: true });
@@ -147,7 +169,7 @@ export async function submitMessage(event, { allowVoice = false } = {}) {
   try {
     const result = await api('/api/turn', {
       method: 'POST',
-      body: JSON.stringify({ threadId: currentThread, accountId, text, model: selection.model, effort: selection.effort, cwd: state.cwd, ...attachmentPayload(files) }),
+      body: JSON.stringify({ threadId: currentThread, accountId, text, model: selection.model, effort: selection.effort, cwd: state.cwd, ...(accountId === 'codex' ? { accessMode: state.accessMode } : {}), ...attachmentPayload(files) }),
     });
     // Another account continuing a Codex conversation answers in a new harness conversation.
     if (currentThread && result.threadId && result.threadId !== currentThread) {

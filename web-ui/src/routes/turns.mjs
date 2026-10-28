@@ -1,5 +1,6 @@
 // Starting turns (or queueing them while one is running) and steering the active turn.
 import { randomUUID } from 'node:crypto';
+import { ACCESS_MODES, accessParams } from '../codex/access-mode.mjs';
 import { config } from '../config.mjs';
 import { fail, json, readBody } from '../http/respond.mjs';
 import { attachThreadToProject, validateCwd } from '../projects.mjs';
@@ -80,6 +81,8 @@ export function registerTurnRoutes(router, { codex, events, providerChat }) {
     const body = await readBody(req);
     const accountId = typeof body.accountId === 'string' ? body.accountId : '';
     if (isLocalThread(body.threadId) || (accountId && accountId !== 'codex')) return sendLocalTurn(res, body, { providerChat, codex });
+    const accessMode = body.accessMode == null ? '' : String(body.accessMode);
+    if (accessMode && !ACCESS_MODES.has(accessMode)) return fail(res, 400, 'Modo de desenvolvimento inválido.');
     const text = typeof body.text === 'string' ? body.text.trim() : '';
     const selectedModel = codex.findModel(body.model || codex.defaultModelId());
     if (!selectedModel) return fail(res, 400, 'Selecione um modelo disponível para a conta autenticada.');
@@ -95,11 +98,13 @@ export function registerTurnRoutes(router, { codex, events, providerChat }) {
     if (threadId) {
       if (!THREAD_ID.test(threadId)) return fail(res, 400, 'ID de conversa inválido.');
       await codex.ensureResumed(threadId);
+      if (accessMode && codex.accessModeForThread(threadId) !== accessMode) await codex.setThreadAccessMode(threadId, accessMode);
       queueForActiveTurn = await codex.threadHasActiveTurn(threadId);
     } else {
-      const created = await codex.rpc('thread/start', { model: selectedModel.id, cwd });
+      const created = await codex.rpc('thread/start', { model: selectedModel.id, cwd, ...(accessMode ? accessParams(accessMode, { threadStart: true }) : {}) });
       threadId = created.thread.id;
       codex.resumedThreads.add(threadId);
+      codex.rememberThreadAccessMode(threadId, created);
       try { await attachThreadToProject(threadId, cwd); }
       catch { console.error('Não foi possível associar a nova conversa ao projeto.'); }
       events.emit('thread-created', { thread: created.thread });
@@ -113,7 +118,7 @@ export function registerTurnRoutes(router, { codex, events, providerChat }) {
     }
     let turn;
     try {
-      turn = await codex.rpc('turn/start', { threadId, input, model: selectedModel.id, effort, cwd, clientUserMessageId: randomUUID() });
+      turn = await codex.rpc('turn/start', { threadId, input, model: selectedModel.id, effort, cwd, clientUserMessageId: randomUUID(), ...(accessMode ? accessParams(accessMode) : {}) });
     } catch (error) {
       if (isRateLimitErrorMessage(error.message)) {
         await cleanup();

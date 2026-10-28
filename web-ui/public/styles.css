@@ -1763,3 +1763,41 @@ input[type="radio"]:disabled { opacity: .5; cursor: not-allowed; }
 .composer-settings .account-wrap[class*="provider-"] .select-label { color: var(--provider-color); }
 .account-row[class*="provider-"] .account-position { color: var(--provider-avatar-bg); background: var(--provider-color); }
 .task-segments li[class*="provider-"] strong { color: var(--provider-color); }
+
+/* Chat actions keep their labels readable as the composer narrows. */
+.composer-topline { flex-wrap: wrap; }
+.composer-topline > span { flex: 1 1 180px; overflow: visible; }
+.composer-actions { flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
+.composer-actions button, .composer-tool, .send-button { white-space: nowrap; }
+.composer-toolbar { flex-wrap: wrap; }
+.composer-tools { min-width: 0; flex: 1 1 auto; flex-wrap: wrap; }
+.send-button { min-width: max-content; margin-left: auto; }
+.composer-settings { flex-wrap: wrap; }
+.composer-settings .cwd-control { min-width: 115px; max-width: none; flex: 1.1 1 165px; }
+.composer-settings .account-wrap, .composer-settings .account-wrap.external { flex: 1 1 130px; }
+.composer-settings .model-wrap { flex: 1.35 1 145px; }
+.composer-settings .effort-wrap { flex: .7 1 100px; }
+.composer-settings .permission-wrap { flex: 1 1 135px; }
+#composerForm .composer-settings .permission-wrap.is-automatic { border-color: #86663c; background: linear-gradient(180deg, #302920, #24211e); }
+.permission-wrap.is-automatic .select-label { color: #e4bc81; }
+.access-mode-note { margin: 7px 3px 0; color: #aeb4c2; font-size: 11px; line-height: 1.4; }
+.access-mode-note.is-automatic { color: #e4c191; }
+#accessModeSelect-menu .composer-select-option { display: grid; gap: 2px; min-height: 58px; align-content: center; white-space: normal; }
+#accessModeSelect-menu .composer-select-option strong { font-size: 12px; font-weight: 600; }
+#accessModeSelect-menu .composer-select-option small { color: #aeb2c2; font-size: 10px; line-height: 1.35; }
+.approval-actions button { flex: 0 1 auto; min-height: 36px; padding: 7px 11px; font-size: 11px; line-height: 1.3; white-space: normal; }
+.queued-actions { display: flex; flex-wrap: wrap; }
+.queued-actions .queue-action { flex: 0 1 auto; min-height: 36px; padding: 7px 10px; font-size: 11px; white-space: normal; }
+
+@media (max-width: 680px) {
+  .composer-topline > span { flex-basis: 100%; }
+  .composer-actions { width: 100%; }
+  .composer-settings .cwd-control { min-width: 0; max-width: none; flex: 1 1 100%; min-height: 40px; }
+  .composer-settings .account-wrap, .composer-settings .account-wrap.external,
+  .composer-settings .model-wrap { flex: 1 1 135px; }
+  .composer-settings .effort-wrap { flex: 1 1 105px; }
+  .composer-settings .permission-wrap { flex: 1.1 1 145px; }
+  .queued-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr)); }
+  .queued-actions .queue-action { min-height: 44px; }
+  .approval-actions button { min-height: 44px; }
+}

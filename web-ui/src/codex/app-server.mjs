@@ -3,6 +3,7 @@
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import readline from 'node:readline';
+import { accessModeFromSettings, accessParams } from './access-mode.mjs';
 
 const RESTART_DELAY_MS = 1800;
 const ACCOUNT_REFRESH_MS = 60_000;
@@ -26,6 +27,7 @@ export class CodexAppServer {
     this.pendingRequests = new Map();
     this.activeTurns = new Map();
     this.resumedThreads = new Set();
+    this.threadAccessModes = new Map();
     this.threadContextUsage = new Map();
     this.models = [];
     this.account = null;
@@ -65,6 +67,7 @@ export class CodexAppServer {
         this.child = null;
         this.ready = false;
         this.resumedThreads.clear();
+        this.threadAccessModes.clear();
       }
       for (const [id, waiting] of this.rpcPending) {
         clearTimeout(waiting.timer);
@@ -132,6 +135,33 @@ export class CodexAppServer {
     this.emit('request-resolved', { requestId: String(id) });
   }
 
+  rememberThreadAccessMode(threadId, settings) {
+    if (!threadId || !settings) return;
+    this.threadAccessModes.set(threadId, accessModeFromSettings(settings.approvalPolicy, settings.sandbox || settings.sandboxPolicy));
+  }
+
+  accessModeForThread(threadId) {
+    return this.threadAccessModes.get(threadId) || 'manual';
+  }
+
+  async setThreadAccessMode(threadId, mode) {
+    await this.ensureResumed(threadId, { allowForeignWriter: false });
+    await this.rpc('thread/settings/update', { threadId, ...accessParams(mode) });
+    this.threadAccessModes.set(threadId, mode);
+    if (mode === 'automatic') {
+      for (const request of [...this.pendingRequests.values()]) {
+        if (request.params?.threadId === threadId && this.#autoApproves(request.method)) {
+          this.respondToServerRequest(request.id, { decision: 'accept' });
+        }
+      }
+    }
+    return { mode, active: this.activeTurns.has(threadId) };
+  }
+
+  #autoApproves(method) {
+    return method === 'item/commandExecution/requestApproval' || method === 'item/fileChange/requestApproval';
+  }
+
   async refreshAccountData(force = false) {
     if (!this.ready) throw new Error('O Codex ainda está iniciando.');
     if (!force && Date.now() - this.lastRefresh < ACCOUNT_REFRESH_MS) return;
@@ -160,10 +190,11 @@ export class CodexAppServer {
    * writer lock; with `allowForeignWriter` that case is tolerated (read-only use).
    */
   async ensureResumed(threadId, { excludeTurns = true, allowForeignWriter = true } = {}) {
-    if (this.resumedThreads.has(threadId)) return true;
+    if (this.resumedThreads.has(threadId) && this.threadAccessModes.has(threadId)) return true;
     try {
-      await this.rpc('thread/resume', excludeTurns ? { threadId, excludeTurns: true } : { threadId });
+      const resumed = await this.rpc('thread/resume', excludeTurns ? { threadId, excludeTurns: true } : { threadId });
       this.resumedThreads.add(threadId);
+      this.rememberThreadAccessMode(threadId, resumed);
       return true;
     } catch (error) {
       if (allowForeignWriter && WRITER_LOCK.test(error.message)) return false;
@@ -218,6 +249,10 @@ export class CodexAppServer {
 
     if (message && Object.hasOwn(message, 'id') && message.method) {
       const request = { id: message.id, method: message.method, params: message.params || {} };
+      if (this.threadAccessModes.get(request.params.threadId) === 'automatic' && this.#autoApproves(request.method)) {
+        this.respondToServerRequest(request.id, { decision: 'accept' });
+        return;
+      }
       this.pendingRequests.set(String(message.id), request);
       this.emit('server-request', request);
       return;
@@ -241,6 +276,9 @@ export class CodexAppServer {
         break;
       case 'thread/started':
         if (params.thread?.id) this.resumedThreads.add(params.thread.id);
+        break;
+      case 'thread/settings/updated':
+        this.rememberThreadAccessMode(params.threadId, params.threadSettings);
         break;
       case 'account/updated':
         this.account = message.params;

@@ -205,7 +205,9 @@
               <div class="select-wrap account-wrap"><span class="select-label">Conta</span><select id="accountSelect" aria-label="Conta para a próxima mensagem"><option value="codex">Codex</option></select></div>
               <div class="select-wrap model-wrap"><span class="select-label">Modelo</span><select id="modelSelect" aria-label="Modelo para a próxima mensagem"><option>Carregando…</option></select></div>
               <div class="select-wrap effort-wrap"><span class="select-label">Esforço</span><select id="effortSelect" aria-label="Esforço para a próxima mensagem"></select></div>
+              <div class="select-wrap permission-wrap" id="permissionModeControl"><span class="select-label">Permissões</span><select id="accessModeSelect" aria-label="Modo de desenvolvimento desta conversa"><option value="manual" title="Codex pede aprovação quando necessário.">Pedir aprovação</option><option value="automatic" title="Codex executa comandos e altera arquivos sem interromper para pedir aprovação.">Automático</option></select></div>
             </div>
+            <p class="access-mode-note" id="accessModeNote" role="status" aria-live="polite"></p>
             <p class="model-compatibility-note hidden" id="modelCompatibilityNote" role="status" aria-live="polite"></p>
           </form>
           <p class="composer-footnote" id="composerFootnote">Grave, transcreva e revise antes de enviar.</p>

@@ -99,6 +99,30 @@ export function bindEvents() {
     catch (error) { button.disabled = false; toast(error.message, 'error'); }
   });
   $('#composerForm').addEventListener('submit', submitMessage);
+  $('#accessModeSelect').addEventListener('change', async (event) => {
+    const mode = event.target.value;
+    if (!['manual', 'automatic'].includes(mode) || mode === state.accessMode) return;
+    const threadId = state.selectedThreadId;
+    state.accessModeUpdating = true;
+    state.accessModeUpdatingThreadId = threadId || '';
+    updateComposerControls();
+    try {
+      const result = threadId
+        ? await api(`/api/threads/${encodeURIComponent(threadId)}/access-mode`, { method: 'POST', body: JSON.stringify({ mode }) })
+        : { mode, active: false };
+      state.defaultAccessMode = result.mode;
+      localStorage.setItem('codex-access-mode', result.mode);
+      if (state.selectedThreadId === threadId || !state.selectedThreadId) state.accessMode = result.mode;
+      toast(result.active
+        ? result.mode === 'automatic' ? 'Automático ativado. Aprovações de comandos pendentes serão liberadas; acesso completo no próximo turno.' : 'Aprovações manuais ativadas para os próximos pedidos. O turno atual conserva suas permissões.'
+        : result.mode === 'automatic' ? 'Desenvolvimento automático ativado para esta conversa.' : 'Aprovações manuais ativadas para esta conversa.');
+    } catch (error) { toast(error.message || 'Não consegui alterar o modo de desenvolvimento.', 'error'); }
+    finally {
+      state.accessModeUpdating = false;
+      state.accessModeUpdatingThreadId = '';
+      updateComposerControls();
+    }
+  });
   $('#voiceInput').addEventListener('click', startVoiceRecording);
   $('#discardAudio').addEventListener('click', clearRecordedAudio);
   $('#transcribeAudio').addEventListener('click', () => transcribeRecordedAudio());
