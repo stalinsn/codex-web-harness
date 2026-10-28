@@ -1846,7 +1846,7 @@ input[type="radio"]:disabled { opacity: .5; cursor: not-allowed; }
 .composer-options-trigger.is-automatic > .icon { color: #e7c28f; }
 .composer-options-panel {
   position: fixed;
-  z-index: 35;
+  z-index: 1000;
   inset: auto;
   left: 12px;
   bottom: 90px;
@@ -1863,8 +1863,9 @@ input[type="radio"]:disabled { opacity: .5; cursor: not-allowed; }
   box-shadow: 0 18px 44px #0009;
   overscroll-behavior: contain;
 }
-.composer-options-panel[popover]:popover-open { display: block; }
+.composer-options-panel[open] { display: block; }
 .composer-options-panel.is-fallback-open { display: block; }
+.composer-options-panel::backdrop { background: transparent; }
 .composer-settings {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

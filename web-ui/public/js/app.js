@@ -26,7 +26,7 @@ function closeComposerOptions() {
   const panel = $('#composerOptionsPanel');
   const toggle = $('#composerOptionsToggle');
   if (!panel || !toggle) return;
-  try { if (toggle.classList.contains('is-open')) panel.hidePopover(); } catch {}
+  try { if (panel.open) panel.close(); } catch {}
   panel.classList.remove('is-fallback-open');
   toggle.classList.remove('is-open');
   toggle.setAttribute('aria-expanded', 'false');
@@ -37,14 +37,24 @@ function positionComposerOptions() {
   const toggle = $('#composerOptionsToggle');
   if (!panel || !toggle) return;
   const anchor = toggle.getBoundingClientRect();
-  const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
-  const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
-  panel.style.maxHeight = `${Math.max(150, Math.min(520, viewportHeight * .66, anchor.top - 24))}px`;
-  const width = panel.getBoundingClientRect().width || Math.min(470, viewportWidth - 24);
-  const left = Math.max(12, Math.min(anchor.right - width, viewportWidth - width - 12));
+  const visible = window.visualViewport;
+  const viewportLeft = visible?.offsetLeft || 0;
+  const viewportTop = visible?.offsetTop || 0;
+  const viewportWidth = visible?.width || document.documentElement.clientWidth || window.innerWidth;
+  const viewportHeight = visible?.height || document.documentElement.clientHeight || window.innerHeight;
+  const width = Math.min(window.innerWidth <= 680 ? 460 : 470, viewportWidth - 24);
+  panel.style.width = `${width}px`;
+  panel.style.maxHeight = `${Math.max(120, Math.min(520, viewportHeight * .66, viewportHeight - 24))}px`;
+  const left = Math.max(viewportLeft + 12, Math.min(anchor.right - width, viewportLeft + viewportWidth - width - 12));
   const height = panel.getBoundingClientRect().height;
+  const minTop = viewportTop + 12;
+  const maxTop = Math.max(minTop, viewportTop + viewportHeight - height - 12);
+  const above = anchor.top - height - 8;
+  const below = anchor.bottom + 8;
+  const preferredTop = above >= minTop ? above : below;
+  const top = Math.max(minTop, Math.min(preferredTop, maxTop));
   panel.style.left = `${left}px`;
-  panel.style.top = `${Math.max(12, Math.min(anchor.top - height - 8, viewportHeight - height - 12))}px`;
+  panel.style.top = `${top}px`;
   panel.style.bottom = 'auto';
 }
 
@@ -55,7 +65,7 @@ function openComposerOptions() {
   toggle.classList.add('is-open');
   toggle.setAttribute('aria-expanded', 'true');
   try {
-    if (typeof panel.showPopover === 'function') panel.showPopover();
+    if (typeof panel.showModal === 'function') panel.showModal();
     else panel.classList.add('is-fallback-open');
   } catch { panel.classList.add('is-fallback-open'); }
   requestAnimationFrame(positionComposerOptions);
@@ -143,10 +153,18 @@ export function bindEvents() {
     if ($('#composerOptionsToggle').classList.contains('is-open')) closeComposerOptions();
     else openComposerOptions();
   });
+  $('#composerOptionsPanel').addEventListener('close', () => {
+    const toggle = $('#composerOptionsToggle');
+    toggle.classList.remove('is-open');
+    toggle.setAttribute('aria-expanded', 'false');
+    $('#composerOptionsPanel').classList.remove('is-fallback-open');
+  });
   document.addEventListener('pointerdown', (event) => {
     const panel = $('#composerOptionsPanel');
     const toggle = $('#composerOptionsToggle');
-    if (toggle.classList.contains('is-open') && !panel.contains(event.target) && !toggle.contains(event.target)) closeComposerOptions();
+    const rect = panel.getBoundingClientRect();
+    const hitPanel = panel.contains(event.target) && (event.target !== panel || (event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom));
+    if (toggle.classList.contains('is-open') && !hitPanel && !toggle.contains(event.target)) closeComposerOptions();
   }, true);
   $('#accessModeSelect').addEventListener('change', async (event) => {
     const mode = event.target.value;
