@@ -1819,7 +1819,7 @@ input[type="radio"]:disabled { opacity: .5; cursor: not-allowed; }
 .composer { position: relative; }
 .composer-toolbar { flex-wrap: nowrap; }
 .composer-tools { flex: 1 1 auto; flex-wrap: nowrap; gap: 5px; }
-.composer-options-trigger { flex: none; }
+.composer-options { position: static; flex: none; }
 .composer-options-trigger {
   display: flex;
   min-width: 0;
@@ -1833,10 +1833,14 @@ input[type="radio"]:disabled { opacity: .5; cursor: not-allowed; }
   border: 1px solid #393c49;
   border-radius: 999px;
   background: #1d1f25;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
   list-style: none;
+  touch-action: manipulation;
   transition: background .16s ease, border-color .16s ease, color .16s ease;
 }
+.composer-options-trigger::-webkit-details-marker { display: none; }
 .composer-options-trigger:hover, .composer-options-trigger.is-open { color: #eef0ff; border-color: #555d7c; background: #252834; }
 .composer-options-trigger:focus-visible { outline: 2px solid #7783b8; outline-offset: 2px; }
 .composer-options-trigger > .icon { width: 15px; height: 15px; flex: none; color: #aeb8ee; }
@@ -1863,9 +1867,7 @@ input[type="radio"]:disabled { opacity: .5; cursor: not-allowed; }
   box-shadow: 0 18px 44px #0009;
   overscroll-behavior: contain;
 }
-.composer-options-panel[open] { display: block; }
-.composer-options-panel.is-fallback-open { display: block; }
-.composer-options-panel::backdrop { background: transparent; }
+.composer-options[open] > .composer-options-panel { display: block; }
 .composer-settings {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1890,6 +1892,7 @@ input[type="radio"]:disabled { opacity: .5; cursor: not-allowed; }
 .send-button.stop-mode { color: #fff0f0; background: #a94e57; }
 
 @media (max-width: 680px) {
+  .composer-options-panel { right: 12px; bottom: 12px; left: 12px; width: auto; max-height: min(62dvh, 470px); }
   .composer { padding: 9px 10px 8px; border-color: #333641; background: #1c1d22; box-shadow: none; }
   .composer:focus-within { border-color: #565d7b; box-shadow: none; }
   .composer textarea { min-height: 48px; max-height: 20dvh; padding: 7px 2px 10px; }

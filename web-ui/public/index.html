@@ -195,8 +195,9 @@
               <div class="composer-tools">
                 <button type="button" class="composer-tool" id="attachImage" title="Anexar arquivos" aria-label="Anexar arquivos"><span class="icon" data-icon="paperclip"></span><span>Anexar</span></button>
                 <button type="button" class="composer-tool voice-input" id="voiceInput" title="Gravar áudio" aria-label="Gravar áudio"><span class="icon" data-icon="microphone"></span><span id="voiceButtonLabel">Gravar</span></button>
-                <button type="button" class="composer-options-trigger" id="composerOptionsToggle" aria-haspopup="dialog" aria-expanded="false" aria-controls="composerOptionsPanel" aria-label="Abrir configurações da mensagem"><span class="icon" data-icon="sliders"></span><span class="composer-options-label">Ajustes</span><span class="composer-options-value" id="composerOptionsSummary"></span></button>
-                <dialog class="composer-options-panel" id="composerOptionsPanel" aria-label="Configurações da mensagem">
+                <details class="composer-options" id="composerOptions">
+                  <summary class="composer-options-trigger" id="composerOptionsToggle" aria-expanded="false" aria-controls="composerOptionsPanel" aria-label="Abrir configurações da mensagem"><span class="icon" data-icon="sliders"></span><span class="composer-options-label">Ajustes</span><span class="composer-options-value" id="composerOptionsSummary"></span></summary>
+                  <div class="composer-options-panel" id="composerOptionsPanel" role="region" aria-label="Configurações da mensagem">
                     <div class="composer-settings">
                       <button type="button" class="cwd-control" id="cwdControl" title="Pasta de trabalho"><span class="icon" data-icon="folder"></span><span id="cwdLabel">/home/codex</span><span class="icon" data-icon="chevron"></span></button>
                       <div class="select-wrap account-wrap"><span class="select-label">Conta</span><select id="accountSelect" aria-label="Conta para a próxima mensagem"><option value="codex">Codex</option></select></div>
@@ -206,7 +207,8 @@
                     </div>
                     <p class="access-mode-note" id="accessModeNote" role="status" aria-live="polite"></p>
                     <p class="model-compatibility-note hidden" id="modelCompatibilityNote" role="status" aria-live="polite"></p>
-                </dialog>
+                  </div>
+                </details>
                 <input type="file" id="imageInput" multiple hidden />
                 <input type="file" id="audioInput" accept="audio/*,.m4a,.mp3,.wav,.webm,.ogg" hidden />
               </div>

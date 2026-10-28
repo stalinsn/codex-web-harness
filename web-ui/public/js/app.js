@@ -23,25 +23,38 @@ import { clearRecordedAudio, prepareVoicePreview, renderVoice, startVoiceRecordi
 import { bindWizardEvents } from './wizard.js';
 
 function closeComposerOptions() {
-  const panel = $('#composerOptionsPanel');
+  const options = $('#composerOptions');
   const toggle = $('#composerOptionsToggle');
-  if (!panel || !toggle) return;
-  try { if (panel.open) panel.close(); } catch {}
-  panel.classList.remove('is-fallback-open');
+  if (!options || !toggle) return;
+  options.open = false;
   toggle.classList.remove('is-open');
   toggle.setAttribute('aria-expanded', 'false');
 }
 
 function positionComposerOptions() {
+  const options = $('#composerOptions');
   const panel = $('#composerOptionsPanel');
   const toggle = $('#composerOptionsToggle');
-  if (!panel || !toggle) return;
+  if (!options?.open || !panel || !toggle) return;
   const anchor = toggle.getBoundingClientRect();
   const visible = window.visualViewport;
   const viewportLeft = visible?.offsetLeft || 0;
   const viewportTop = visible?.offsetTop || 0;
   const viewportWidth = visible?.width || document.documentElement.clientWidth || window.innerWidth;
   const viewportHeight = visible?.height || document.documentElement.clientHeight || window.innerHeight;
+  if (window.innerWidth <= 680) {
+    const layoutBottom = window.innerHeight;
+    const visibleBottom = viewportTop + viewportHeight;
+    const keyboardInset = Math.max(0, layoutBottom - visibleBottom);
+    const width = Math.max(1, Math.min(460, viewportWidth - 24));
+    panel.style.width = `${width}px`;
+    panel.style.left = `${Math.max(viewportLeft + 12, viewportLeft + (viewportWidth - width) / 2)}px`;
+    panel.style.right = 'auto';
+    panel.style.top = 'auto';
+    panel.style.bottom = `${keyboardInset + 12}px`;
+    panel.style.maxHeight = `${Math.max(120, Math.min(470, viewportHeight - 24))}px`;
+    return;
+  }
   const width = Math.min(window.innerWidth <= 680 ? 460 : 470, viewportWidth - 24);
   panel.style.width = `${width}px`;
   panel.style.maxHeight = `${Math.max(120, Math.min(520, viewportHeight * .66, viewportHeight - 24))}px`;
@@ -54,21 +67,9 @@ function positionComposerOptions() {
   const preferredTop = above >= minTop ? above : below;
   const top = Math.max(minTop, Math.min(preferredTop, maxTop));
   panel.style.left = `${left}px`;
+  panel.style.right = 'auto';
   panel.style.top = `${top}px`;
   panel.style.bottom = 'auto';
-}
-
-function openComposerOptions() {
-  const panel = $('#composerOptionsPanel');
-  const toggle = $('#composerOptionsToggle');
-  if (!panel || !toggle) return;
-  toggle.classList.add('is-open');
-  toggle.setAttribute('aria-expanded', 'true');
-  try {
-    if (typeof panel.showModal === 'function') panel.showModal();
-    else panel.classList.add('is-fallback-open');
-  } catch { panel.classList.add('is-fallback-open'); }
-  requestAnimationFrame(positionComposerOptions);
 }
 
 export async function bootstrap() {
@@ -148,23 +149,16 @@ export function bindEvents() {
     catch (error) { button.disabled = false; toast(error.message, 'error'); }
   });
   $('#composerForm').addEventListener('submit', (event) => { closeComposerOptions(); submitMessage(event); });
-  $('#composerOptionsToggle').addEventListener('click', () => {
-    const panel = $('#composerOptionsPanel');
-    if ($('#composerOptionsToggle').classList.contains('is-open')) closeComposerOptions();
-    else openComposerOptions();
-  });
-  $('#composerOptionsPanel').addEventListener('close', () => {
+  $('#composerOptions').addEventListener('toggle', () => {
+    const options = $('#composerOptions');
     const toggle = $('#composerOptionsToggle');
-    toggle.classList.remove('is-open');
-    toggle.setAttribute('aria-expanded', 'false');
-    $('#composerOptionsPanel').classList.remove('is-fallback-open');
+    toggle.classList.toggle('is-open', options.open);
+    toggle.setAttribute('aria-expanded', String(options.open));
+    if (options.open) requestAnimationFrame(positionComposerOptions);
   });
   document.addEventListener('pointerdown', (event) => {
-    const panel = $('#composerOptionsPanel');
-    const toggle = $('#composerOptionsToggle');
-    const rect = panel.getBoundingClientRect();
-    const hitPanel = panel.contains(event.target) && (event.target !== panel || (event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom));
-    if (toggle.classList.contains('is-open') && !hitPanel && !toggle.contains(event.target)) closeComposerOptions();
+    const options = $('#composerOptions');
+    if (options.open && !options.contains(event.target)) closeComposerOptions();
   }, true);
   $('#accessModeSelect').addEventListener('change', async (event) => {
     const mode = event.target.value;
@@ -262,13 +256,13 @@ export function bindEvents() {
   $('#threadList').addEventListener('scroll', closeThreadMenus, { passive: true });
   window.addEventListener('resize', () => {
     closeThreadMenus();
-    if ($('#composerOptionsToggle').classList.contains('is-open')) requestAnimationFrame(positionComposerOptions);
+    if ($('#composerOptions').open) requestAnimationFrame(positionComposerOptions);
   });
   window.visualViewport?.addEventListener('resize', () => {
-    if ($('#composerOptionsToggle').classList.contains('is-open')) requestAnimationFrame(positionComposerOptions);
+    if ($('#composerOptions').open) requestAnimationFrame(positionComposerOptions);
   });
   window.visualViewport?.addEventListener('scroll', () => {
-    if ($('#composerOptionsToggle').classList.contains('is-open')) requestAnimationFrame(positionComposerOptions);
+    if ($('#composerOptions').open) requestAnimationFrame(positionComposerOptions);
   }, { passive: true });
   $('#threadSearch').addEventListener('input', debounce(() => refreshThreadList($('#threadSearch').value.trim()).catch((error) => toast(error.message, 'error')), 250));
   document.addEventListener('visibilitychange', () => {
