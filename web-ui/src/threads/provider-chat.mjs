@@ -169,6 +169,39 @@ export class ProviderChat {
     return { threadId, turnId };
   }
 
+  async steer(threadId, input) {
+    const running = this.running.get(threadId);
+    if (!running) throw httpError('A execução terminou; a mensagem continua disponível na fila.', 409);
+    const record = await this.store.get(threadId);
+    if (!record) throw httpError('Conversa não encontrada.', 404);
+    const account = this.accountFor(record, running.accountId);
+    if (account.provider !== 'codex') throw httpError(`${account.label} não aceita orientação durante a resposta; a mensagem continua na fila.`, 409);
+    const sessionId = running.sessionId || record.sessions?.[account.id] || '';
+    const server = this.accounts.codexServerFor(account);
+    const turnId = running.turnId || server.activeTurns.get(sessionId) || '';
+    if (!sessionId || !turnId) throw httpError('A execução do Codex ainda não está pronta para receber orientação; a mensagem continua na fila.', 409);
+    await server.rpc('turn/steer', {
+      threadId: sessionId,
+      expectedTurnId: turnId,
+      clientUserMessageId: randomUUID(),
+      input,
+    });
+    return { threadId, turnId, steered: true };
+  }
+
+  async steerQueued(threadId, queuedId) {
+    const record = await this.store.get(threadId);
+    const queued = record?.queue.find((item) => item.id === queuedId);
+    if (!queued) throw httpError('A mensagem não está mais na fila.', 404);
+    const input = (queued.input || []).filter((part) => part && ['text', 'localImage'].includes(part.type));
+    if (!input.length) throw httpError('Não consegui ler o conteúdo da mensagem na fila.', 400);
+    const result = await this.steer(threadId, input);
+    await this.store.update(threadId, (stored) => { stored.queue = stored.queue.filter((item) => item.id !== queuedId); });
+    await this.store.flush(threadId);
+    this.emit('thread-queue-changed', { threadId });
+    return result;
+  }
+
   async setAccessMode(threadId, mode) {
     if (!ACCESS_MODES.has(mode)) throw httpError('Escolha Pedir aprovação ou Automático.', 400);
     const record = await this.store.get(threadId);
@@ -231,17 +264,18 @@ export class ProviderChat {
     // Claim the thread before any await: one turn per conversation at a time.
     if (this.running.has(threadId)) throw httpError('Esta conversa já está respondendo.', 409);
     const controller = new AbortController();
-    this.running.set(threadId, { controller, accountId: account.id });
+    const execution = { controller, accountId: account.id, sessionId: record.sessions?.[account.id] || '', turnId: '' };
+    this.running.set(threadId, execution);
     const recorder = new TurnRecorder({ store: this.store, threadId, emit: this.emit });
     let turnId;
     try { turnId = await recorder.start({ text: label || text, content: label ? null : content, account }); }
     catch (error) { this.running.delete(threadId); throw error; }
     this.emit('turn-accepted', { threadId, turnId, model: this.#modelLabel(account), cwd: record.thread.cwd });
-    this.#run(record, account, recorder, { text, handoff, controller, accessMode }).catch((error) => console.error('Falha numa conversa do harness:', error.message));
+    this.#run(record, account, recorder, { text, handoff, controller, accessMode, execution }).catch((error) => console.error('Falha numa conversa do harness:', error.message));
     return turnId;
   }
 
-  async #run(record, account, recorder, { text, handoff, controller, accessMode }) {
+  async #run(record, account, recorder, { text, handoff, controller, accessMode, execution }) {
     const threadId = record.thread.id;
     let outcome;
     let eventRecording = Promise.resolve();
@@ -251,7 +285,13 @@ export class ProviderChat {
         taskId: `chat:${threadId}`, prompt, cwd: record.thread.cwd, sessionId, title: record.thread.name || record.thread.preview || 'Conversa', signal: controller.signal, accessMode,
         // Codex accounts are mirrored item by item (onCodexMessage); CLIs go through the parser events.
         onEvent: (event) => {
+          if (event.type === 'turn-started') {
+            execution.sessionId = event.sessionId || execution.sessionId;
+            execution.turnId = event.turnId || execution.turnId;
+            return;
+          }
           if (event.type === 'session' && account.primary && event.sessionId) {
+            execution.sessionId = event.sessionId;
             eventRecording = eventRecording.then(async () => {
               const updated = await this.store.update(threadId, (stored) => {
                 const previousSessionId = stored.sessions[account.id] || '';

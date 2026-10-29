@@ -86,6 +86,14 @@ export async function runCodexSegment({ server, prompt, cwd, model, effort, thre
       }
       const eventThread = params.threadId || params.turn?.threadId;
       if (eventThread !== threadId) return;
+      if (message.method === 'turn/started') {
+        turnId = params.turn?.id || turnId;
+        if (turnId) {
+          server.activeTurns.set(threadId, turnId);
+          onEvent({ type: 'turn-started', sessionId: threadId, turnId });
+        }
+        return;
+      }
       if (onRaw && message.method !== 'turn/completed' && message.method !== 'turn/started') onRaw(message);
       if (message.method === 'item/agentMessage/delta') {
         const id = params.itemId || 'message';
@@ -117,6 +125,7 @@ export async function runCodexSegment({ server, prompt, cwd, model, effort, thre
       .then((result) => {
         turnId = result.turn?.id || '';
         if (turnId) server.activeTurns.set(threadId, turnId);
+        if (turnId) onEvent({ type: 'turn-started', sessionId: threadId, turnId });
         if (signal?.aborted) { abort(); return; }
         const { percent } = codexUsage(server.rateLimits);
         if (handoff.enabled && percent != null && percent >= handoff.atPercent) steerHandoff(percent);

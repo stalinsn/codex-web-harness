@@ -7,6 +7,8 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PINNED_THREAD_SECTION_ID, config } from '../config.mjs';
 import { findProjectForCwd, getProjects, saveProjects } from '../projects.mjs';
+import { buildTurnInput } from './turns.mjs';
+import { validateAttachments } from '../uploads.mjs';
 
 const LOCAL = '(ext-[a-f0-9-]{36})';
 const route = (suffix) => new RegExp(`^/api/threads/${LOCAL}/${suffix}$`);
@@ -82,10 +84,18 @@ export function registerLocalThreadRoutes(router, { localThreads: store, provide
   });
   router.post(route('interrupt'), async ({ res, params: [id] }) => json(res, 200, { ok: true, interrupted: await chat.interrupt(id) }));
   router.post(route('approval'), ({ res }) => fail(res, 404, 'A solicitação de aprovação não está mais pendente.'));
-  router.post(route('steer'), ({ res }) => fail(res, 409, 'Esta conta não aceita orientação durante a resposta. Envie a mensagem para a fila.'));
+  router.post(route('steer'), async ({ req, res, params: [id] }) => {
+    const body = await readBody(req);
+    const text = typeof body.text === 'string' ? body.text.trim() : '';
+    validateAttachments(body);
+    if (!text && !body.images?.length && !body.files?.length) return fail(res, 400, 'Escreva uma orientação ou anexe um arquivo.');
+    const { input, cleanup } = await buildTurnInput(id, text, body);
+    try { return json(res, 202, await chat.steer(id, input)); }
+    catch (error) { await cleanup(); throw error; }
+  });
 
   router.get(route('queue'), async ({ res, params: [id] }) => json(res, 200, { items: await chat.queue(id) }));
-  router.post(route('queue/([a-zA-Z0-9_-]{1,100})'), ({ res }) => fail(res, 409, 'Esta conta não aceita orientação durante a resposta; a mensagem continua na fila.'));
+  router.post(route('queue/([a-zA-Z0-9_-]{1,100})'), async ({ res, params: [id, queuedId] }) => json(res, 200, await chat.steerQueued(id, queuedId)));
   router.delete(route('queue/([a-zA-Z0-9_-]{1,100})'), async ({ res, params: [id, queuedId] }) => {
     await chat.dequeue(id, queuedId);
     return json(res, 200, { ok: true });

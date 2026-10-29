@@ -13,7 +13,7 @@ const RATE_LIMIT_MESSAGE = /rate[ -]?limit|usage limit|quota|too many requests|r
 
 export const isRateLimitErrorMessage = (message) => RATE_LIMIT_MESSAGE.test(String(message || ''));
 
-async function buildInput(threadId, text, body) {
+export async function buildTurnInput(threadId, text, body) {
   const input = [];
   if (text) input.push({ type: 'text', text });
   const imageParts = await saveImages(config.uploadDir, threadId, body.images || []);
@@ -72,7 +72,7 @@ export function registerTurnRoutes(router, { codex, events, providerChat }) {
     if (!text && !body.images?.length && !body.files?.length) return fail(res, 400, 'Escreva uma orientação ou anexe um arquivo.');
     const expectedTurnId = await codex.activeTurnIdFor(threadId);
     if (!expectedTurnId) return fail(res, 409, 'Não encontrei uma execução ativa para orientar. A mensagem continua no campo para você reenviar.');
-    const { input, cleanup } = await buildInput(threadId, text, body);
+    const { input, cleanup } = await buildTurnInput(threadId, text, body);
     let result;
     try {
       result = await codex.rpc('turn/steer', { threadId, expectedTurnId, clientUserMessageId: randomUUID(), input });
@@ -116,7 +116,7 @@ export function registerTurnRoutes(router, { codex, events, providerChat }) {
       events.emit('thread-created', { thread: created.thread });
     }
 
-    const { input, cleanup } = await buildInput(threadId, text, body);
+    const { input, cleanup } = await buildTurnInput(threadId, text, body);
     if (queueForActiveTurn) {
       const queued = await codex.rpc('thread/queue/add', { threadId, clientUserMessageId: randomUUID(), input });
       events.emit('thread-queue-changed', { threadId });
