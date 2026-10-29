@@ -7,6 +7,7 @@ import { updateThreadHeader } from './inspector.js';
 import { openThreadColorMenu, projectColor, projectForThread, renderProjects, threadBelongsToProject, threadColor, threadDisplayTitle } from './projects.js';
 import { providerClass } from './responders.js';
 import { state } from './state.js';
+import { canonicalThreadId } from './thread-identity.js';
 
 export function closeThreadMenus() {
   $$('.thread-actions-popover').forEach((menu) => {
@@ -223,7 +224,6 @@ export async function refreshThreadList(query = $('#threadSearch')?.value.trim()
   const data = await api(`/api/threads${params.size ? `?${params}` : ''}`);
   if (requestId !== state.threadListRequest) return;
   renderThreads(data.threads || [], query);
-  const owner = state.threads.find((thread) => thread.id.startsWith('ext-')
-    && (thread.internalCodexThreadIds || []).includes(state.selectedThreadId));
-  if (owner && owner.id !== state.selectedThreadId) openThread(owner.id);
+  const ownerId = canonicalThreadId(state.selectedThreadId, state.threads);
+  if (ownerId && ownerId !== state.selectedThreadId) await openThread(ownerId);
 }

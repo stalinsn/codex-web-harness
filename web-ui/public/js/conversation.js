@@ -13,6 +13,7 @@ import { refreshQueue, renderQueue } from './queue.js';
 import { responderFor, setProviderClass } from './responders.js';
 import { runtime, state } from './state.js';
 import { renderThreads } from './thread-list.js';
+import { canonicalThreadId } from './thread-identity.js';
 
 function updateRunningClock() {
   if (!state.busy) return;
@@ -200,8 +201,7 @@ function showThreadLoadError(threadId, error) {
 }
 
 export async function openThread(threadId) {
-  const ownerThread = state.threads.find((thread) => thread.id.startsWith('ext-') && (thread.internalCodexThreadIds || []).includes(threadId));
-  if (ownerThread) threadId = ownerThread.id;
+  threadId = canonicalThreadId(threadId, state.threads);
   if (!threadId || state.loadingThreadId === threadId) return;
   if (state.historyThreadId && state.historyThreadId !== threadId) {
     state.historyThreadId = '';
