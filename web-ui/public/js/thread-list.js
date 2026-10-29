@@ -20,6 +20,7 @@ export function createThreadRow(thread, { nested = false, showUnassigned = false
   const color = project ? '' : threadColor(thread);
   const row = document.createElement('div');
   row.className = `thread-row${pinned ? ' pinned' : ''}${nested ? ' project-thread-row' : ''}${color ? ' has-thread-color' : ''}`;
+  row.dataset.threadId = thread.id;
   if (color) row.style.setProperty('--thread-color', color);
   const button = document.createElement('button');
   const isRunning = thread.id === state.selectedThreadId ? state.busy : state.activeThreadIds.has(thread.id) || thread.status?.type === 'active';
@@ -222,4 +223,7 @@ export async function refreshThreadList(query = $('#threadSearch')?.value.trim()
   const data = await api(`/api/threads${params.size ? `?${params}` : ''}`);
   if (requestId !== state.threadListRequest) return;
   renderThreads(data.threads || [], query);
+  const owner = state.threads.find((thread) => thread.id.startsWith('ext-')
+    && (thread.internalCodexThreadIds || []).includes(state.selectedThreadId));
+  if (owner && owner.id !== state.selectedThreadId) openThread(owner.id);
 }

@@ -72,7 +72,9 @@ kbd { margin-left: auto; padding: 2px 5px; color: #898a94; font-size: 10px; bord
 .archive-toggle:hover { color: var(--text); }
 .text-icon-button { width: 24px; height: 24px; border-radius: 6px; }
 .text-icon-button .icon { width: 13px; height: 13px; }
-.thread-list { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: #393a40 transparent; }
+.sidebar-top, .new-chat-button, .search-box, .sidebar-search-tools { flex: none; }
+.sidebar-navigation { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #393a40 transparent; }
+.thread-list { flex: none; min-height: 0; overflow: visible; }
 .thread-row { position: relative; display: flex; align-items: center; gap: 2px; min-width: 0; }
 .thread-item { display: flex; flex: 1; align-items: center; width: 100%; min-width: 0; min-height: 36px; gap: 9px; padding: 7px 8px; color: #c2c2c9; font-size: 12px; line-height: 1.4; text-align: left; border: 0; border-radius: 7px; background: transparent; cursor: pointer; }
 .thread-item:hover { color: var(--text); background: #212226; }
@@ -99,9 +101,8 @@ kbd { margin-left: auto; padding: 2px 5px; color: #898a94; font-size: 10px; bord
 .thread-action.danger { color: #ffaaa8; }
 .thread-action.danger:hover:not(:disabled) { background: #482b2d; }
 .thread-empty { padding: 16px 9px; color: var(--muted-soft); font-size: 12px; line-height: 1.6; }
-.sidebar-projects { display: flex; flex: none; flex-direction: column; gap: 3px; max-height: 30vh; margin: 0 0 12px; }
 .project-heading { margin-bottom: 2px; }
-.project-list { display: flex; min-height: 0; max-height: 30vh; flex: none; flex-direction: column; gap: 2px; margin-bottom: 12px; overflow: auto; scrollbar-width: thin; scrollbar-color: #393a40 transparent; }
+.project-list { display: flex; min-height: 0; flex: none; flex-direction: column; gap: 2px; margin-bottom: 12px; }
 .project-item { display: flex; min-height: 34px; align-items: center; gap: 8px; padding: 6px 9px; color: #bfc0c8; font-size: 11px; text-align: left; border: 0; border-radius: 7px; background: transparent; cursor: pointer; }
 .project-item:hover { color: var(--text); background: #212226; }
 .project-item.active { color: #f1f1f4; background: #292a2f; }
@@ -116,7 +117,7 @@ kbd { margin-left: auto; padding: 2px 5px; color: #898a94; font-size: 10px; bord
 .project-create-folder { display: flex; align-items: flex-start; gap: 8px; margin-top: 13px; color: #b5b6c0; font-size: 11px; line-height: 1.5; cursor: pointer; }
 .project-create-folder input { width: 15px; height: 15px; flex: none; margin: 1px 0 0; accent-color: #8f9cff; }
 .project-create-folder code { color: #c5ccff; font-family: 'IBM Plex Mono', monospace; font-size: 10px; }
-.sidebar-bottom { flex-direction: column; align-items: stretch; gap: 4px; padding-top: 10px; border-top: 1px solid #292a2e; }
+.sidebar-bottom { flex: none; flex-direction: column; align-items: stretch; gap: 4px; padding-top: 10px; border-top: 1px solid #292a2e; }
 .connection-status { display: flex; align-items: center; gap: 8px; min-height: 27px; padding: 0 8px; color: #999aa2; font-size: 11px; }
 .status-dot, .environment-indicator { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--orange); box-shadow: 0 0 10px #efa76355; }
 .status-dot.online, .environment-indicator { background: var(--green); box-shadow: 0 0 10px #72c99a50; }

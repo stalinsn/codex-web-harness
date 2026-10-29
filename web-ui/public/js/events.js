@@ -184,7 +184,10 @@ function handleCodexNotification(message) {
 
 export function connectEvents() {
   const events = new EventSource(`${PREFIX}/api/events`, { withCredentials: true });
-  events.onopen = () => { setConnection(true, 'Codex conectado'); syncExecutionState().catch(() => {}); };
+  events.onopen = () => {
+    setConnection(true, 'Codex conectado');
+    refreshThreadList().then(() => syncExecutionState()).catch(() => {});
+  };
   events.onerror = () => setConnection(false, 'Reconectando ao Codex…');
   events.onmessage = (raw) => {
     let event; try { event = JSON.parse(raw.data); } catch { return; }
@@ -247,11 +250,14 @@ export function connectEvents() {
     }
     else if (event.type === 'thread-created') {
       if (state.selectedThreadId || !state.sending) return;
-      state.selectedThreadId = event.data.thread.id;
+      const thread = event.data.thread;
+      state.selectedThreadId = thread.id;
       state.activeThreadProjectId = state.selectedProjectId;
-      associateThreadWithSelectedProject(event.data.thread.id);
-      updateThreadHeader({ id: event.data.thread.id, name: 'Nova conversa', model: getSelectedModel()?.displayName || state.modelId });
+      state.threads = [thread, ...state.threads.filter((item) => item.id !== thread.id)];
+      associateThreadWithSelectedProject(thread.id);
+      updateThreadHeader({ id: thread.id, name: 'Nova conversa', model: getSelectedModel()?.displayName || state.modelId });
       renderConversationContext();
+      renderThreads(state.threads, $('#threadSearch').value.trim());
     }
     else if (event.type === 'turn-completed') {
       const turnId = event.data.turn?.id;

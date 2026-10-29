@@ -253,7 +253,7 @@ export function bindEvents() {
     refreshThreadList('').catch((error) => toast(error.message, 'error'));
   });
   $('#threadSearchScope').addEventListener('change', () => renderThreads());
-  $('#threadList').addEventListener('scroll', closeThreadMenus, { passive: true });
+  $('#sidebarNavigation').addEventListener('scroll', closeThreadMenus, { passive: true });
   window.addEventListener('resize', () => {
     closeThreadMenus();
     if ($('#composerOptions').open) requestAnimationFrame(positionComposerOptions);

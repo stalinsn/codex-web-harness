@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { config } from '../config.mjs';
+import { getCodexSessionMetadata, reconcileCodexSessions } from './codex-sessions.mjs';
 
 export const LOCAL_PREFIX = 'ext-';
 export const isLocalThread = (id) => typeof id === 'string' && id.startsWith(LOCAL_PREFIX) && /^ext-[a-f0-9-]{36}$/.test(id);
@@ -25,6 +26,7 @@ export class LocalThreadStore {
 
   async load() {
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
+    const records = [];
     for (const file of await readdir(this.dir)) {
       if (!file.endsWith('.json')) continue;
       try {
@@ -37,14 +39,25 @@ export class LocalThreadStore {
           record.sessionModels[record.lastAccountId] ||= record.thread.model || '';
           record.sessionTurnCounts[record.lastAccountId] ??= (record.turns || []).length;
         }
+        this.#syncInternalCodexIds(record);
         // A turn cut by a restart cannot resume its process; close it.
         this.index.set(record.thread.id, record.thread);
+        records.push(record);
         if (record.thread.status?.type === 'active') {
           record.thread.status = { type: 'idle' };
           for (const turn of record.turns || []) if (turn.status === 'inProgress') Object.assign(turn, { status: 'interrupted', error: { message: 'O serviço foi reiniciado durante esta resposta.' } });
           await this.#write(record);
         }
       } catch { /* skip unreadable file */ }
+    }
+    try {
+      const sessions = await getCodexSessionMetadata(config.codexHome);
+      const claimedIds = new Set(records.flatMap((record) => record.thread.internalCodexThreadIds || []));
+      for (const record of records) {
+        if (reconcileCodexSessions(record, sessions, claimedIds)) await this.#write(record);
+      }
+    } catch (error) {
+      console.warn('Não foi possível reconstruir os vínculos das conversas locais do Codex:', error.message);
     }
     return this;
   }
@@ -111,6 +124,7 @@ export class LocalThreadStore {
     const record = await this.get(id);
     if (!record) return null;
     mutate(record);
+    this.#syncInternalCodexIds(record);
     record.thread.updatedAt = nowSeconds();
     this.index.set(id, record.thread);
     clearTimeout(this.timers.get(id));
@@ -140,6 +154,16 @@ export class LocalThreadStore {
   }
 
   #file(id) { return join(this.dir, `${id}.json`); }
+
+  #syncInternalCodexIds(record) {
+    const ids = new Set([
+      ...(Array.isArray(record.thread.internalCodexThreadIds) ? record.thread.internalCodexThreadIds : []),
+      ...(record.thread.internalCodexThreadId ? [record.thread.internalCodexThreadId] : []),
+      ...(typeof record.sessions?.codex === 'string' ? [record.sessions.codex] : []),
+    ]);
+    if (ids.size) record.thread.internalCodexThreadIds = [...ids];
+    else delete record.thread.internalCodexThreadIds;
+  }
 
   /** Writes of one thread are serialized; a removed thread is never written again. */
   #write(record) {

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { PINNED_THREAD_SECTION_ID, config } from '../config.mjs';
 import { ACCESS_MODES } from '../codex/access-mode.mjs';
 import { isWriterLockError } from '../codex/app-server.mjs';
+import { subagentThreadIds } from '../threads/codex-sessions.mjs';
 import { fail, json, readBody } from '../http/respond.mjs';
 import { serveFile, serveImage } from '../uploads.mjs';
 
@@ -11,9 +12,19 @@ const thread = (suffix) => new RegExp(`^/api/threads/${ID}/${suffix}$`);
 const DECISIONS = ['accept', 'acceptForSession', 'decline', 'cancel'];
 
 /** Codex threads and harness-held threads in one list, most recent first. */
-export function mergeThreads(codexThreads, localThreads, internalCodexThreadIds = []) {
-  const hidden = new Set(internalCodexThreadIds);
-  codexThreads = codexThreads.filter((thread) => !hidden.has(thread.id));
+export function mergeThreads(codexThreads, localThreads, internalCodexThreadIds = [], excludedThreadIds = []) {
+  const hidden = new Set([...internalCodexThreadIds, ...excludedThreadIds]);
+  const seen = new Set();
+  codexThreads = codexThreads.filter((thread) => {
+    if (hidden.has(thread.id) || seen.has(thread.id)) return false;
+    seen.add(thread.id);
+    return true;
+  });
+  localThreads = localThreads.filter((thread) => {
+    if (seen.has(thread.id)) return false;
+    seen.add(thread.id);
+    return true;
+  });
   // Keep the app-server's own order; slot harness threads in by update time.
   const merged = [];
   let local = 0;
@@ -32,7 +43,8 @@ export function registerThreadRoutes(router, { codex, events, localThreads }) {
     if (url.searchParams.get('archived') === 'true') params.archived = true;
     const result = await codex.rpc('thread/list', params);
     const local = localThreads.list({ archived: params.archived === true, search: search || '' });
-    return json(res, 200, { threads: mergeThreads(result.data || [], local, localThreads.internalCodexThreadIds()), nextCursor: result.nextCursor || null });
+    const hiddenSubagents = await subagentThreadIds(config.codexHome);
+    return json(res, 200, { threads: mergeThreads(result.data || [], local, localThreads.internalCodexThreadIds(), hiddenSubagents), nextCursor: result.nextCursor || null });
   });
 
   router.get(thread('context-usage'), ({ res, params: [threadId] }) => json(res, 200, { contextUsage: codex.threadContextUsage.get(threadId) || null }));

@@ -8,7 +8,7 @@ import { formatBytes, formatCountdown } from './format.js';
 import { refreshUsage, updateThreadHeader } from './inspector.js';
 import { openImagePreview } from './layout.js';
 import { getComposerModelSelection, getSelectedModel } from './models.js';
-import { associateThreadWithSelectedProject } from './projects.js';
+import { associateThreadWithSelectedProject, revealProjectThread } from './projects.js';
 import { refreshQueue } from './queue.js';
 import { getEffectiveRateLimitBlock, getRateLimitBlock, isRateLimitError, renderRateLimitNotice } from './rate-limit.js';
 import { state, voice } from './state.js';
@@ -205,6 +205,7 @@ export async function submitMessage(event, { allowVoice = false } = {}) {
     state.selectedThreadId = result.threadId;
     if (!currentThread) {
       state.activeThreadProjectId = state.selectedProjectId;
+      revealProjectThread(result.threadId);
       associateThreadWithSelectedProject(result.threadId);
     }
     if (!currentThread && !result.queued) updateThreadHeader({ id: result.threadId, name: 'Nova conversa', model: getSelectedModel()?.displayName || state.modelId, status: { type: 'active' } });

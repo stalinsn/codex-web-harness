@@ -6,6 +6,7 @@ import { getVpsHealth } from '../health/index.mjs';
 import { json, readBody } from '../http/respond.mjs';
 import { getProjects } from '../projects.mjs';
 import { mergeThreads } from './threads.mjs';
+import { subagentThreadIds } from '../threads/codex-sessions.mjs';
 import { cancelTranscription, getTranscription, startTranscription, voiceStatus } from '../voice/transcription.mjs';
 
 const JOB_ID = /^\/api\/voice\/transcriptions\/([a-f0-9-]{36})$/;
@@ -29,9 +30,10 @@ export function registerSystemRoutes(router, { codex, localThreads }) {
     // background so a page reload does not wait on several app-server RPCs.
     codex.refreshAccountData().catch((error) => console.error('Não foi possível atualizar os dados da conta:', error.message));
     const threads = await codex.rpc('thread/list', { limit: 50, sortKey: 'updated_at', sortDirection: 'desc' });
+    const hiddenSubagents = await subagentThreadIds(config.codexHome);
     return json(res, 200, {
       models: codex.models,
-      threads: mergeThreads(threads.data || [], localThreads.list(), localThreads.internalCodexThreadIds()),
+      threads: mergeThreads(threads.data || [], localThreads.list(), localThreads.internalCodexThreadIds(), hiddenSubagents),
       projects: await getProjects(),
       account: codex.account,
       rateLimits: codex.rateLimits,

@@ -251,6 +251,20 @@ export class ProviderChat {
         taskId: `chat:${threadId}`, prompt, cwd: record.thread.cwd, sessionId, title: record.thread.name || record.thread.preview || 'Conversa', signal: controller.signal, accessMode,
         // Codex accounts are mirrored item by item (onCodexMessage); CLIs go through the parser events.
         onEvent: (event) => {
+          if (event.type === 'session' && account.primary && event.sessionId) {
+            eventRecording = eventRecording.then(async () => {
+              const updated = await this.store.update(threadId, (stored) => {
+                const previousSessionId = stored.sessions[account.id] || '';
+                stored.sessions[account.id] = event.sessionId;
+                stored.sessionModels[account.id] = this.#modelLabel(account);
+                if (previousSessionId !== event.sessionId) stored.sessionTurnCounts[account.id] = Math.max(0, stored.turns.length - 1);
+                stored.thread.internalCodexThreadIds = [...new Set([...(Array.isArray(stored.thread.internalCodexThreadIds) ? stored.thread.internalCodexThreadIds : []), event.sessionId])];
+              });
+              await this.store.flush(threadId);
+              if (updated) this.emit('thread-updated', { threadId, thread: updated.thread });
+            }).catch((error) => console.error('Falha ao vincular a sessão Codex à conversa:', error.message));
+            return;
+          }
           if (event.type !== 'session' && (account.provider !== 'codex' || event.type === 'error')) {
             eventRecording = eventRecording.then(() => recorder.handle(event)).catch((error) => console.error('Falha ao registrar evento da CLI:', error.message));
           }

@@ -8,7 +8,7 @@ import { loadContextUsage, updateThreadHeader } from './inspector.js';
 import { closeSidebar } from './layout.js';
 import { addApproval, renderTurnHistory } from './messages.js';
 import { setChatAccount } from './models.js';
-import { projectForThread, selectProject, updateWorkingDirectory } from './projects.js';
+import { projectForThread, revealProjectThread, selectProject, updateWorkingDirectory } from './projects.js';
 import { refreshQueue, renderQueue } from './queue.js';
 import { responderFor, setProviderClass } from './responders.js';
 import { runtime, state } from './state.js';
@@ -200,6 +200,8 @@ function showThreadLoadError(threadId, error) {
 }
 
 export async function openThread(threadId) {
+  const ownerThread = state.threads.find((thread) => thread.id.startsWith('ext-') && (thread.internalCodexThreadIds || []).includes(threadId));
+  if (ownerThread) threadId = ownerThread.id;
   if (!threadId || state.loadingThreadId === threadId) return;
   if (state.historyThreadId && state.historyThreadId !== threadId) {
     state.historyThreadId = '';
@@ -238,6 +240,11 @@ export async function openThread(threadId) {
       }
     }
     state.activeThreadProjectId = project?.id || '';
+    if (!project) {
+      state.unassignedExpanded = true;
+      localStorage.setItem('codex-unassigned-expanded', 'true');
+    }
+    revealProjectThread(threadId);
     const cwd = project?.cwd || thread?.cwd || thread?.workingDirectory || thread?.workspace?.cwd || state.defaultCwd;
     selectProject(project?.id || '', { folderPath: cwd, updateActiveThread: true });
   } catch (error) {
