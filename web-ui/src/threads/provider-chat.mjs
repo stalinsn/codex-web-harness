@@ -1,5 +1,5 @@
-// Chat turns on harness-held conversations: any account (Claude Code, Antigravity,
-// Gemini, extra Codex accounts). Keeps one CLI session per account and thread, falls
+// Chat turns on harness-held conversations: any account (including the primary Codex,
+// Claude Code, Antigravity, Gemini and extra Codex accounts). Keeps one CLI session per account and thread, falls
 // back to a transcript when the account changes, queues follow-ups while a turn runs
 // and, when the account hits its limit, continues on the next one of the rotation.
 import { randomUUID } from 'node:crypto';
@@ -47,10 +47,11 @@ export class ProviderChat {
   isRunning(threadId) { return this.running.has(threadId); }
 
   accountFor(record, accountId) {
-    // "codex" (the chat's own account) cannot answer here; keep the conversation's account.
-    const wanted = accountId && accountId !== PRIMARY_ID ? accountId : record.thread.accountId;
+    // Respect an explicit account choice. This also lets a harness-held conversation
+    // switch back to the primary Codex account instead of silently keeping its old CLI.
+    const wanted = accountId || record.thread.accountId;
     const account = this.accounts.registry.get(wanted);
-    if (!account || account.id === PRIMARY_ID) throw httpError('Escolha uma conta conectada para esta conversa.', 400);
+    if (!account) throw httpError('Escolha uma conta conectada para esta conversa.', 400);
     return account;
   }
 
@@ -64,17 +65,55 @@ export class ProviderChat {
   }
 
   /** Create a conversation bound to an account. */
-  async create({ accountId, cwd, name = '', taskId = '', seed = '' }) {
+  async create({ accountId, cwd, name = '', taskId = '', seed = '', sourceCodexThreadId = '', sourceCodexModel = '' }) {
     const account = this.accounts.registry.get(accountId);
     if (!account || account.primary) throw httpError('Escolha uma conta conectada para esta conversa.', 400);
     const record = await this.store.create({ cwd, accountId: account.id, provider: account.provider, model: this.#modelLabel(account), name, taskId });
     if (seed) await this.store.update(record.thread.id, (stored) => { stored.seed = seed.slice(-24_000); });
+    if (sourceCodexThreadId) {
+      const codex = this.accounts.registry.get(PRIMARY_ID);
+      await this.store.update(record.thread.id, (stored) => {
+        stored.sessions[PRIMARY_ID] = sourceCodexThreadId;
+        stored.sessionModels[PRIMARY_ID] = [codex?.label || 'Codex', sourceCodexModel].filter(Boolean).join(' · ');
+        stored.sessionTurnCounts[PRIMARY_ID] = 0;
+        stored.thread.internalCodexThreadIds = [...new Set([...(Array.isArray(stored.thread.internalCodexThreadIds) ? stored.thread.internalCodexThreadIds : []), sourceCodexThreadId])];
+      });
+      await this.store.flush(record.thread.id);
+    }
     this.emit('thread-created', { thread: record.thread });
     return record;
   }
 
   #modelLabel(account) {
     return [account.label, account.model].filter(Boolean).join(' · ');
+  }
+
+  async #recoverSourceCodexSession(record) {
+    if (!record.seed || record.sessions?.[PRIMARY_ID]) return record;
+    const title = String(record.thread.name || '').replace(/\s+\(continuação.*$/i, '').trim();
+    if (!title) return record;
+    try {
+      const primary = this.accounts.registry.get(PRIMARY_ID);
+      const server = primary && this.accounts.codexServerFor(primary);
+      if (!server?.ready) return record;
+      const listed = await server.rpc('thread/list', { limit: 100, sortKey: 'updated_at', sortDirection: 'desc', searchTerm: title });
+      const candidates = (listed.data || []).filter((thread) => thread.name === title || thread.preview === title || thread.name?.startsWith(title));
+      for (const candidate of candidates.slice(0, 5)) {
+        const turns = await server.rpc('thread/turns/list', { threadId: candidate.id, limit: 20, sortDirection: 'desc', itemsView: 'full' });
+        if (transcriptOf([...(turns.data || [])].reverse()) !== record.seed) continue;
+        const read = await server.rpc('thread/read', { threadId: candidate.id });
+        const model = typeof read.thread?.model === 'string' ? read.thread.model : '';
+        await this.store.update(record.thread.id, (stored) => {
+          stored.sessions[PRIMARY_ID] = candidate.id;
+          stored.sessionModels[PRIMARY_ID] = [primary.label, model].filter(Boolean).join(' · ');
+          stored.sessionTurnCounts[PRIMARY_ID] = 0;
+          stored.thread.internalCodexThreadIds = [...new Set([...(Array.isArray(stored.thread.internalCodexThreadIds) ? stored.thread.internalCodexThreadIds : []), candidate.id])];
+        });
+        await this.store.flush(record.thread.id);
+        return record;
+      }
+    } catch { /* If the original session cannot be matched safely, start from its saved transcript. */ }
+    return record;
   }
 
   async #withChatSelection(account, selection = {}) {
@@ -84,7 +123,7 @@ export class ProviderChat {
     const selectedModel = model
       ? (catalog.models || []).find((item) => item.id === model)
       : (catalog.models || []).find((item) => item.isDefault);
-    if (model && catalog.models?.length && !selectedModel) {
+    if (model && catalog.models?.length && !selectedModel && model !== account.model) {
       throw httpError(`O modelo “${model}” não consta no catálogo atual de ${account.label}. Atualize as opções e escolha um modelo disponível.`, 400);
     }
     if (account.provider === 'antigravity' && (selectedModel?.effortEncoded || ANTIGRAVITY_ENCODED_EFFORT.test(model || ''))) effort = '';
@@ -103,9 +142,10 @@ export class ProviderChat {
    * @returns {Promise<{threadId: string, turnId?: string, queued?: boolean, queuedSubmission?: object}>}
    */
   async send({ threadId, accountId, text, extraText = '', content = null, model, effort }) {
-    const record = await this.store.get(threadId);
+    let record = await this.store.get(threadId);
     if (!record) throw httpError('Conversa não encontrada.', 404);
     if (record.thread.taskId) throw httpError('Esta conversa pertence a uma execução contínua. Para orientar, use Retomar no painel Execuções contínuas.', 409);
+    if (accountId === PRIMARY_ID && record.seed && !record.sessions?.[PRIMARY_ID]) record = await this.#recoverSourceCodexSession(record);
     const account = await this.#withChatSelection(this.accountFor(record, accountId), { model, effort });
     const message = [text, extraText].filter(Boolean).join('\n\n');
     if (this.running.has(threadId)) {
@@ -139,16 +179,21 @@ export class ProviderChat {
   }
 
   async #prompt(record, account, text, { handoff = false } = {}) {
-    const selectionMatches = record.thread.accountId === account.id && record.thread.model === this.#modelLabel(account);
-    const sessionId = selectionMatches ? (record.sessions[account.id] || '') : '';
-    if (sessionId && record.lastAccountId === account.id && !handoff) return { prompt: text, sessionId };
+    const sessionId = record.sessions[account.id] || '';
+    const sessionMatchesModel = Boolean(sessionId) && record.sessionModels?.[account.id] === this.#modelLabel(account);
+    const earlierTurns = record.turns.slice(0, -1);
+    const includedTurns = Number(record.sessionTurnCounts?.[account.id]) || 0;
+    const sessionCaughtUp = sessionMatchesModel && includedTurns >= earlierTurns.length;
+    if (sessionCaughtUp && record.lastAccountId === account.id && !handoff) return { prompt: text, sessionId };
     const parts = [];
     if (account.provider !== 'codex') {
       const policies = (await Promise.all([join(config.codexHome, 'AGENTS.md'), join(record.thread.cwd, 'AGENTS.md')].map((file) => readText(file, MAX_POLICY)))).filter((policy) => policy.trim());
       if (policies.length) parts.push(`## Diretrizes da instalação (obrigatórias)\n\n${policies.join('\n\n---\n\n')}\n\nQuando estas diretrizes exigirem pedido explícito ou confirmação, explique o plano e peça a confirmação em vez de executar.`);
     }
     parts.push(`Você está conversando pelo Codex Web Harness. Pasta de trabalho: \`${record.thread.cwd}\`.`);
-    const history = [record.seed ? `(Conversa anterior no Codex)\n${record.seed}` : '', transcriptOf(record.turns.slice(0, -1))].filter(Boolean).join('\n\n');
+    const history = sessionMatchesModel
+      ? transcriptOf(earlierTurns.slice(includedTurns))
+      : [record.seed ? `(Conversa anterior no Codex)\n${record.seed}` : '', transcriptOf(earlierTurns)].filter(Boolean).join('\n\n');
     if (history) parts.push(`## Conversa até aqui (outra conta ou modelo pode ter respondido antes)\n\n${history}`);
     if (handoff) {
       const file = await readText(join(record.thread.cwd, HANDOFF_FILE), 30_000);
@@ -158,7 +203,7 @@ export class ProviderChat {
       parts.push('## Compatibilidade do modelo\n\nO catálogo do provedor declara que o modelo selecionado não oferece ferramentas. Responda a perguntas conversacionais, mas não solicite comandos, leituras ou alterações de arquivos; explique a limitação quando a tarefa depender dessas ferramentas.');
     }
     parts.push(`## Mensagem do usuário\n\n${text}`);
-    return { prompt: parts.join('\n\n'), sessionId: '' };
+    return { prompt: parts.join('\n\n'), sessionId: sessionMatchesModel ? sessionId : '' };
   }
 
   async #startTurn(record, account, { text, content = null, handoff = false, label = '' }) {
@@ -206,7 +251,12 @@ export class ProviderChat {
       const limitNote = outcome.status === 'rate-limited' ? `Limite de uso atingido em ${account.label}.` : '';
       await recorder.finish({ status, error: limitNote || (status === 'failed' ? outcome.error || 'A conta não concluiu a resposta.' : ''), finalText: status === 'completed' ? outcome.text : '' });
       await this.store.update(threadId, (stored) => {
-        if (outcome.sessionId) stored.sessions[account.id] = outcome.sessionId;
+        if (outcome.sessionId) {
+          stored.sessions[account.id] = outcome.sessionId;
+          stored.sessionModels[account.id] = this.#modelLabel(account);
+          if (status === 'completed') stored.sessionTurnCounts[account.id] = stored.turns.length;
+          if (account.primary) stored.thread.internalCodexThreadIds = [...new Set([...(Array.isArray(stored.thread.internalCodexThreadIds) ? stored.thread.internalCodexThreadIds : []), outcome.sessionId])];
+        }
         stored.lastAccountId = account.id;
         stored.thread.accountId = account.id;
         stored.thread.provider = account.provider;

@@ -8,6 +8,7 @@ import { httpError } from '../http/respond.mjs';
 import { accountEnv, checkCliLogin, commandFor, runCliSegment } from './cli-runner.mjs';
 import { codexUsage } from './codex-usage.mjs';
 import { runCodexSegment } from './codex-runner.mjs';
+import { reportedTokenUsage } from './parsers.mjs';
 import { PROVIDERS } from './providers.mjs';
 import { accountsDir } from './registry.mjs';
 
@@ -55,6 +56,7 @@ export class AccountService {
         percent: state.percent,
         percentAt: state.percentAt,
         resetsAt: state.resetsAt,
+        reportedUsage: state.reportedUsage,
         cooldownUntil: state.cooldownUntil > now ? state.cooldownUntil : 0,
         lastLimit: state.lastLimit,
         segments: state.segments,
@@ -161,6 +163,22 @@ export class AccountService {
     this.emit('accounts-changed', {});
   }
 
+  async recordReportedUsage(id, value) {
+    const usage = reportedTokenUsage(value);
+    if (!usage) return false;
+    const state = this.registry.stateOf(id);
+    const totals = state.reportedUsage;
+    for (const key of ['inputTokens', 'outputTokens']) {
+      if (usage[key] != null) totals[key] = (totals[key] || 0) + usage[key];
+    }
+    totals.totalTokens += usage.totalTokens;
+    totals.runs += 1;
+    totals.lastAt = Date.now();
+    await this.registry.saveState();
+    this.emit('accounts-changed', {});
+    return true;
+  }
+
   #recordCodexUsage(id, params) {
     const { percent, resetsAt } = codexUsage(params);
     if (percent != null) this.recordUsage(id, percent, resetsAt).catch(() => {});
@@ -190,8 +208,16 @@ export class AccountService {
     state.segments += 1;
     state.lastUsedAt = Date.now();
     this.emit('accounts-changed', {});
+    let recordedUsage = false;
     const handleEvent = (event) => {
       if (event.type === 'usage' && account.provider !== 'codex') this.recordUsage(account.id, event.percent, event.resetsAt).catch(() => {});
+      if (!recordedUsage && event.type === 'result' && event.usage) {
+        const usage = reportedTokenUsage(event.usage);
+        if (usage) {
+          recordedUsage = true;
+          this.recordReportedUsage(account.id, event.usage).catch(() => {});
+        }
+      }
       if (event.type === 'session' && account.primary) this.onOrchestratedThread(event.sessionId);
       onEvent(event);
     };

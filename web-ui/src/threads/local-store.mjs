@@ -30,6 +30,13 @@ export class LocalThreadStore {
       try {
         const record = JSON.parse(await readFile(join(this.dir, file), 'utf8'));
         if (!isLocalThread(record?.thread?.id)) continue;
+        record.sessions ||= {};
+        record.sessionModels ||= {};
+        record.sessionTurnCounts ||= {};
+        if (record.lastAccountId && record.sessions[record.lastAccountId]) {
+          record.sessionModels[record.lastAccountId] ||= record.thread.model || '';
+          record.sessionTurnCounts[record.lastAccountId] ??= (record.turns || []).length;
+        }
         // A turn cut by a restart cannot resume its process; close it.
         this.index.set(record.thread.id, record.thread);
         if (record.thread.status?.type === 'active') {
@@ -52,6 +59,14 @@ export class LocalThreadStore {
       .filter((thread) => Boolean(thread.archived) === Boolean(archived))
       .filter((thread) => !term || `${thread.name || ''} ${thread.preview || ''}`.toLowerCase().includes(term))
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  }
+
+  /** Native Codex sessions backing local conversations should not appear twice. */
+  internalCodexThreadIds() {
+    return [...this.index.values()].flatMap((thread) => [
+      ...(Array.isArray(thread.internalCodexThreadIds) ? thread.internalCodexThreadIds : []),
+      ...(thread.internalCodexThreadId ? [thread.internalCodexThreadId] : []),
+    ]).filter(Boolean);
   }
 
   async get(id) {
@@ -84,7 +99,7 @@ export class LocalThreadStore {
   async create({ cwd, accountId, provider, model = '', name = '', taskId = '' }) {
     const id = `${LOCAL_PREFIX}${randomUUID()}`;
     const thread = { id, name, preview: '', cwd, createdAt: nowSeconds(), updatedAt: nowSeconds(), status: { type: 'idle' }, model, modelProvider: provider, accountId, provider, archived: false, source: 'harness', taskId };
-    const record = { version: 1, thread, turns: [], queue: [], sessions: {}, lastAccountId: '' };
+    const record = { version: 1, thread, turns: [], queue: [], sessions: {}, sessionModels: {}, sessionTurnCounts: {}, lastAccountId: '' };
     this.index.set(id, thread);
     this.cache.set(id, record);
     await this.#write(record);

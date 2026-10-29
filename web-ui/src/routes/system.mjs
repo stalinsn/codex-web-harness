@@ -31,7 +31,7 @@ export function registerSystemRoutes(router, { codex, localThreads }) {
     const threads = await codex.rpc('thread/list', { limit: 50, sortKey: 'updated_at', sortDirection: 'desc' });
     return json(res, 200, {
       models: codex.models,
-      threads: mergeThreads(threads.data || [], localThreads.list()),
+      threads: mergeThreads(threads.data || [], localThreads.list(), localThreads.internalCodexThreadIds()),
       projects: await getProjects(),
       account: codex.account,
       rateLimits: codex.rateLimits,

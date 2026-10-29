@@ -34,15 +34,19 @@ async function sendLocalTurn(res, body, { providerChat, codex }) {
     let seed = '';
     let name = '';
     let cwdHint = body.cwd;
+    let sourceCodexThreadId = '';
+    let sourceCodexModel = '';
     if (typeof body.threadId === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(body.threadId)) {
       const read = await codex.rpc('thread/read', { threadId: body.threadId });
       const turns = await codex.rpc('thread/turns/list', { threadId: body.threadId, limit: 20, sortDirection: 'desc', itemsView: 'full' });
       seed = transcriptOf([...(turns.data || [])].reverse());
       name = `${read.thread?.name || read.thread?.preview || 'Conversa'} (continuação)`.slice(0, 120);
       cwdHint = read.thread?.cwd || cwdHint;
+      sourceCodexThreadId = body.threadId;
+      sourceCodexModel = typeof read.thread?.model === 'string' ? read.thread.model : '';
     }
     const cwd = await validateCwd(cwdHint || config.defaultCwd);
-    const record = await providerChat.create({ accountId: String(body.accountId || ''), cwd, name, seed });
+    const record = await providerChat.create({ accountId: String(body.accountId || ''), cwd, name, seed, sourceCodexThreadId, sourceCodexModel });
     threadId = record.thread.id;
     try { await attachThreadToProject(threadId, cwd); } catch { console.error('Não foi possível associar a nova conversa ao projeto.'); }
   }

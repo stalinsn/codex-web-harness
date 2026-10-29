@@ -1128,7 +1128,7 @@ body.resizing-inspector { cursor: col-resize; user-select: none; }
 .account-badge { flex: none; padding: 1px 5px; color: #b9c2ff; font-size: 8px; text-transform: uppercase; letter-spacing: .06em; border: 1px solid #4a5390; border-radius: 4px; }
 .account-main > small { overflow: hidden; color: #8f909a; font-size: 10px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
 .account-main > small.account-status { display: flex; align-items: center; gap: 6px; white-space: normal; }
-.account-usage-note { color: #6f717b !important; font-style: italic; }
+.account-main > small.account-usage-note { color: var(--muted) !important; font-style: normal; white-space: normal; }
 .account-access-controls { display: flex; flex-direction: column; gap: 6px; margin: 9px 0; padding: 8px; border: 1px solid #343743; border-radius: 8px; background: #1a1b20; }
 .account-access-controls > span { color: #b6b8c4; font-size: 9px; font-weight: 600; }
 .account-access-controls > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }

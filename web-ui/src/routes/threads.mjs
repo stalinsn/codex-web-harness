@@ -11,7 +11,9 @@ const thread = (suffix) => new RegExp(`^/api/threads/${ID}/${suffix}$`);
 const DECISIONS = ['accept', 'acceptForSession', 'decline', 'cancel'];
 
 /** Codex threads and harness-held threads in one list, most recent first. */
-export function mergeThreads(codexThreads, localThreads) {
+export function mergeThreads(codexThreads, localThreads, internalCodexThreadIds = []) {
+  const hidden = new Set(internalCodexThreadIds);
+  codexThreads = codexThreads.filter((thread) => !hidden.has(thread.id));
   // Keep the app-server's own order; slot harness threads in by update time.
   const merged = [];
   let local = 0;
@@ -30,7 +32,7 @@ export function registerThreadRoutes(router, { codex, events, localThreads }) {
     if (url.searchParams.get('archived') === 'true') params.archived = true;
     const result = await codex.rpc('thread/list', params);
     const local = localThreads.list({ archived: params.archived === true, search: search || '' });
-    return json(res, 200, { threads: mergeThreads(result.data || [], local), nextCursor: result.nextCursor || null });
+    return json(res, 200, { threads: mergeThreads(result.data || [], local, localThreads.internalCodexThreadIds()), nextCursor: result.nextCursor || null });
   });
 
   router.get(thread('context-usage'), ({ res, params: [threadId] }) => json(res, 200, { contextUsage: codex.threadContextUsage.get(threadId) || null }));

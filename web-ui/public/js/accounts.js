@@ -43,7 +43,18 @@ function statusOf(account) {
 }
 
 function usageMeter(account) {
-  if (account.percent == null) return account.usageSource === 'reported' || account.usageSource === 'events' ? '' : '<small class="account-usage-note">uso não informado pela CLI</small>';
+  if (account.percent == null) {
+    if (account.usageSource === 'reported' || account.usageSource === 'events') return '';
+    const reported = account.reportedUsage || {};
+    const tokens = Number(reported.totalTokens) || 0;
+    const runs = Number(reported.runs) || 0;
+    const segments = Number(account.segments) || 0;
+    const activity = tokens > 0
+      ? `${tokens.toLocaleString('pt-BR')} tokens informados em ${runs.toLocaleString('pt-BR')} execuções`
+      : segments > 0 ? `${segments.toLocaleString('pt-BR')} execuções iniciadas` : '';
+    const parts = [activity, 'percentual de cota não informado pela CLI'].filter(Boolean);
+    return `<small class="account-usage-note">${escapeHtml(parts.join(' · '))}</small>`;
+  }
   const percent = Math.min(100, Math.max(0, Number(account.percent)));
   const tone = percent >= (state.rotation?.switchAtPercent ?? 95) ? 'critical' : percent >= 75 ? 'high' : '';
   return `<div class="meter-track account-meter" title="${Math.round(percent)}% usado"><div class="meter-fill ${tone}" style="width:${percent}%"></div></div>`;

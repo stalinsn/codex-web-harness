@@ -10,7 +10,7 @@ const LOCAL = '(ext-[a-f0-9-]{36})';
 const route = (suffix) => new RegExp(`^/api/threads/${LOCAL}/${suffix}$`);
 const PAGE = 20;
 
-export function registerLocalThreadRoutes(router, { localThreads: store, providerChat: chat }) {
+export function registerLocalThreadRoutes(router, { localThreads: store, providerChat: chat, codex }) {
   const load = async (id) => {
     const record = await store.get(id);
     if (!record) throw Object.assign(new Error('Conversa não encontrada.'), { statusCode: 404 });
@@ -45,6 +45,20 @@ export function registerLocalThreadRoutes(router, { localThreads: store, provide
     if (chat.isRunning(id)) return fail(res, 409, 'Aguarde a resposta terminar antes de excluir a conversa.');
     const record = await load(id);
     if (record.thread.taskId && record.thread.status?.type === 'active') return fail(res, 409, 'A execução contínua desta conversa ainda está rodando. Pare a execução antes de excluir.');
+    const internalCodexThreadIds = [...new Set([
+      ...(Array.isArray(record.thread.internalCodexThreadIds) ? record.thread.internalCodexThreadIds : []),
+      ...(record.thread.internalCodexThreadId ? [record.thread.internalCodexThreadId] : []),
+    ])];
+    if (internalCodexThreadIds.length) {
+      try {
+        for (const internalThreadId of internalCodexThreadIds) {
+          await codex.rpc('thread/archive', { threadId: internalThreadId });
+          codex.resumedThreads.delete(internalThreadId);
+        }
+      } catch {
+        return fail(res, 503, 'Não consegui arquivar a sessão Codex vinculada. A conversa continua intacta; tente excluir novamente.');
+      }
+    }
     await store.remove(id);
     const projects = await getProjects();
     if (projects.some((project) => project.threadIds.includes(id))) {

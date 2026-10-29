@@ -184,7 +184,7 @@ function genericParser() {
         else out.push({ type: 'error', message: resultError });
       }
       const ok = resultStatus ? resultStatus === 'SUCCESS' : !resultError && !/error|fail/i.test(String(event.status || ''));
-      out.push({ type: 'result', ok, text, error: resultError, sessionId: sessionId || '', usage: resultPayload?.usage || event.stats || event.usage || null });
+      out.push({ type: 'result', ok, text, error: resultError, sessionId: sessionId || '', usage: resultPayload?.usage || resultPayload?.usageMetadata || resultPayload?.usage_metadata || resultPayload?.stats || event.usage || event.usageMetadata || event.usage_metadata || event.stats || null });
     } else if (kind === 'message' || kind === 'content' || kind === 'assistant') {
       const role = event.role || event.message?.role;
       if (role !== 'user') {
@@ -205,6 +205,40 @@ function textParser() {
 }
 
 const PARSERS = { claude: claudeParser, generic: genericParser, text: textParser };
+
+const TOKEN_FIELDS = {
+  inputTokens: ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens', 'promptTokenCount', 'prompt_token_count', 'total_input_tokens', 'totalInputTokens'],
+  outputTokens: ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens', 'candidates_token_count', 'candidatesTokenCount', 'candidate_token_count', 'candidateTokenCount', 'total_output_tokens', 'totalOutputTokens'],
+  totalTokens: ['total_tokens', 'totalTokens', 'totalTokenCount', 'total_token_count'],
+};
+
+function tokenField(value, names, depth = 0) {
+  if (!value || typeof value !== 'object' || depth > 6) return null;
+  for (const name of names) {
+    if (!(name in value)) continue;
+    const number = Number(value[name]);
+    if (Number.isSafeInteger(number) && number >= 0) return number;
+  }
+  for (const child of Object.values(value)) {
+    const found = tokenField(child, names, depth + 1);
+    if (found != null) return found;
+  }
+  return null;
+}
+
+/** Token counts reported by a provider CLI; this is activity, not a quota estimate. */
+export function reportedTokenUsage(value) {
+  if (!value || typeof value !== 'object') return null;
+  const inputTokens = tokenField(value, TOKEN_FIELDS.inputTokens);
+  const outputTokens = tokenField(value, TOKEN_FIELDS.outputTokens);
+  const reportedTotal = tokenField(value, TOKEN_FIELDS.totalTokens);
+  if (inputTokens == null && outputTokens == null && reportedTotal == null) return null;
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: reportedTotal ?? (inputTokens || 0) + (outputTokens || 0),
+  };
+}
 
 export function getParser(name) {
   return (PARSERS[name] || genericParser)();
