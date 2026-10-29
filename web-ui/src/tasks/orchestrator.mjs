@@ -13,6 +13,7 @@ import { fitPrompt, goalFromThread, outcomeMarker } from './prompt.mjs';
 
 const TASK_ID = /^[a-f0-9-]{36}$/;
 const ACTIVE = new Set(['queued', 'running', 'waiting']);
+const TERMINAL = new Set(['completed', 'failed', 'blocked', 'stopped']);
 const MAX_NUDGES = 2;
 const MAX_LOG_BYTES = 20 * 1024 * 1024;
 const RECENT_EVENTS = 200;
@@ -72,6 +73,9 @@ export class TaskOrchestrator {
         if (task.status === 'running') { task.status = 'queued'; task.note = 'Retomada após reinício do serviço.'; }
         this.tasks.set(id, task);
       } catch { /* skip unreadable task */ }
+    }
+    for (const task of this.tasks.values()) {
+      if (TERMINAL.has(task.status)) await this.#releaseThread(task).catch((error) => console.error('Não foi possível liberar uma conversa encerrada:', error.message));
     }
     for (const task of this.tasks.values()) if (ACTIVE.has(task.status)) this.#schedule(task, 2000);
     return this;
@@ -141,6 +145,7 @@ export class TaskOrchestrator {
     task.note = 'Parada pelo usuário.';
     this.controllers.get(id)?.abort();
     await this.#save(task);
+    if (!this.running.has(id)) await this.#releaseThread(task);
     return this.#summary(task);
   }
 
@@ -149,6 +154,7 @@ export class TaskOrchestrator {
     if (this.running.has(id)) throw httpError('A tarefa já está em execução.', 409);
     if (note) task.goal = `${task.goal}\n\nOrientação adicional (${new Date().toLocaleString('pt-BR')}):\n${String(note).slice(0, 10_000)}`;
     Object.assign(task, { status: 'queued', note: '', error: '', nudges: 0 });
+    await this.#bindThread(task);
     await this.#save(task);
     this.#schedule(task, 0);
     return this.#summary(task);
@@ -190,6 +196,36 @@ export class TaskOrchestrator {
     task.status = 'failed';
     task.error = error?.message || String(error);
     await this.#save(task).catch(() => {});
+    await this.#releaseThread(task).catch(() => {});
+  }
+
+  async #bindThread(task) {
+    if (!this.localThreads || !task.threadId) return;
+    const record = await this.localThreads.get(task.threadId);
+    if (!record) return;
+    await this.localThreads.update(task.threadId, (stored) => {
+      stored.thread.taskId = task.id;
+      stored.thread.name = `Contínua · ${task.title}`.slice(0, 120);
+    });
+    await this.localThreads.flush(task.threadId);
+    this.emit('thread-updated', { threadId: task.threadId, thread: record.thread });
+  }
+
+  /** A terminal task stays in the task panel; its conversation becomes a regular Codex chat. */
+  async #releaseThread(task) {
+    if (!this.localThreads || !task.threadId) return;
+    const record = await this.localThreads.get(task.threadId);
+    if (!record || record.thread.taskId !== task.id) return;
+    await this.localThreads.update(task.threadId, (stored) => {
+      stored.thread.taskId = '';
+      stored.thread.name = task.title;
+      stored.thread.accountId = 'codex';
+      stored.thread.provider = 'codex';
+      stored.thread.modelProvider = 'codex';
+      stored.thread.model = 'Codex';
+    });
+    await this.localThreads.flush(task.threadId);
+    this.emit('thread-updated', { threadId: task.threadId, thread: record.thread });
   }
 
   async #save(task) {
@@ -338,6 +374,7 @@ export class TaskOrchestrator {
       this.running.delete(task.id);
       this.controllers.delete(task.id);
       if (task.status === 'running') { task.status = 'queued'; await this.#save(task).catch(() => {}); }
+      if (TERMINAL.has(task.status)) await this.#releaseThread(task).catch((error) => console.error('Não foi possível liberar a conversa da tarefa encerrada:', error.message));
     }
   }
 }

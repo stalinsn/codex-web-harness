@@ -11,7 +11,7 @@ import { applyAccountData, refreshUsage, renderContextUsage, renderUsage, update
 import { setConnection } from './layout.js';
 import { markdown } from './markdown.js';
 import { addApproval, getOrCreateStreamMessage, imageFromContent, makeMessage, placeStreamMessage, scrollConversation, splitAttachmentText } from './messages.js';
-import { getSelectedModel, populateModels } from './models.js';
+import { getSelectedModel, populateModels, setChatAccount } from './models.js';
 import { associateThreadWithSelectedProject, renderConversationContext } from './projects.js';
 import { refreshQueue, renderQueue } from './queue.js';
 import { clearResolvedRateLimitFailure, getEffectiveRateLimitBlock, isRateLimitError, recordRateLimitFailure } from './rate-limit.js';
@@ -201,6 +201,21 @@ export function connectEvents() {
     else if (event.type === 'login-state') onLoginState(event.data);
     else if (event.type === 'task-updated') onTaskUpdated(event.data);
     else if (event.type === 'task-event') onTaskEvent(event.data);
+    else if (event.type === 'thread-updated') {
+      const { threadId, thread } = event.data || {};
+      if (threadId && thread) {
+        const index = state.threads.findIndex((item) => item.id === threadId);
+        if (index >= 0) state.threads[index] = { ...state.threads[index], ...thread };
+        if (state.selectedThreadId === threadId) {
+          state.selectedThread = { ...(state.selectedThread || {}), ...thread };
+          setChatAccount(thread.accountId || 'codex');
+          updateThreadHeader(thread);
+          updateComposerControls();
+        }
+        renderThreads(state.threads, $('#threadSearch').value.trim());
+        refreshThreadList().catch(() => {});
+      }
+    }
     else if (event.type === 'handoff-steered') toast(`Conta perto do limite (${Math.round(event.data.percent)}%): pedi ao Codex para salvar o registro de retomada.`);
     else if (event.type === 'handoff-started') {
       toast(`Limite do Codex: “${event.data.title}” continua em outra conta.`);
