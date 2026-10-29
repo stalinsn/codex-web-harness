@@ -6,6 +6,7 @@ import { Router } from './http/router.mjs';
 import { applySecurityHeaders } from './http/security.mjs';
 import { registerAccountRoutes } from './routes/accounts.mjs';
 import { handleAuthApi } from './routes/auth.mjs';
+import { registerLocalFileRoutes } from './routes/local-files.mjs';
 import { registerLocalThreadRoutes } from './routes/local-threads.mjs';
 import { registerProjectRoutes } from './routes/projects.mjs';
 import { registerSystemRoutes } from './routes/system.mjs';
@@ -17,6 +18,7 @@ export function createRequestHandler({ auth, codex, events, assets, accounts, or
   const router = new Router();
   const deps = { codex, events, accounts, orchestrator, logins, localThreads, providerChat };
   registerSystemRoutes(router, deps);
+  registerLocalFileRoutes(router);
   // Harness-held conversations first: their /api/threads/ext-… routes shadow the Codex ones.
   registerLocalThreadRoutes(router, deps);
   registerProjectRoutes(router, deps);
