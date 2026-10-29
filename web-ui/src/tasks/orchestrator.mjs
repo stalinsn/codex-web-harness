@@ -6,6 +6,7 @@ import { appendFile, mkdir, readdir, readFile, rename, stat, writeFile } from 'n
 import { join } from 'node:path';
 import { config } from '../config.mjs';
 import { HANDOFF_FILE } from '../accounts/codex-usage.mjs';
+import { ACCESS_MODES } from '../codex/access-mode.mjs';
 import { httpError } from '../http/respond.mjs';
 import { validateCwd } from '../projects.mjs';
 import { TurnRecorder } from '../threads/recorder.mjs';
@@ -90,10 +91,11 @@ export class TaskOrchestrator {
     return { ...this.#summary(task), goal: task.goal, segments: task.segments, events: this.recent.get(id) || await this.#tailLog(id), handoff: await readText(join(task.cwd, HANDOFF_FILE), 60_000) };
   }
 
-  async create({ goal, cwd, title, order, fromThreadId }) {
+  async create({ goal, cwd, title, order, fromThreadId, accessMode = '' }) {
     let text = typeof goal === 'string' ? goal.trim() : '';
     let workdir = cwd;
     let sourceTitle = '';
+    let threadAccessMode = ACCESS_MODES.has(accessMode) ? accessMode : '';
     if (fromThreadId) {
       if (!/^[a-zA-Z0-9_-]{1,100}$/.test(fromThreadId)) throw httpError('Conversa inválida.', 400);
       const read = await this.primaryCodex.rpc('thread/read', { threadId: fromThreadId });
@@ -102,6 +104,7 @@ export class TaskOrchestrator {
       text = text ? `${derived}\n\nOrientação adicional:\n${text}` : derived;
       workdir ||= read.thread?.cwd;
       sourceTitle = read.thread?.name || read.thread?.preview || '';
+      threadAccessMode ||= this.primaryCodex.accessModeForThread(fromThreadId);
     }
     if (!text || text.length > 50_000) throw httpError('Descreva o objetivo da tarefa (até 50 mil caracteres).', 400);
     const canonical = await validateCwd(workdir || config.defaultCwd);
@@ -119,6 +122,7 @@ export class TaskOrchestrator {
       createdAt: now,
       updatedAt: now,
       currentAccountId: '',
+      accessMode: ACCESS_MODES.has(threadAccessMode) ? threadAccessMode : '',
       nextAttemptAt: 0,
       nudges: 0,
       note: '',
@@ -128,7 +132,7 @@ export class TaskOrchestrator {
     await mkdir(join(tasksDir(), task.id), { recursive: true, mode: 0o700 });
     // The whole task reads as one conversation in the chat, whichever account runs it.
     if (this.localThreads) {
-      const record = await this.localThreads.create({ cwd: canonical, accountId: '', provider: '', name: `Contínua · ${task.title}`, taskId: task.id });
+      const record = await this.localThreads.create({ cwd: canonical, accountId: '', provider: '', name: `Contínua · ${task.title}`, taskId: task.id, accessMode: task.accessMode });
       task.threadId = record.thread.id;
       this.emit('thread-created', { thread: record.thread });
     }
@@ -223,6 +227,7 @@ export class TaskOrchestrator {
       stored.thread.provider = 'codex';
       stored.thread.modelProvider = 'codex';
       stored.thread.model = 'Codex';
+      stored.thread.accessMode = ACCESS_MODES.has(task.accessMode) ? task.accessMode : 'automatic';
     });
     await this.localThreads.flush(task.threadId);
     this.emit('thread-updated', { threadId: task.threadId, thread: record.thread });

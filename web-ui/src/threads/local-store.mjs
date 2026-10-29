@@ -96,9 +96,9 @@ export class LocalThreadStore {
     return record;
   }
 
-  async create({ cwd, accountId, provider, model = '', name = '', taskId = '' }) {
+  async create({ cwd, accountId, provider, model = '', name = '', taskId = '', accessMode = '' }) {
     const id = `${LOCAL_PREFIX}${randomUUID()}`;
-    const thread = { id, name, preview: '', cwd, createdAt: nowSeconds(), updatedAt: nowSeconds(), status: { type: 'idle' }, model, modelProvider: provider, accountId, provider, archived: false, source: 'harness', taskId };
+    const thread = { id, name, preview: '', cwd, createdAt: nowSeconds(), updatedAt: nowSeconds(), status: { type: 'idle' }, model, modelProvider: provider, accountId, provider, archived: false, source: 'harness', taskId, ...(accessMode ? { accessMode } : {}) };
     const record = { version: 1, thread, turns: [], queue: [], sessions: {}, sessionModels: {}, sessionTurnCounts: {}, lastAccountId: '' };
     this.index.set(id, thread);
     this.cache.set(id, record);

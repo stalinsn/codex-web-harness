@@ -56,7 +56,7 @@ function renderAccessModeControl(usesCodex) {
 
 export function updateComposerControls() {
   const hasDraft = Boolean($('#messageInput')?.value.trim() || state.files.length);
-  const usesCodex = (state.chatAccountId || 'codex') === 'codex' && !String(state.selectedThreadId || '').startsWith('ext-');
+  const usesCodex = (state.chatAccountId || 'codex') === 'codex';
   renderAccessModeControl(usesCodex);
   const limitBlock = usesCodex ? getEffectiveRateLimitBlock() : null;
   const limitBlocked = Boolean(limitBlock);

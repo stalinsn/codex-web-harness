@@ -104,7 +104,7 @@ export async function loadThreadHistory(threadId, { background = false } = {}) {
     state.agentThreads.clear();
   }
   state.selectedThreadId = threadId;
-  if ((!state.accessModeUpdating || state.accessModeUpdatingThreadId !== threadId) && data.accessMode) state.accessMode = data.accessMode;
+  if (!state.accessModeUpdating || state.accessModeUpdatingThreadId !== threadId) state.accessMode = data.accessMode || state.defaultAccessMode;
   const row = state.threads.find((item) => item.id === threadId);
   const thread = data.thread || { id: threadId };
   if (!thread.name && !thread.preview && row) Object.assign(thread, { name: row.name, preview: row.preview });

@@ -1,6 +1,8 @@
 // Routes for harness-held conversations (ids "ext-…"). Registered before the Codex
 // thread routes, so the same URLs serve both kinds and the client needs no changes.
 import { json, fail, readBody } from '../http/respond.mjs';
+import { ACCESS_MODES } from '../codex/access-mode.mjs';
+import { isWriterLockError } from '../codex/app-server.mjs';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PINNED_THREAD_SECTION_ID, config } from '../config.mjs';
@@ -22,9 +24,19 @@ export function registerLocalThreadRoutes(router, { localThreads: store, provide
     const record = await load(id);
     const end = Math.min(record.turns.length, Number(url.searchParams.get('cursor')) || record.turns.length);
     const start = Math.max(0, end - PAGE);
-    return json(res, 200, { thread: record.thread, turns: record.turns.slice(start, end), nextCursor: start > 0 ? String(start) : null });
+    return json(res, 200, { thread: record.thread, turns: record.turns.slice(start, end), nextCursor: start > 0 ? String(start) : null, accessMode: record.thread.accessMode || '' });
   });
   router.get(route('context-usage'), ({ res }) => json(res, 200, { contextUsage: null }));
+
+  router.post(route('access-mode'), async ({ req, res, params: [id] }) => {
+    const body = await readBody(req);
+    if (!ACCESS_MODES.has(body.mode)) return fail(res, 400, 'Escolha Pedir aprovação ou Automático.');
+    try { return json(res, 200, await chat.setAccessMode(id, body.mode)); }
+    catch (error) {
+      if (isWriterLockError(error)) return fail(res, 409, 'Esta sessão do Codex está aberta em outro processo. Feche-a antes de alterar as permissões.');
+      throw error;
+    }
+  });
 
   router.post(route('archive'), async ({ res, params: [id] }) => { await touch(id, (record) => { record.thread.archived = true; }); return json(res, 200, { ok: true }); });
   router.post(route('unarchive'), async ({ res, params: [id] }) => { await touch(id, (record) => { record.thread.archived = false; }); return json(res, 200, { ok: true }); });
