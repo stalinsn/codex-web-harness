@@ -41,7 +41,7 @@ __codex_server_prompt() {
       if ! git diff --quiet --ignore-submodules HEAD -- 2>/dev/null; then
         branch+='*'
       fi
-      branch_segment=" \[\e[38;5;141m\]git:${branch}\[\e[0m\]"
+      branch_segment=" \[\e[1;32m\](${branch})\[\e[0m\]"
     fi
   fi
 
@@ -49,7 +49,7 @@ __codex_server_prompt() {
     error_segment=" \[\e[1;38;5;203m\]✘ ${last_status}\[\e[0m\]"
   fi
 
-  PS1='\[\e[1;38;5;117m\]\u@\h\[\e[0m\] \[\e[38;5;250m\]\w\[\e[0m\]'"${branch_segment}${error_segment}"$'\n''\[\e[1;38;5;114m\]❯\[\e[0m\] '
+  PS1='\[\e[1;32m\]\u@\h\[\e[0m\] \[\e[1;36m\]LINUX\[\e[0m\] \[\e[1;33m\]\w\[\e[0m\]'"${branch_segment}${error_segment}"$'\n''\[\e[1;32m\]$\[\e[0m\] '
 }
 
 if [[ -r /usr/share/bash-completion/bash_completion ]]; then
