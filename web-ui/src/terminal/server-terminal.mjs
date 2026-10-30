@@ -1,6 +1,7 @@
 // One authenticated, short-lived shell in a pseudo-terminal for the private inspector.
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { config } from '../config.mjs';
 import { httpError } from '../http/respond.mjs';
 
@@ -8,6 +9,8 @@ const MAX_SESSION_MS = 30 * 60 * 1000;
 const BUFFER_CHARS = 256 * 1024;
 const FLUSH_MS = 40;
 const bounded = (value, min, max, fallback) => Number.isInteger(value) ? Math.max(min, Math.min(max, value)) : fallback;
+const shellRc = fileURLToPath(new URL('./server-terminal.bashrc', import.meta.url));
+const quoteShell = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
 
 export class ServerTerminal {
   constructor({ emit }) {
@@ -39,7 +42,7 @@ export class ServerTerminal {
       startedAt: Date.now(), output: '', outputSeq: 0, pending: '', flushTimer: null,
       child: null, timeout: null,
     };
-    const command = `stty cols ${width} rows ${height} 2>/dev/null; exec /bin/bash --noprofile --norc -i`;
+    const command = `stty cols ${width} rows ${height} 2>/dev/null; exec /bin/bash --noprofile --rcfile ${quoteShell(shellRc)} -i`;
     const child = spawn('script', ['-qfec', command, '/dev/null'], {
       cwd,
       env: {
