@@ -2,6 +2,7 @@
 import { bindAccountEvents, refreshAccounts } from './accounts.js';
 import { api } from './api.js';
 import { bindAttachmentEvents } from './attachments.js';
+import { bindCodeCopy } from './code-copy.js';
 import { initializeAuthentication } from './auth.js';
 import { addFiles, steerMessage, submitMessage, updateComposerControls } from './composer.js';
 import { PREFIX } from './config.js';
@@ -128,6 +129,7 @@ async function loadBootstrap() {
 
 export function bindEvents() {
   bindAttachmentEvents();
+  bindCodeCopy();
   enhanceComposerSelects();
   bindAccountEvents();
   bindTaskEvents();

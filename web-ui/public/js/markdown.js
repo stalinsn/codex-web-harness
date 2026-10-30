@@ -2,6 +2,8 @@
 import { escapeHtml } from './dom.js';
 import { PREFIX } from './config.js';
 
+const copyCodeIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg>';
+
 function localFilePath(destination) {
   if (destination.startsWith('file://')) {
     try {
@@ -25,7 +27,7 @@ export function markdown(text) {
   const localLinks = [];
   let source = String(text ?? '');
   source = source.replace(/```([\w.+-]*)\n?([\s\S]*?)```/g, (_, language, code) => {
-    const index = blocks.push(`<pre><code${language ? ` class="language-${escapeHtml(language)}"` : ''}>${escapeHtml(code.replace(/\n$/, ''))}</code></pre>`) - 1;
+    const index = blocks.push(`<div class="code-block"><button type="button" class="code-copy-button" data-copy-code title="Copiar código" aria-label="Copiar bloco de código">${copyCodeIcon}</button><pre><code${language ? ` class="language-${escapeHtml(language)}"` : ''}>${escapeHtml(code.replace(/\n$/, ''))}</code></pre></div>`) - 1;
     return `\u0000${index}\u0000`;
   });
   const stashLocalLink = (_, label, destination) => {

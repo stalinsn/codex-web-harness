@@ -207,8 +207,14 @@ kbd { margin-left: auto; padding: 2px 5px; color: #898a94; font-size: 10px; bord
 .message-content ul, .message-content ol { margin: 7px 0 12px; padding-left: 22px; }
 .message-content li { margin: 4px 0; }
 .message-content code { padding: 2px 5px; color: #c9d4ff; font-family: 'IBM Plex Mono', monospace; font-size: .9em; border: 1px solid #34363d; border-radius: 4px; background: #222328; }
-.message-content pre { max-width: 100%; margin: 12px 0; overflow: auto; border: 1px solid #34353a; border-radius: 9px; background: #101113; }
-.message-content pre code { display: block; padding: 13px 15px; color: #e0e1e6; font-size: 11px; line-height: 1.6; border: 0; border-radius: 0; background: transparent; white-space: pre; }
+.code-block { position: relative; max-width: 100%; margin: 12px 0; overflow: hidden; border: 1px solid #34353a; border-radius: 9px; background: #101113; }
+.code-block pre { max-width: 100%; margin: 0; padding-top: 36px; overflow: auto; border: 0; border-radius: inherit; background: transparent; }
+.code-block pre code { display: block; padding: 8px 15px 13px; color: #e0e1e6; font-size: 11px; line-height: 1.6; border: 0; border-radius: 0; background: transparent; white-space: pre; }
+.code-copy-button { position: absolute; z-index: 1; top: 5px; right: 5px; display: grid; width: 32px; height: 32px; padding: 0; place-items: center; color: #b8bfd4; border: 1px solid #3a3d49; border-radius: 7px; background: #202127; cursor: pointer; }
+.code-copy-button:hover { color: #eef0ff; border-color: #636b8a; background: #2b2d36; }
+.code-copy-button:focus-visible { outline: 2px solid #a9b4ff; outline-offset: 2px; }
+.code-copy-button.copied { color: #76d6a8; border-color: #417c5e; }
+.code-copy-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .message-images { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
 .message-image-open, .attachment-image-open, .queued-image-open { display: block; padding: 0; overflow: hidden; border: 0; background: transparent; cursor: zoom-in; }
 .message-image-open { max-width: 220px; max-height: 180px; border-radius: 8px; }
