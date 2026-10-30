@@ -83,6 +83,19 @@ export class TurnRecorder {
     return this.turnId;
   }
 
+  /** Persist a user message accepted by turn/steer inside the active local turn. */
+  async recordSteeredMessage(content) {
+    const item = {
+      type: 'userMessage',
+      id: `${this.turnId}-steer-${randomUUID()}`,
+      content: Array.isArray(content) ? content.map((part) => ({ ...part })) : [],
+    };
+    await this.#mutate((turn) => turn.items.push(item));
+    await this.store.flush(this.threadId);
+    this.#notify('item/started', { turnId: this.turnId, item });
+    return item;
+  }
+
   /** Feed one normalized provider event (see accounts/parsers.mjs). */
   async handle(event) {
     switch (event.type) {

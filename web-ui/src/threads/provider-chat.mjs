@@ -186,6 +186,7 @@ export class ProviderChat {
       clientUserMessageId: randomUUID(),
       input,
     });
+    await running.recorder.recordSteeredMessage(input);
     return { threadId, turnId, steered: true };
   }
 
@@ -267,6 +268,7 @@ export class ProviderChat {
     const execution = { controller, accountId: account.id, sessionId: record.sessions?.[account.id] || '', turnId: '' };
     this.running.set(threadId, execution);
     const recorder = new TurnRecorder({ store: this.store, threadId, emit: this.emit });
+    execution.recorder = recorder;
     let turnId;
     try { turnId = await recorder.start({ text: label || text, content: label ? null : content, account }); }
     catch (error) { this.running.delete(threadId); throw error; }
