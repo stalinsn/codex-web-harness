@@ -11,12 +11,13 @@ import { registerLocalThreadRoutes } from './routes/local-threads.mjs';
 import { registerProjectRoutes } from './routes/projects.mjs';
 import { registerSystemRoutes } from './routes/system.mjs';
 import { registerTaskRoutes } from './routes/tasks.mjs';
+import { registerTerminalRoutes } from './routes/terminal.mjs';
 import { registerThreadRoutes } from './routes/threads.mjs';
 import { registerTurnRoutes } from './routes/turns.mjs';
 
-export function createRequestHandler({ auth, codex, events, assets, accounts, orchestrator, logins, localThreads, providerChat }) {
+export function createRequestHandler({ auth, codex, events, assets, accounts, orchestrator, logins, terminal, localThreads, providerChat }) {
   const router = new Router();
-  const deps = { codex, events, accounts, orchestrator, logins, localThreads, providerChat };
+  const deps = { codex, events, accounts, orchestrator, logins, terminal, localThreads, providerChat };
   registerSystemRoutes(router, deps);
   registerLocalFileRoutes(router);
   // Harness-held conversations first: their /api/threads/ext-… routes shadow the Codex ones.
@@ -26,6 +27,7 @@ export function createRequestHandler({ auth, codex, events, assets, accounts, or
   registerTurnRoutes(router, deps);
   registerAccountRoutes(router, deps);
   registerTaskRoutes(router, deps);
+  registerTerminalRoutes(router, deps);
 
   async function handleRequest(req, res) {
     applySecurityHeaders(res);

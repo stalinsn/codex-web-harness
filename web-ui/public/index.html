@@ -269,6 +269,18 @@
           <details class="vps-storage-details" id="vpsStorageDetails"><summary>Armazenamento e locais no disco</summary><div class="vps-storage-list" id="vpsStorageList"></div><div class="vps-storage-section"><strong>Volumes Docker</strong><div id="vpsVolumeStorage"></div></div><div class="vps-storage-section"><strong>Pastas principais</strong><div id="vpsStorageLocations"></div></div><p class="vps-storage-note">Por instância: código da pasta do projeto + camada gravável dos containers + volumes identificados. Imagens Docker são compartilhadas e aparecem no total geral. Pastas listadas podem se sobrepor; não some esses valores. Detalhes do disco atualizam a cada 5 min; use atualizar para ler agora.</p></details>
           <p class="vps-health-updated" id="vpsHealthUpdated" aria-live="polite">Lendo métricas da VPS…</p>
         </section>
+        <section class="inspector-card server-terminal-card" data-card="terminal" aria-label="Terminal web do servidor">
+          <div class="card-title-row"><div><span class="card-icon" data-icon="terminal"></span><strong>Terminal do servidor</strong></div></div>
+          <div class="server-terminal-body">
+            <div class="server-terminal-status" id="serverTerminalStatus" role="status" aria-live="polite">Sessão fechada</div>
+            <div class="server-terminal-host" id="serverTerminalHost" hidden></div>
+            <div class="server-terminal-actions">
+              <button class="secondary-button" id="startServerTerminal" type="button">Abrir terminal</button>
+              <button class="secondary-button danger-button" id="stopServerTerminal" type="button" hidden>Encerrar sessão</button>
+            </div>
+            <p class="muted-note">Shell interativo como ubuntu, iniciado em <code>/home/ubuntu</code>. A sessão encerra após 30 min ou quando o serviço reinicia.</p>
+          </div>
+        </section>
         <section class="inspector-card environment-card" data-card="environment">
           <div class="card-title-row"><div><span class="card-icon" data-icon="server"></span><strong>Ambiente ativo</strong></div></div>
               <div class="environment-row"><span class="environment-indicator"></span><span><strong>VPS</strong><small>Codex CLI · sessão persistente</small></span></div>

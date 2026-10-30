@@ -19,7 +19,7 @@ let xtermLoading = null;
 let accountCreationPending = false;
 let installProgressTimer = null;
 
-function loadXterm() {
+export function loadXterm() {
   if (window.Terminal) return Promise.resolve();
   xtermLoading ||= new Promise((resolvePromise, rejectPromise) => {
     const css = document.createElement('link');

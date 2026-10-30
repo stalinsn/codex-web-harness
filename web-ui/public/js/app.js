@@ -9,6 +9,7 @@ import { newChat, openThread } from './conversation.js';
 import { loadDeferredQueue, maybeDrainDeferredQueue } from './deferred-queue.js';
 import { $, $$, debounce, randomKey, toast } from './dom.js';
 import { bindInspectorLayout } from './inspector-layout.js';
+import { bindServerTerminal } from './server-terminal.js';
 import { refreshUsage, refreshVpsHealth, renderUsage } from './inspector.js';
 import { closeSidebar, openSidebar, setConnection, setupComposerViewport, setupInspectorResize, showInspector } from './layout.js';
 import { scrollConversation } from './messages.js';
@@ -132,6 +133,7 @@ export function bindEvents() {
   bindTaskEvents();
   bindWizardEvents();
   bindInspectorLayout();
+  bindServerTerminal();
   setupInspectorResize();
   setupComposerViewport();
   $('#closeImagePreview').addEventListener('click', () => $('#imagePreviewDialog').close());

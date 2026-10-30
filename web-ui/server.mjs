@@ -11,6 +11,7 @@ import { config } from './src/config.mjs';
 import { EventHub } from './src/events.mjs';
 import { StaticAssets } from './src/http/static.mjs';
 import { TaskOrchestrator } from './src/tasks/orchestrator.mjs';
+import { ServerTerminal } from './src/terminal/server-terminal.mjs';
 import { LocalThreadStore } from './src/threads/local-store.mjs';
 import { ProviderChat } from './src/threads/provider-chat.mjs';
 
@@ -27,9 +28,10 @@ const orchestrator = new TaskOrchestrator({ accounts, primaryCodex: codex, emit,
 const chatHandoff = new ChatHandoff({ primaryCodex: codex, accounts, orchestrator, emit });
 accounts.onOrchestratedThread = (threadId) => chatHandoff.markOrchestrated(threadId);
 const logins = new LoginSessions({ accounts, emit });
+const terminal = new ServerTerminal({ emit });
 const providerChat = new ProviderChat({ store: localThreads, accounts, emit });
 const assets = new StaticAssets({ publicDir: config.publicDir, prefix: config.prefix, dev: config.dev });
-const server = createServer(createRequestHandler({ auth, codex, events, assets, accounts, orchestrator, logins, localThreads, providerChat }));
+const server = createServer(createRequestHandler({ auth, codex, events, assets, accounts, orchestrator, logins, terminal, localThreads, providerChat }));
 
 await Promise.all([auth.initialize(), assets.load()]);
 
@@ -45,6 +47,7 @@ setInterval(() => { if (codex.ready) codex.refreshAccountData(true).catch(() => 
 function stop() {
   orchestrator.stopAll();
   logins.stopAll();
+  terminal.stopAll();
   providerChat.stopAll();
   accounts.stop();
   codex.stop();

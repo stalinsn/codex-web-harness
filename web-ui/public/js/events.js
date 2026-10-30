@@ -20,6 +20,7 @@ import { rememberTurnAccount } from './responders.js';
 import { state } from './state.js';
 import { onTaskEvent, onTaskUpdated, refreshTasks } from './tasks.js';
 import { refreshThreadList, renderThreads } from './thread-list.js';
+import { handleServerTerminalEvent, reconnectServerTerminal } from './server-terminal.js';
 import { onLoginOutput, onLoginState } from './wizard.js';
 
 function handleCodexNotification(message) {
@@ -186,6 +187,7 @@ export function connectEvents() {
   const events = new EventSource(`${PREFIX}/api/events`, { withCredentials: true });
   events.onopen = () => {
     setConnection(true, 'Codex conectado');
+    reconnectServerTerminal();
     refreshThreadList().then(() => syncExecutionState()).catch(() => {});
   };
   events.onerror = () => setConnection(false, 'Reconectando ao Codex…');
@@ -202,6 +204,7 @@ export function connectEvents() {
     else if (event.type === 'accounts-changed') refreshAccountsSoon();
     else if (event.type === 'login-output') onLoginOutput(event.data);
     else if (event.type === 'login-state') onLoginState(event.data);
+    else if (event.type === 'terminal-output' || event.type === 'terminal-state') handleServerTerminalEvent(event);
     else if (event.type === 'task-updated') onTaskUpdated(event.data);
     else if (event.type === 'task-event') onTaskEvent(event.data);
     else if (event.type === 'thread-updated') {
