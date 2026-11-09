@@ -1,6 +1,7 @@
 // /api/integrations/*: server-to-server access for other systems of the same owner.
 // Login and verify reuse the web password + e-mail code; the other routes take
-// `Authorization: Bearer <token>`. None of them accepts browser requests.
+// `Authorization: Bearer <token>` or, because the public reverse proxy drops
+// Authorization, `X-Nyx-Integration-Token: <token>`. None accepts browser requests.
 import { AuthError } from '../auth/auth-manager.mjs';
 import { limits } from '../config.mjs';
 import { getClientIp } from '../http/request.mjs';
@@ -24,8 +25,13 @@ export function isBrowserRequest(req) {
   return Boolean(req.headers.origin || req.headers['sec-fetch-site'] || req.headers['sec-fetch-mode']);
 }
 
+const RAW_TOKEN = /^[A-Za-z0-9_-]{1,200}$/u;
+
 export function bearerToken(req) {
-  return BEARER.exec(String(req.headers.authorization || '').trim())?.[1] || '';
+  const bearer = BEARER.exec(String(req.headers.authorization || '').trim())?.[1];
+  if (bearer) return bearer;
+  const header = String(req.headers['x-nyx-integration-token'] || '').trim();
+  return RAW_TOKEN.test(header) ? header : '';
 }
 
 export async function handleIntegrationApi(integrations, req, res, pathName) {

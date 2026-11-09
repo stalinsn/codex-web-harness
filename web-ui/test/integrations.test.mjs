@@ -136,6 +136,13 @@ test('integration routes refuse browser requests and missing bearer tokens', asy
 
   const ok = fakeRes();
   await handleIntegrationApi(integrations, fakeReq({ method: 'GET', headers: { authorization: `Bearer ${token}` } }), ok, '/api/integrations/status');
+  // O proxy público remove Authorization: o mesmo token vale no cabeçalho próprio.
+  const viaHeader = fakeRes();
+  await handleIntegrationApi(integrations, fakeReq({ method: 'GET', headers: { 'x-nyx-integration-token': token } }), viaHeader, '/api/integrations/status');
+  assert.equal(viaHeader.status, 200);
+  const badHeader = fakeRes();
+  await handleIntegrationApi(integrations, fakeReq({ method: 'GET', headers: { 'x-nyx-integration-token': 'nyxh_errado' } }), badHeader, '/api/integrations/status');
+  assert.equal(badHeader.status, 401);
   assert.equal(ok.status, 200);
   assert.equal(JSON.parse(ok.body).valid, true);
 
