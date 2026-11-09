@@ -23,6 +23,8 @@ export const config = Object.freeze({
   // Opt-in: let integrations run text on Codex accounts (see src/integrations/text-runner.mjs).
   // Codex no modo verificado sem ferramentas (text-runner). CODEX_UI_INTEGRATION_CODEX=0 desliga.
   integrationCodexText: process.env.CODEX_UI_INTEGRATION_CODEX !== '0',
+  // Antigravity só dentro da gaiola bubblewrap (text-runner). CODEX_UI_INTEGRATION_AGY=0 desliga.
+  integrationAgyText: process.env.CODEX_UI_INTEGRATION_AGY !== '0',
   authOrigin: process.env.CODEX_UI_ORIGIN ? new URL(process.env.CODEX_UI_ORIGIN).origin : null,
   // Header set by the local reverse proxy with the real client address (e.g. x-real-ip,
   // or cf-connecting-ip behind Cloudflare). Only trusted when the peer is loopback.

@@ -6,6 +6,7 @@
 // Only providers with a verified no-tools mode are allowed. Anything else is reported
 // as unavailable and refused, never run in a weaker mode.
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -84,16 +85,43 @@ export function readCodexStream(raw) {
   return out;
 }
 
+// Antigravity (agy 1.5.x) não tem modo sem ferramentas: roda numa gaiola bubblewrap lançada
+// pelo root (o AppArmor do Ubuntu bloqueia userns sem privilégio) e já rebaixada para o
+// usuário do serviço. Dentro só existem /usr e arquivos de rede/certificados (somente
+// leitura), o binário do agy, a pasta de login DESTA conta (em /home/agy) e a pasta de
+// trabalho vazia (/work). Teste-isca na VPS: arquivo fora da gaiola ilegível; `ls /` só
+// mostra a gaiola. Rede liberada (a CLI fala com o Google). CODEX_UI_INTEGRATION_AGY=0 desliga.
+export const AGY_JAIL_PATH = '/usr/bin/bwrap';
+
+export function agyJailArgs({ agyBin, accountDir, workDir, uid, gid }) {
+  return [
+    '-n', AGY_JAIL_PATH,
+    '--ro-bind', '/usr', '/usr', '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib64', '/lib64', '--symlink', 'usr/sbin', '/sbin',
+    '--perms', '0755', '--dir', '/etc', '--perms', '0755', '--dir', '/opt', '--perms', '0755', '--dir', '/opt/agy', '--perms', '0755', '--dir', '/home',
+    '--ro-bind', '/etc/resolv.conf', '/etc/resolv.conf', '--ro-bind', '/etc/hosts', '/etc/hosts', '--ro-bind', '/etc/nsswitch.conf', '/etc/nsswitch.conf',
+    '--ro-bind', '/etc/ssl', '/etc/ssl', '--ro-bind', '/etc/ca-certificates', '/etc/ca-certificates', '--ro-bind', '/etc/localtime', '/etc/localtime',
+    '--ro-bind', agyBin, '/opt/agy/agy',
+    '--bind', accountDir, '/home/agy',
+    '--bind', workDir, '/work', '--chdir', '/work',
+    '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
+    '--unshare-pid', '--unshare-ipc', '--unshare-uts', '--share-net', '--die-with-parent', '--new-session',
+    '--clearenv', '--setenv', 'HOME', '/home/agy', '--setenv', 'PATH', '/opt/agy:/usr/bin:/bin', '--setenv', 'TMPDIR', '/tmp', '--setenv', 'LANG', 'C.UTF-8',
+    '/usr/bin/setpriv', `--reuid=${uid}`, `--regid=${gid}`, '--clear-groups', '--no-new-privs', '--inh-caps=-all', '--bounding-set=-all',
+    '/opt/agy/agy',
+  ];
+}
+
 const UNSUPPORTED = {
-  antigravity: 'O Antigravity CLI não oferece um modo comprovadamente sem ferramentas; a geração de texto não usa esta conta.',
+  antigravity: 'A gaiola do Antigravity não está disponível neste servidor (bubblewrap ausente ou CODEX_UI_INTEGRATION_AGY=0).',
   'gemini-cli': 'O Gemini CLI não oferece um modo comprovadamente sem ferramentas; a geração de texto não usa esta conta.',
   custom: 'CLIs personalizadas não têm um modo sem ferramentas garantido pelo harness.',
 };
 const CODEX_DISABLED = 'O Codex foi desligado na integração (CODEX_UI_INTEGRATION_CODEX=0).';
 
 /** Whether an account's provider can run text generation safely. */
-export function textSupport(account, { allowCodex = config.integrationCodexText } = {}) {
+export function textSupport(account, { allowCodex = config.integrationCodexText, allowAgy = config.integrationAgyText && existsSync(AGY_JAIL_PATH) } = {}) {
   if (account.provider === 'claude-code') return { ok: true, reason: '' };
+  if (account.provider === 'antigravity') return allowAgy && account.dir ? { ok: true, reason: '' } : { ok: false, reason: UNSUPPORTED.antigravity };
   if (account.provider === 'codex') return allowCodex ? { ok: true, reason: '' } : { ok: false, reason: CODEX_DISABLED };
   return { ok: false, reason: UNSUPPORTED[account.provider] || 'Provedor sem modo de texto seguro.' };
 }
@@ -105,6 +133,12 @@ export function buildTextCommand(account, options = {}) {
   const model = MODEL.test(account.model || '') ? account.model : '';
   if (account.provider === 'claude-code') {
     return { bin: commandFor(account), args: [...CLAUDE_TEXT_ARGS, ...(model ? ['--model', model] : [])] };
+  }
+  if (account.provider === 'antigravity') {
+    // O agy só aceita o prompt por argumento; ele é acrescentado em runText.
+    const agyBin = account.bin && account.bin.startsWith('/') ? account.bin : join(config.homeDir, '.local', 'bin', 'agy');
+    const jail = agyJailArgs({ agyBin, accountDir: account.dir, workDir: options.workDir || '/nonexistent', uid: process.getuid?.() ?? 1000, gid: process.getgid?.() ?? 1000 });
+    return { bin: 'sudo', args: [...jail, '--output-format', 'text', '--print-timeout', '280s', ...(model ? ['--model', model] : []), '-p'], promptArg: true };
   }
   return { bin: account.bin || config.codexBin, args: [...CODEX_TEXT_ARGS, ...(model ? ['--model', model] : []), '-'] };
 }
@@ -168,11 +202,14 @@ const lastLines = (text, count = 3) => String(text || '').replace(/\u001b\[[0-9;
 /**
  * @returns {Promise<{status: 'completed'|'rate-limited'|'failed'|'timeout'|'too-large', text: string, error: string, resetsAt: number, usage?: object, tokens?: object}>}
  */
-export async function runText({ account, prompt, timeoutMs, maxOutputBytes = MAX_OUTPUT_BYTES, spawnImpl = spawn, tmpRoot = tmpdir(), allowCodex }) {
-  const { bin, args } = buildTextCommand(account, { allowCodex });
+export async function runText({ account, prompt, timeoutMs, maxOutputBytes = MAX_OUTPUT_BYTES, spawnImpl = spawn, tmpRoot = tmpdir(), allowCodex, allowAgy }) {
+  const dir = await mkdtemp(join(tmpRoot, 'harness-text-'));
+  const command = (() => { try { return buildTextCommand(account, { allowCodex, ...(allowAgy === undefined ? {} : { allowAgy }), workDir: dir }); } catch (error) { return { error }; } })();
+  if (command.error) { await rm(dir, { recursive: true, force: true }).catch(() => {}); throw command.error; }
+  const { bin } = command;
+  const args = command.promptArg ? [...command.args, prompt] : command.args;
   const streamed = account.provider === 'claude-code';
   const codexJson = account.provider === 'codex';
-  const dir = await mkdtemp(join(tmpRoot, 'harness-text-'));
   try {
     return await new Promise((resolvePromise) => {
       const outcome = { status: 'failed', text: '', error: '', resetsAt: 0 };

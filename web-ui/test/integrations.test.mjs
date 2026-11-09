@@ -263,7 +263,7 @@ test('generate-text records usage and status reports it per account', async () =
 });
 
 test('providers without a guaranteed no-tools mode are refused', () => {
-  for (const provider of ['gemini-cli', 'antigravity', 'custom']) {
+  for (const provider of ['gemini-cli', 'custom']) {
     assert.equal(textSupport(account('x', provider)).ok, false);
     assert.throws(() => buildTextCommand(account('x', provider)), (error) => error.statusCode === 422);
   }
@@ -379,4 +379,28 @@ test('Codex --json: resposta do último agent_message, tokens e descarte se usar
   const limited = fakeSpawn(reply(codexLines({ type: 'turn.failed', error: { message: 'You have hit your usage limit. Try again later.' } }), 1));
   assert.equal((await runText({ account: codex, prompt: 'oi', timeoutMs: 5000, spawnImpl: limited.impl, allowCodex: true })).status, 'rate-limited');
   assert.equal(readCodexStream(codexLines({ type: 'item.completed', item: { type: 'error', message: 'code-mode host is disabled' } })).usedTools.length, 0, 'tentativa recusada não conta');
+});
+
+test('Antigravity roda só dentro da gaiola: só login da conta, pasta vazia e prompt por argumento', async () => {
+  const agy = account('google-1', 'antigravity');
+  assert.equal(textSupport(agy, { allowAgy: false }).ok, false);
+  assert.equal(textSupport(agy, { allowAgy: true }).ok, true);
+  const command = buildTextCommand(agy, { allowAgy: true, workDir: '/tmp/harness-text-x' });
+  assert.equal(command.bin, 'sudo');
+  const args = command.args;
+  const bound = (flag, target) => args.some((value, index) => value === flag && args[index + 2] === target);
+  assert.ok(bound('--bind', '/home/agy') && args[args.indexOf('/home/agy') - 1] === agy.dir, 'só a pasta de login desta conta');
+  assert.ok(bound('--bind', '/work') && args[args.indexOf('/work') - 1] === '/tmp/harness-text-x');
+  assert.ok(args.includes('--clearenv') && args.includes('--no-new-privs') && args.includes('--die-with-parent'));
+  assert.ok(!args.some((value) => /\.codex(\/|$)|auth\.json/.test(value) && value !== agy.dir), 'nenhum outro login montado');
+  assert.equal(args.at(-1), '-p');
+  assert.equal(command.promptArg, true);
+
+  const spawn = fakeSpawn(reply('{"ok":true}\n'));
+  const outcome = await runText({ account: agy, prompt: 'Gere JSON', timeoutMs: 5000, spawnImpl: spawn.impl, allowAgy: true });
+  assert.equal(outcome.status, 'completed');
+  assert.equal(outcome.text, '{"ok":true}');
+  const call = spawn.calls[0];
+  assert.equal(call.args.at(-1), 'Gere JSON');
+  assert.equal(call.args[call.args.indexOf('/work') - 1], call.options.cwd, 'a pasta de trabalho é a temporária vazia');
 });
