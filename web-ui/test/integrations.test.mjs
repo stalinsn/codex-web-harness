@@ -404,3 +404,24 @@ test('Antigravity roda só dentro da gaiola: só login da conta, pasta vazia e p
   assert.equal(call.args.at(-1), 'Gere JSON');
   assert.equal(call.args[call.args.indexOf('/work') - 1], call.options.cwd, 'a pasta de trabalho é a temporária vazia');
 });
+
+test('consumo velho não bloqueia a geração e pode ser relido sob demanda', async () => {
+  const accounts = fakeAccounts([account('claude-a', 'claude-code')]);
+  const state = accounts.registry.stateOf('claude-a');
+  Object.assign(state, { percent: 97, resetsAt: Math.floor(Date.now() / 1000) + 3600, percentAt: Date.now() - 10 * 60 * 1000 });
+  assert.equal(accounts.availability(account('claude-a', 'claude-code')).ok, false, 'rodízio do chat segue bloqueando');
+  const usage = { percent: 4, resetsAt: Math.floor(Date.now() / 1000) + 18000, windows: { five_hour: { percent: 4, resetsAt: Math.floor(Date.now() / 1000) + 18000, status: 'allowed' } } };
+  const prompts = [];
+  const runTextImpl = async ({ prompt }) => { prompts.push(prompt); return { status: 'completed', text: 'ok', error: '', resetsAt: 0, usage }; };
+  const sessions = await new IntegrationSessions(join(await tempDir('harness-int-'), 'i.json')).load();
+  const integrations = new IntegrationService({ auth: fakeAuth(), accounts, sessions, runTextImpl, log() {} });
+  await sessions.issue({ client: 'live-rooms' });
+  const entry = sessions.sessions[0];
+  assert.equal(integrations.status(entry).providers[0].available, true, 'a integração ignora o percentual guardado');
+  const refreshed = await integrations.refreshUsage(entry, {});
+  assert.equal(refreshed.providers[0].usage.percent, 4);
+  assert.deepEqual(prompts, ['Responda apenas: ok']);
+  await integrations.refreshUsage(entry, {});
+  assert.equal(prompts.length, 1, 'no máximo uma releitura a cada 2 minutos');
+  assert.equal(accounts.busy.size, 0);
+});

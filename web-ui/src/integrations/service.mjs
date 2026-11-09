@@ -12,6 +12,7 @@ const HOUR_MS = 60 * 60 * 1000;
 const CLIENT = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,39}$/u;
 const ACCOUNT_ID = /^[a-z0-9][a-z0-9-]{0,39}$/u;
 const MIN_ATTEMPT_MS = 5000;
+const REFRESH_EVERY_MS = 2 * 60 * 1000;
 
 const clean = (value, max) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/gu, ' ').trim().slice(0, max);
 
@@ -77,10 +78,50 @@ export class IntegrationService {
 
   authenticate(token) { return this.sessions.authenticate(token); }
 
+  /**
+   * Disponibilidade para geração de texto: o percentual de uso guardado (regra de rodízio do
+   * chat) não bloqueia, porque pode estar velho; bloqueiam login, conta ocupada e o limite
+   * real (cooldown depois que a CLI recusou).
+   */
+  textAvailability(account) {
+    const availability = this.accounts.availability(account);
+    if (!availability.ok && /^Uso em /u.test(availability.reason || '')) return { ok: true, reason: '' };
+    return availability;
+  }
+
+  /**
+   * Relê o consumo da assinatura com uma geração mínima ("ok") nas contas Claude Code, que
+   * são as que informam as janelas. No máximo uma vez a cada 2 minutos por conta.
+   */
+  async refreshUsage(session, body) {
+    if (!session.scopes.includes('generate:text')) throw httpError('Este token não permite gerar texto.', 403);
+    const requested = typeof body?.provider === 'string' ? body.provider : 'auto';
+    const accounts = this.accounts.registry.ordered().filter((account) =>
+      account.provider === 'claude-code' && this.support(account).ok && (requested === 'auto' || requested === account.id || requested === account.provider));
+    const now = this.now();
+    for (const account of accounts) {
+      const state = this.accounts.registry.stateOf(account.id);
+      if (state.percentAt && now - state.percentAt < REFRESH_EVERY_MS) continue;
+      if (!this.textAvailability(account).ok) continue;
+      const taskId = `integracao-consumo-${randomBytes(4).toString('hex')}`;
+      if (!this.accounts.reserve(account.id, taskId)) continue;
+      try {
+        const outcome = await this.runText({ account, prompt: 'Responda apenas: ok', timeoutMs: 60_000 });
+        await this.#recordUsage(account, outcome);
+        if (outcome.status === 'rate-limited') await this.accounts.markLimited(account.id, { resetsAt: outcome.resetsAt, message: outcome.error }).catch(() => {});
+      } catch (error) {
+        this.log(`Integração: falha ao atualizar o consumo de ${account.id}: ${error.message}`);
+      } finally {
+        this.accounts.release(account.id, taskId);
+      }
+    }
+    return this.status(session);
+  }
+
   status(session) {
     const providers = this.accounts.registry.ordered().map((account) => {
       const support = this.support(account);
-      const availability = this.accounts.availability(account);
+      const availability = this.textAvailability(account);
       const available = support.ok && availability.ok;
       return {
         id: account.id,
@@ -152,7 +193,7 @@ export class IntegrationService {
     const tried = new Set();
     let limited = '';
     while (true) {
-      const account = list.find((item) => !tried.has(item.id) && this.accounts.availability(item).ok);
+      const account = list.find((item) => !tried.has(item.id) && this.textAvailability(item).ok);
       const remaining = deadline - this.now();
       if (!account || remaining < MIN_ATTEMPT_MS) break;
       tried.add(account.id);

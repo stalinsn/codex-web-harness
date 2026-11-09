@@ -18,6 +18,7 @@ export const INTEGRATION_PATHS = new Set([
   '/api/integrations/status',
   '/api/integrations/logout',
   '/api/integrations/generate-text',
+  '/api/integrations/refresh-usage',
 ]);
 
 /** Browsers always send one of these on cross-site or scripted requests. */
@@ -54,6 +55,7 @@ export async function handleIntegrationApi(integrations, req, res, pathName) {
     }
     if (isStatus) return json(res, 200, integrations.status(session));
     if (pathName === '/api/integrations/logout') return json(res, 200, await integrations.logout(session));
+    if (pathName === '/api/integrations/refresh-usage') return json(res, 200, await integrations.refreshUsage(session, await readBody(req, limits.maxAuthBody).catch(() => ({}))));
 
     let body;
     try { body = await readBody(req, MAX_GENERATE_BODY); }
