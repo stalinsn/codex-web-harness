@@ -11,6 +11,7 @@ import { AccountService } from '../src/accounts/service.mjs';
 import { AuthError, AuthManager } from '../src/auth/auth-manager.mjs';
 import { IntegrationService } from '../src/integrations/service.mjs';
 import { INTEGRATION_TTL_MS, IntegrationSessions, MAX_ACTIVE_INTEGRATIONS } from '../src/integrations/sessions.mjs';
+import { keepAliveGenerate } from '../src/routes/integrations.mjs';
 import { buildTextCommand, CLAUDE_TEXT_ARGS, claudeUsageFromRateLimit, readClaudeStream, readCodexStream, runText, textSupport } from '../src/integrations/text-runner.mjs';
 import { handleIntegrationApi } from '../src/routes/integrations.mjs';
 
@@ -424,4 +425,23 @@ test('consumo velho não bloqueia a geração e pode ser relido sob demanda', as
   await integrations.refreshUsage(entry, {});
   assert.equal(prompts.length, 1, 'no máximo uma releitura a cada 2 minutos');
   assert.equal(accounts.busy.size, 0);
+});
+
+test('geração com keepalive: espaços enquanto espera e resultado ou erro no corpo', async () => {
+  const chunks = [];
+  const res = { status: 0, writeHead(status) { this.status = status; }, write(chunk) { chunks.push(chunk); }, end(chunk) { chunks.push(chunk); this.ended = true; } };
+  let release;
+  const integrations = { generate: () => new Promise((resolvePromise) => { release = () => resolvePromise({ text: 'ok', provider: 'claude-code', ms: 5 }); }) };
+  const pending = keepAliveGenerate(integrations, {}, {}, res, 5);
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 30));
+  release();
+  await pending;
+  assert.equal(res.status, 200);
+  assert.ok(chunks.filter((chunk) => chunk === ' ').length >= 2, 'mandou espaços enquanto esperava');
+  assert.deepEqual(JSON.parse(chunks.join('')), { text: 'ok', provider: 'claude-code', ms: 5 });
+
+  const failed = [];
+  const res2 = { writeHead() {}, write(chunk) { failed.push(chunk); }, end(chunk) { failed.push(chunk); } };
+  await keepAliveGenerate({ generate: async () => { throw Object.assign(new Error('limite'), { statusCode: 429, retryAfter: 60 }); } }, {}, {}, res2, 5);
+  assert.deepEqual(JSON.parse(failed.join('')), { error: 'limite', statusCode: 429, retryAfter: 60 });
 });
