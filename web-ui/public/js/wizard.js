@@ -38,6 +38,35 @@ export function loadXterm() {
   return xtermLoading;
 }
 
+function completeClaudeAuthorizationUrl(value) {
+  try {
+    const url = new URL(value);
+    return ['claude.ai', 'claude.com'].includes(url.hostname)
+      && url.pathname === '/oauth/authorize'
+      && (url.searchParams.get('state') || '').length >= 16
+      && (url.searchParams.get('code_challenge') || '').length >= 16
+      && url.searchParams.get('code_challenge_method') === 'S256'
+      ? url.href
+      : '';
+  } catch { return ''; }
+}
+
+async function copyClaudeAuthorizationUrl(session) {
+  const account = state.accounts.find((item) => item.id === session.accountId);
+  if (account?.provider !== 'claude-code') return;
+  const url = (session.hints?.links || []).map(completeClaudeAuthorizationUrl).find(Boolean);
+  if (!url) {
+    toast('O link ainda está sendo carregado. Aguarde aparecer o botão de autorização.');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    toast('Link completo do Claude copiado.');
+  } catch {
+    toast('O navegador bloqueou a cópia. Use o botão “Copiar link”.', 'error');
+  }
+}
+
 function showStep(step) {
   wizard.step = step;
   $$('#accountWizard .wizard-step').forEach((section) => { section.hidden = section.dataset.step !== step; });
@@ -181,20 +210,44 @@ function attachSession(session) {
     fontFamily: "'IBM Plex Mono', ui-monospace, monospace",
     theme: { background: '#121317', foreground: '#e3e4ea', cursor: '#b8c1ff', selectionBackground: '#3c4370' },
   });
-  if (window.WebLinksAddon) term.loadAddon(new window.WebLinksAddon.WebLinksAddon((event, uri) => window.open(uri, '_blank', 'noopener')));
+  if (window.WebLinksAddon) term.loadAddon(new window.WebLinksAddon.WebLinksAddon((event, uri) => {
+    const account = state.accounts.find((item) => item.id === session.accountId);
+    if (account?.provider === 'claude-code') {
+      try {
+        const parsed = new URL(uri);
+        if (['claude.ai', 'claude.com'].includes(parsed.hostname) && parsed.pathname === '/oauth/authorize' && !completeClaudeAuthorizationUrl(uri)) {
+          toast('O link do Claude ainda está incompleto. Aguarde aparecer “Abrir link de autorização” e use esse botão.', 'error');
+          return;
+        }
+      } catch { /* Let the browser handle regular terminal links. */ }
+    }
+    window.open(uri, '_blank', 'noopener');
+  }));
   term.open($('#wizardTerminal'));
   term.write(session.output || '');
-  term.onData((data) => sendInput(data));
+  term.onData((data) => {
+    // Claude's CLI offers `c` to copy its login URL. The CLI runs on the VPS,
+    // so its system clipboard is not the user's browser clipboard; bridge that
+    // shortcut to the complete authorization URL in this browser instead.
+    if (data.toLowerCase() === 'c' && /c to copy/i.test(session.output || '')) copyClaudeAuthorizationUrl(session);
+    sendInput(data);
+  });
   wizard.term = term;
   renderSessionState(session);
   $('#wizardSession').scrollIntoView({ block: 'nearest' });
 }
 
-function renderHints(hints = { links: [], codes: [] }) {
-  const links = hints.links.map((url, index) => `<a class="primary-button wizard-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${index === hints.links.length - 1 ? 'Abrir link de autorização' : 'Abrir link anterior'}</a><button type="button" class="secondary-button" data-copy="${escapeHtml(url)}">Copiar link</button>`).slice(-1).join('');
+function renderHints(hints = { links: [], codes: [] }, session = null) {
+  const account = session && state.accounts.find((item) => item.id === session.accountId);
+  const availableLinks = account?.provider === 'claude-code'
+    ? hints.links.map(completeClaudeAuthorizationUrl).filter(Boolean)
+    : hints.links;
+  const links = availableLinks.map((url, index) => `<a class="primary-button wizard-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${index === availableLinks.length - 1 ? 'Abrir link de autorização' : 'Abrir link anterior'}</a><button type="button" class="secondary-button" data-copy="${escapeHtml(url)}">Copiar link</button>`).slice(-1).join('');
   const codes = hints.codes.map((code) => `<button type="button" class="wizard-code" data-copy="${escapeHtml(code)}" title="Copiar código">${escapeHtml(code)}</button>`).join('');
+  const waitingForClaudeLink = account?.provider === 'claude-code' && session.status === 'running' && !links;
   $('#wizardHints').innerHTML = links + codes;
-  $('#wizardHints').hidden = !links && !codes;
+  if (waitingForClaudeLink && !codes) $('#wizardHints').textContent = 'Aguardando o link completo de autorização do Claude…';
+  $('#wizardHints').hidden = !links && !codes && !waitingForClaudeLink;
 }
 
 function renderSessionState(session) {
@@ -210,7 +263,7 @@ function renderSessionState(session) {
   const status = $('#wizardSessionStatus');
   status.textContent = messages[session.status] || session.detail || '';
   status.className = `wizard-session-status ${session.status}`;
-  renderHints(session.hints);
+  renderHints(session.hints, session);
   const running = session.status === 'running';
   $('#wizardInstallNote').hidden = !installRunning;
   $('#wizardInputForm').hidden = !running || session.kind === 'install';
@@ -343,7 +396,9 @@ async function saveModelSettings(event) {
 }
 
 export function onLoginOutput({ sessionId, data }) {
-  if (wizard.session?.id === sessionId) wizard.term?.write(data);
+  if (wizard.session?.id !== sessionId) return;
+  wizard.session.output = `${wizard.session.output || ''}${data}`.slice(-256 * 1024);
+  wizard.term?.write(data);
 }
 
 export function onLoginState(update) {

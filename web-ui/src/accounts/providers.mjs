@@ -45,7 +45,7 @@ export const PROVIDERS = {
       flows: [
         {
           id: 'interactive', label: 'Entrar com a conta Claude (recomendado)', command: ['claude'], cols: 320,
-          steps: ['Toque em Iniciar. Se aparecerem perguntas de tema ou de confiança na pasta, responda com as setas e Enter.', 'Digite /login e envie; escolha a conta Claude.', 'Abra o link, autorize e cole o código de volta.', 'Quando o login concluir, o harness detecta e encerra a tela.'],
+          steps: ['Toque em Iniciar. Se aparecerem perguntas de tema ou de confiança na pasta, responda com as setas e Enter.', 'Digite /login e envie; escolha a conta Claude.', 'Aguarde o link completo. Pressione c com o terminal focado para copiá-lo no navegador, ou use Copiar link; autorize e cole o código de volta.', 'Quando o login concluir, o harness detecta e encerra a tela.'],
         },
         {
           id: 'token', label: 'Conectar com token de longa duração', command: ['claude', 'setup-token'], cols: 320,
