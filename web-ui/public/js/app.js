@@ -11,6 +11,7 @@ import { loadDeferredQueue, maybeDrainDeferredQueue } from './deferred-queue.js'
 import { $, $$, debounce, randomKey, toast } from './dom.js';
 import { bindInspectorLayout } from './inspector-layout.js';
 import { bindServerTerminal } from './server-terminal.js';
+import { bindIntegrationEvents } from './integrations.js';
 import { refreshUsage, refreshVpsHealth, renderUsage } from './inspector.js';
 import { closeSidebar, openSidebar, setConnection, setupComposerViewport, setupInspectorResize, showInspector } from './layout.js';
 import { scrollConversation } from './messages.js';
@@ -132,6 +133,7 @@ export function bindEvents() {
   bindCodeCopy();
   enhanceComposerSelects();
   bindAccountEvents();
+  bindIntegrationEvents();
   bindTaskEvents();
   bindWizardEvents();
   bindInspectorLayout();

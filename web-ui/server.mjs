@@ -9,6 +9,8 @@ import { AuthManager } from './src/auth/auth-manager.mjs';
 import { CodexAppServer } from './src/codex/app-server.mjs';
 import { config } from './src/config.mjs';
 import { EventHub } from './src/events.mjs';
+import { IntegrationService } from './src/integrations/service.mjs';
+import { IntegrationSessions } from './src/integrations/sessions.mjs';
 import { StaticAssets } from './src/http/static.mjs';
 import { TaskOrchestrator } from './src/tasks/orchestrator.mjs';
 import { ServerTerminal } from './src/terminal/server-terminal.mjs';
@@ -30,10 +32,12 @@ accounts.onOrchestratedThread = (threadId) => chatHandoff.markOrchestrated(threa
 const logins = new LoginSessions({ accounts, emit });
 const terminal = new ServerTerminal({ emit });
 const providerChat = new ProviderChat({ store: localThreads, accounts, emit });
+const integrationSessions = new IntegrationSessions(config.integrationsFile);
+const integrations = new IntegrationService({ auth, accounts, sessions: integrationSessions });
 const assets = new StaticAssets({ publicDir: config.publicDir, prefix: config.prefix, dev: config.dev });
-const server = createServer(createRequestHandler({ auth, codex, events, assets, accounts, orchestrator, logins, terminal, localThreads, providerChat }));
+const server = createServer(createRequestHandler({ auth, codex, events, assets, accounts, orchestrator, logins, terminal, localThreads, providerChat, integrations }));
 
-await Promise.all([auth.initialize(), assets.load()]);
+await Promise.all([auth.initialize(), assets.load(), integrationSessions.load()]);
 
 server.listen(config.port, config.host, () => {
   console.log(`Codex web UI ouvindo em ${config.host}:${config.port}.`);

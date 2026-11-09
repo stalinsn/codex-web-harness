@@ -7,6 +7,7 @@ import { applySecurityHeaders } from './http/security.mjs';
 import { registerAccountRoutes } from './routes/accounts.mjs';
 import { handleAuthApi } from './routes/auth.mjs';
 import { registerLocalFileRoutes } from './routes/local-files.mjs';
+import { handleIntegrationApi, INTEGRATION_PATHS, registerIntegrationRoutes } from './routes/integrations.mjs';
 import { registerLocalThreadRoutes } from './routes/local-threads.mjs';
 import { registerProjectRoutes } from './routes/projects.mjs';
 import { registerSystemRoutes } from './routes/system.mjs';
@@ -15,9 +16,9 @@ import { registerTerminalRoutes } from './routes/terminal.mjs';
 import { registerThreadRoutes } from './routes/threads.mjs';
 import { registerTurnRoutes } from './routes/turns.mjs';
 
-export function createRequestHandler({ auth, codex, events, assets, accounts, orchestrator, logins, terminal, localThreads, providerChat }) {
+export function createRequestHandler({ auth, codex, events, assets, accounts, orchestrator, logins, terminal, localThreads, providerChat, integrations }) {
   const router = new Router();
-  const deps = { codex, events, accounts, orchestrator, logins, terminal, localThreads, providerChat };
+  const deps = { codex, events, accounts, orchestrator, logins, terminal, localThreads, providerChat, integrations };
   registerSystemRoutes(router, deps);
   registerLocalFileRoutes(router);
   // Harness-held conversations first: their /api/threads/ext-… routes shadow the Codex ones.
@@ -28,6 +29,7 @@ export function createRequestHandler({ auth, codex, events, assets, accounts, or
   registerAccountRoutes(router, deps);
   registerTaskRoutes(router, deps);
   registerTerminalRoutes(router, deps);
+  registerIntegrationRoutes(router, deps);
 
   async function handleRequest(req, res) {
     applySecurityHeaders(res);
@@ -50,6 +52,8 @@ export function createRequestHandler({ auth, codex, events, assets, accounts, or
         return fail(res, 500, 'Não foi possível concluir a autenticação. Tente novamente.');
       }
     }
+    // Server-to-server integration routes: own auth (password + code, then bearer token).
+    if (integrations && INTEGRATION_PATHS.has(pathName)) return handleIntegrationApi(integrations, req, res, pathName);
     if (req.headers.origin && !isAllowedOrigin(req)) return fail(res, 403, 'Origem não autorizada.');
     if (!isSafeMethod(req.method) && !isAllowedOrigin(req, true)) return fail(res, 403, 'Origem não autorizada.');
     if (!auth.getSession(req.headers.cookie)) return fail(res, 401, 'Entre para usar o Codex.');

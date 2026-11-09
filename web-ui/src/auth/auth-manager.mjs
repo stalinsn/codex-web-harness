@@ -11,6 +11,7 @@ const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 const CODE_MS = 10 * 60 * 1000;
 const SEND_COOLDOWN_MS = 60 * 1000;
 const SEND_WINDOW_MS = 60 * 60 * 1000;
+const MAX_EMAIL_SENDS_PER_HOUR = 6;
 const PASSWORD_OPTIONS = { N: 1 << 15, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const PASSWORD_BYTES = 32;
 const OTP_ATTEMPTS = 5;
@@ -68,6 +69,8 @@ export class AuthManager {
     this.rateWindows = new Map();
     this.writeQueue = Promise.resolve();
     this.deliveryBusy = false;
+    // Called after a password reset, so integration tokens die with the web sessions.
+    this.onPasswordReset = null;
   }
 
   async initialize() {
@@ -156,12 +159,30 @@ export class AuthManager {
     const challenge = this.challenges.get(String(challengeId || ''));
     if (!challenge || challenge.expiresAt <= Date.now()) throw new AuthError('Esse código expirou. Inicie a etapa novamente.', 410);
     this.consumeRate(`resend:${ip}`, 5, 60 * 60 * 1000);
-    return this.issueCode(challenge.intent, String(challengeId));
+    return this.issueCode(challenge.intent, String(challengeId), challenge.detail);
   }
 
   async verifyLogin(challengeId, code) {
     await this.consumeCode(challengeId, code, 'login');
     return this.createSession();
+  }
+
+  /**
+   * Same password, rate limits and e-mail code as the web login, but the challenge can
+   * only be redeemed by verifyIntegration (never as a browser session, nor vice versa).
+   */
+  async startIntegrationLogin(password, client, ip) {
+    this.consumeRate(`login:${ip}`, 10, 15 * 60 * 1000);
+    if (!this.state.passwordHash) throw new AuthError('Este acesso ainda precisa ser configurado pelo primeiro acesso.', 409);
+    const acceptedPassword = await this.verifyPassword(String(password || ''), this.state.passwordHash);
+    if (!acceptedPassword) throw new AuthError('Senha incorreta.', 401);
+    return this.issueCode('integration', '', client);
+  }
+
+  /** @returns {Promise<{client: string}>} the client name bound to the challenge. */
+  async verifyIntegration(challengeId, code) {
+    const challenge = await this.consumeCode(challengeId, code, 'integration');
+    return { client: challenge.detail || '' };
   }
 
   async completeSetup(challengeId, code, password, confirmPassword) {
@@ -181,6 +202,7 @@ export class AuthManager {
     this.state.passwordHash = await this.hashPassword(password);
     this.state.sessions = [];
     await this.persist();
+    await this.onPasswordReset?.();
     return this.createSession();
   }
 
@@ -202,7 +224,7 @@ export class AuthManager {
     }
   }
 
-  async issueCode(intent, existingId = '') {
+  async issueCode(intent, existingId = '', detail = '') {
     if (this.deliveryBusy) throw new AuthError('Um código está sendo enviado. Aguarde alguns segundos.', 429);
     this.deliveryBusy = true;
     let challengeId = '';
@@ -212,7 +234,7 @@ export class AuthManager {
       const sends = this.state.emailSendTimestamps.filter((time) => time > now - SEND_WINDOW_MS);
       const latest = sends.at(-1) || 0;
       if (now - latest < SEND_COOLDOWN_MS) throw new AuthError('Aguarde um minuto antes de solicitar outro código.', 429);
-      if (sends.length >= 3) throw new AuthError('O limite de códigos por hora foi atingido. Tente novamente mais tarde.', 429);
+      if (sends.length >= MAX_EMAIL_SENDS_PER_HOUR) throw new AuthError('O limite de códigos por hora foi atingido. Tente novamente mais tarde.', 429);
 
       challengeId = existingId || randomBytes(24).toString('base64url');
       const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
@@ -221,12 +243,14 @@ export class AuthManager {
         codeHash: createHmac('sha256', this.state.sessionPepper).update(`${challengeId}:${code}`).digest('hex'),
         expiresAt: now + CODE_MS,
         attempts: 0,
+        ...(detail ? { detail } : {}),
       });
       this.state.emailSendTimestamps = [...sends, now];
       await this.persist();
 
-      const subject = intent === 'setup' ? 'Ative seu acesso ao Codex' : intent === 'reset' ? 'Recupere seu acesso ao Codex' : 'Seu código de acesso ao Codex';
-      const action = intent === 'setup' ? 'configurar seu acesso' : intent === 'reset' ? 'redefinir sua senha' : 'entrar no Codex';
+      const subject = intent === 'setup' ? 'Ative seu acesso ao Codex' : intent === 'reset' ? 'Recupere seu acesso ao Codex' : intent === 'integration' ? 'Código para conectar uma integração ao Codex' : 'Seu código de acesso ao Codex';
+      // `detail` is the integration client name, already restricted to [A-Za-z0-9._ -].
+      const action = intent === 'setup' ? 'configurar seu acesso' : intent === 'reset' ? 'redefinir sua senha' : intent === 'integration' ? `autorizar a integração “${detail}” (somente geração de texto)` : 'entrar no Codex';
       const html = `<div style="font-family:Arial,sans-serif;color:#171923;max-width:560px;margin:0 auto;padding:28px"><p style="color:#626b86;font-size:12px;letter-spacing:.12em;text-transform:uppercase">Acesso privado</p><h1 style="font-size:24px">Código de acesso ao Codex</h1><p>Use este código para ${action} no seu servidor. Ele expira em 10 minutos.</p><p style="font:700 32px ui-monospace,monospace;letter-spacing:.35em;background:#f2f3f8;padding:18px 20px;border-radius:12px">${code}</p><p>Se você não solicitou este código, ignore esta mensagem. Nunca compartilhe o código.</p></div>`;
       const text = `Seu código para ${action} no Codex é: ${code}\n\nEle expira em 10 minutos. Se você não solicitou este código, ignore esta mensagem. Nunca compartilhe o código.`;
 
@@ -279,6 +303,7 @@ export class AuthManager {
       throw new AuthError('O código é inválido ou expirou.', 400);
     }
     this.challenges.delete(id);
+    return challenge;
   }
 
   async hashPassword(password) {

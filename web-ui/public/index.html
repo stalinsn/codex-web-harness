@@ -247,6 +247,11 @@
             <label class="rotation-check"><input id="autoContinue" type="checkbox" /> <span>Continuar automaticamente na próxima conta da fila quando o chat atingir o limite</span></label>
             <p class="muted-note">O uso em % só é informado pelo Codex e pelo Claude Code; nas demais contas a troca acontece quando a CLI avisa que o limite acabou.</p>
           </details>
+          <details class="rotation-settings integration-settings" id="integrationSettings">
+            <summary>Integrações (somente texto)</summary>
+            <ul class="integration-list" id="integrationList" aria-live="polite"></ul>
+            <p class="muted-note">Outros sistemas entram com a mesma senha e o código por e-mail e recebem um token que só gera texto, sem ferramentas. Revogue aqui o que não reconhecer.</p>
+          </details>
           <button class="secondary-button wide-button" id="addAccount" type="button"><span class="icon" data-icon="plus"></span> Conectar nova conta</button>
         </section>
         <section class="inspector-card tasks-card" data-card="tasks" aria-label="Execuções contínuas">

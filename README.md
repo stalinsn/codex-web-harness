@@ -139,6 +139,35 @@ Cada conta usa uma pasta isolada em `CODEX_HOME/web-accounts/<id>`; contas extra
 
 Antes de usar várias contas do mesmo provedor, confira os termos de uso de cada serviço.
 
+## Integração com outros sistemas (somente texto)
+
+Outro sistema do mesmo dono (por exemplo, o Live Rooms) pode usar as contas conectadas para **gerar texto**, como JSON de pixel art ou voxels, chamando o harness de servidor para servidor. O acesso usa o mesmo login da web (senha + código de uso único por e-mail), com os mesmos limites de tentativas e de envio de códigos. Não há senha nova nem cadastro.
+
+**Login:**
+
+1. `POST /codex-agent/api/integrations/login` com `{ "password": "…", "client": "live-rooms" }` (1 a 40 caracteres: letras, números, espaço, `.`, `-`, `_`) → `200 { "challengeId", "expiresIn" }`. O código chega no e-mail configurado, com o nome do cliente.
+2. `POST /codex-agent/api/integrations/verify` com `{ "challengeId", "code", "label"? }` → `200 { "token", "expiresAt", "scopes": ["generate:text"], "id" }`. Não cria cookie nem sessão do navegador.
+
+O token (`nyxh_<id>_<segredo>`) aparece uma única vez e vale 30 dias. Em `CODEX_HOME/web-integrations.json` (permissão `0600`, gravação atômica) ficam apenas o hash SHA-256 e os metadados: id, nome, cliente, escopos, criação, último uso, expiração e revogação. São no máximo 10 tokens ativos; ao emitir o 11º, o mais antigo é revogado. Redefinir a senha revoga todos.
+
+**Chamadas com `Authorization: Bearer <token>`:**
+
+| Rota | Resposta |
+| --- | --- |
+| `GET /api/integrations/status` | `{ "valid": true, "expiresAt", "client", "scopes", "providers": [{ "id", "provider", "label", "available", "reason"? }] }` |
+| `POST /api/integrations/generate-text` | Corpo `{ "prompt": "…" (1 a 60000 caracteres), "provider"?: "auto" \| "<preset>" \| "<id da conta>", "timeoutSeconds"?: 10–300 (padrão 240) }` → `{ "text", "provider", "accountId", "ms" }` |
+| `POST /api/integrations/logout` | Revoga o próprio token → `{ "ok": true }` |
+
+Erros: `400` dados inválidos, `401` token inválido/expirado/revogado, `403` chamada de navegador, `404` provedor ou conta desconhecidos, `409` já há uma geração em andamento para o token, `422` provedor sem modo seguro, `429` limite do token (30 gerações por hora) ou das contas (com `Retry-After`), `502` falha da CLI, `503` nenhuma conta disponível, `504` tempo esgotado. Essas rotas recusam qualquer requisição com `Origin` ou `Sec-Fetch-*`: são exclusivas para servidores e não aceitam chamadas do navegador.
+
+**Modelo de segurança:** `auto` usa a primeira conta disponível da fila com as mesmas regras de ativação, login, uso, espera e percentual de troca; se ela atingir o limite, a próxima assume. A CLI roda sem ferramentas, sem MCP, sem hooks e sem histórico, em uma pasta temporária vazia que é apagada ao terminar. O prompt vai pela entrada padrão (nunca na linha de comando), a saída é lida como texto puro com limite de 1 MiB e tempo máximo. Os argumentos de cada conta (`args`) não são usados. O harness não salva prompts nem respostas e não cria conversas ou tarefas; o log registra apenas token, conta, duração e resultado.
+
+- **Claude Code:** `claude -p --output-format text --tools "" --strict-mcp-config --no-session-persistence --disable-slash-commands --settings '{"disableAllHooks":true}' [--model <modelo>]`, com o `CLAUDE_CONFIG_DIR` da conta.
+- **Codex:** desativado por padrão. Mesmo com `--sandbox read-only`, o `codex exec` mantém a ferramenta de shell, que pode ler arquivos. O harness usa `codex exec --sandbox read-only --skip-git-repo-check --color never` com overrides `-c` que desligam shell, `unified_exec`, imagens, patch, busca web e MCP, e lê o prompt por `-`. Defina `CODEX_UI_INTEGRATION_CODEX=1` somente depois de confirmar que a sua versão do Codex respeita esses overrides.
+- **Gemini CLI, Antigravity e CLI personalizada:** indisponíveis para integração, porque não há um modo sem ferramentas garantido.
+
+**Revogar:** em *Uso e ambiente → Contas e fila → Integrações (somente texto)*, a lista mostra os tokens, com nome, cliente, último uso e expiração, e o botão *Revogar*. Pela API autenticada do navegador use `GET /api/integrations/sessions` e `DELETE /api/integrations/sessions/<id>`. O próprio sistema integrado pode encerrar o token com `POST /api/integrations/logout`.
+
 ## Licença
 
 MIT. Consulte [LICENSE](LICENSE).
