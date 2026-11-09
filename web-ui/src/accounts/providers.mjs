@@ -40,7 +40,7 @@ export const PROVIDERS = {
     logout: 'claude   # depois digite /logout',
     usage: 'events',
     setup: {
-      install: 'npm install -g @anthropic-ai/claude-code',
+      install: 'npm install -g --prefix "$HOME/.local" --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code',
       notes: 'Conecte pelo login oficial da Claude com /login. O harness não pede nem armazena a senha da sua conta. A disponibilidade de modelo depende do plano e é confirmada pelo Claude ao iniciar uma tarefa.',
       flows: [
         {
