@@ -4,7 +4,9 @@ import { randomBytes } from 'node:crypto';
 import { httpError } from '../http/respond.mjs';
 import { PROVIDERS } from '../accounts/providers.mjs';
 import { AuthError } from '../auth/auth-manager.mjs';
-import { runText, textSupport } from './text-runner.mjs';
+import { runText, TEXT_EFFORTS, textSupport } from './text-runner.mjs';
+import { getAccountModelCatalog } from '../accounts/model-catalog.mjs';
+import { reportedTokenUsage } from '../accounts/parsers.mjs';
 
 export const MAX_PROMPT_CHARS = 60_000;
 export const GENERATIONS_PER_HOUR = 30;
@@ -17,11 +19,12 @@ const REFRESH_EVERY_MS = 2 * 60 * 1000;
 const clean = (value, max) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/gu, ' ').trim().slice(0, max);
 
 export class IntegrationService {
-  constructor({ auth, accounts, sessions, runTextImpl = runText, allowCodex, log = (line) => console.log(line), now = () => Date.now() }) {
+  constructor({ auth, accounts, sessions, runTextImpl = runText, modelCatalogImpl = getAccountModelCatalog, allowCodex, log = (line) => console.log(line), now = () => Date.now() }) {
     this.auth = auth;
     this.accounts = accounts;
     this.sessions = sessions;
     this.runText = runTextImpl;
+    this.modelCatalog = modelCatalogImpl;
     this.allowCodex = allowCodex;
     this.log = log;
     this.now = now;
@@ -118,6 +121,22 @@ export class IntegrationService {
     return this.status(session);
   }
 
+  /** Modelos e esforços que cada conta com modo de texto aceita (catálogo do harness). */
+  async models(session) {
+    if (!session.scopes.includes('generate:text')) throw httpError('Este token não permite gerar texto.', 403);
+    const accounts = this.accounts.registry.ordered().filter((account) => this.support(account).ok);
+    const providers = await Promise.all(accounts.map(async (account) => {
+      try {
+        const catalog = await this.modelCatalog(account, this.accounts);
+        const models = (catalog?.models ?? []).filter((item) => typeof item?.id === 'string').map((item) => ({ id: item.id, label: String(item.label ?? item.id), efforts: Array.isArray(item.efforts) ? item.efforts.filter((effort) => TEXT_EFFORTS.includes(effort)) : [] }));
+        return { id: account.id, provider: account.provider, label: account.label, current: { model: account.model || '', effort: account.effort || '' }, models };
+      } catch (error) {
+        return { id: account.id, provider: account.provider, label: account.label, current: { model: account.model || '', effort: account.effort || '' }, models: [], error: String(error?.message ?? error).slice(0, 200) };
+      }
+    }));
+    return { providers };
+  }
+
   status(session) {
     const providers = this.accounts.registry.ordered().map((account) => {
       const support = this.support(account);
@@ -178,17 +197,21 @@ export class IntegrationService {
     const timeoutSeconds = body?.timeoutSeconds ?? 240;
     if (typeof timeoutSeconds !== 'number' || !Number.isFinite(timeoutSeconds) || timeoutSeconds < 10 || timeoutSeconds > 300) throw httpError('timeoutSeconds precisa estar entre 10 e 300.', 400);
     const { rotate, list } = this.candidates(body?.provider);
+    const model = body?.model === undefined ? undefined : String(body.model);
+    if (model !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:[\]/-]{0,99}$/u.test(model)) throw httpError('Modelo inválido.', 400);
+    const effort = body?.effort === undefined ? undefined : String(body.effort);
+    if (effort !== undefined && !TEXT_EFFORTS.includes(effort)) throw httpError(`Esforço deve ser ${TEXT_EFFORTS.join(', ')}.`, 400);
     if (this.running.has(session.id)) throw httpError('Já existe uma geração em andamento para este token.', 409);
     this.consumeRate(session.id);
     this.running.add(session.id);
     try {
-      return await this.#run(session, prompt, timeoutSeconds * 1000, rotate, list);
+      return await this.#run(session, prompt, timeoutSeconds * 1000, rotate, list, { model, effort });
     } finally {
       this.running.delete(session.id);
     }
   }
 
-  async #run(session, prompt, timeoutMs, rotate, list) {
+  async #run(session, prompt, timeoutMs, rotate, list, choice = {}) {
     const deadline = this.now() + timeoutMs;
     const tried = new Set();
     let limited = '';
@@ -203,7 +226,9 @@ export class IntegrationService {
       let outcome;
       try {
         this.accounts.registry.stateOf(account.id).lastUsedAt = started;
-        outcome = await this.runText({ account, prompt, timeoutMs: remaining, ...(this.allowCodex === undefined ? {} : { allowCodex: this.allowCodex }) });
+        // Modelo/esforço só valem para a conta pedida explicitamente (no rodízio cada CLI tem os seus).
+        const pick = rotate ? {} : choice;
+        outcome = await this.runText({ account, prompt, timeoutMs: remaining, ...pick, ...(this.allowCodex === undefined ? {} : { allowCodex: this.allowCodex }) });
       } catch (error) {
         outcome = { status: 'failed', text: '', error: error.message, resetsAt: 0 };
       } finally {
@@ -212,7 +237,10 @@ export class IntegrationService {
       const ms = this.now() - started;
       await this.#recordUsage(account, outcome);
       this.log(`Integração ${session.id}: ${account.provider}/${account.id} ${outcome.status === 'completed' ? 'ok' : `falhou (${outcome.status})`} em ${ms} ms.`);
-      if (outcome.status === 'completed') return { text: outcome.text, provider: account.provider, accountId: account.id, ms };
+      if (outcome.status === 'completed') {
+        const tokens = reportedTokenUsage(outcome.tokens);
+        return { text: outcome.text, provider: account.provider, accountId: account.id, ms, ...(tokens ? { tokens } : {}), ...(!rotate && choice.model ? { model: choice.model } : {}), ...(!rotate && choice.effort ? { effort: choice.effort } : {}) };
+      }
       if (outcome.status === 'rate-limited') {
         await this.accounts.markLimited(account.id, { resetsAt: outcome.resetsAt, message: outcome.error }).catch(() => {});
         limited = outcome.error || 'Limite de uso atingido.';

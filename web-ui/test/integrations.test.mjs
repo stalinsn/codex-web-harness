@@ -445,3 +445,29 @@ test('geração com keepalive: espaços enquanto espera e resultado ou erro no c
   await keepAliveGenerate({ generate: async () => { throw Object.assign(new Error('limite'), { statusCode: 429, retryAfter: 60 }); } }, {}, {}, res2, 5);
   assert.deepEqual(JSON.parse(failed.join('')), { error: 'limite', statusCode: 429, retryAfter: 60 });
 });
+
+test('modelo e esforço por geração, catálogo e tokens na resposta', async () => {
+  const claude = account('claude-a', 'claude-code', { model: 'opus', effort: 'medium' });
+  const command = buildTextCommand(claude, { model: 'haiku', effort: 'low' });
+  assert.deepEqual(command.args.slice(-4), ['--model', 'haiku', '--effort', 'low']);
+  const codex = buildTextCommand(account('codex-b', 'codex'), { allowCodex: true, model: 'luna-6', effort: 'low' });
+  assert.ok(codex.args.includes('model_reasoning_effort="low"') && codex.args.includes('luna-6'));
+  assert.ok(!buildTextCommand(claude, { effort: 'turbo' }).args.includes('turbo'), 'esforço desconhecido é ignorado');
+
+  const accounts = fakeAccounts([claude]);
+  const seen = [];
+  const runTextImpl = async (input) => { seen.push({ model: input.model, effort: input.effort }); return { status: 'completed', text: 'ok', error: '', resetsAt: 0, tokens: { input_tokens: 7, output_tokens: 3 } }; };
+  const modelCatalogImpl = async () => ({ models: [{ id: 'opus', label: 'Opus', efforts: ['low', 'medium', 'turbo'] }] });
+  const sessions = await new IntegrationSessions(join(await tempDir('harness-int-'), 'i.json')).load();
+  const integrations = new IntegrationService({ auth: fakeAuth(), accounts, sessions, runTextImpl, modelCatalogImpl, log() {} });
+  await sessions.issue({ client: 'live-rooms' });
+  const entry = sessions.sessions[0];
+  const result = await integrations.generate(entry, { prompt: 'x', provider: 'claude-a', model: 'opus', effort: 'low' });
+  assert.deepEqual(seen[0], { model: 'opus', effort: 'low' });
+  assert.equal(result.tokens.totalTokens, 10);
+  assert.equal(result.effort, 'low');
+  await assert.rejects(integrations.generate(entry, { prompt: 'x', provider: 'claude-a', effort: 'turbo' }), (error) => error.statusCode === 400);
+  const catalog = await integrations.models(entry);
+  assert.deepEqual(catalog.providers[0].models[0].efforts, ['low', 'medium']);
+  assert.deepEqual(catalog.providers[0].current, { model: 'opus', effort: 'medium' });
+});

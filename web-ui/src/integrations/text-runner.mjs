@@ -126,21 +126,26 @@ export function textSupport(account, { allowCodex = config.integrationCodexText,
   return { ok: false, reason: UNSUPPORTED[account.provider] || 'Provedor sem modo de texto seguro.' };
 }
 
+/** Níveis de esforço aceitos na geração de texto. */
+export const TEXT_EFFORTS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+
 /** The exact command for a text run. Account-level `args` are never used here. */
 export function buildTextCommand(account, options = {}) {
   const support = textSupport(account, options);
   if (!support.ok) throw Object.assign(new Error(support.reason), { statusCode: 422 });
-  const model = MODEL.test(account.model || '') ? account.model : '';
+  // Modelo/esforço pedidos pela integração (validados) vencem os da conta.
+  const model = MODEL.test(options.model || '') ? options.model : MODEL.test(account.model || '') ? account.model : '';
+  const effort = TEXT_EFFORTS.includes(options.effort) ? options.effort : '';
   if (account.provider === 'claude-code') {
-    return { bin: commandFor(account), args: [...CLAUDE_TEXT_ARGS, ...(model ? ['--model', model] : [])] };
+    return { bin: commandFor(account), args: [...CLAUDE_TEXT_ARGS, ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : [])] };
   }
   if (account.provider === 'antigravity') {
     // O agy só aceita o prompt por argumento; ele é acrescentado em runText.
     const agyBin = account.bin && account.bin.startsWith('/') ? account.bin : join(config.homeDir, '.local', 'bin', 'agy');
     const jail = agyJailArgs({ agyBin, accountDir: account.dir, workDir: options.workDir || '/nonexistent', uid: process.getuid?.() ?? 1000, gid: process.getgid?.() ?? 1000 });
-    return { bin: 'sudo', args: [...jail, '--output-format', 'text', '--print-timeout', '280s', ...(model ? ['--model', model] : []), '-p'], promptArg: true };
+    return { bin: 'sudo', args: [...jail, '--output-format', 'text', '--print-timeout', '280s', ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : []), '-p'], promptArg: true };
   }
-  return { bin: account.bin || config.codexBin, args: [...CODEX_TEXT_ARGS, ...(model ? ['--model', model] : []), '-'] };
+  return { bin: account.bin || config.codexBin, args: [...CODEX_TEXT_ARGS, ...(model ? ['--model', model] : []), ...(effort ? ['-c', `model_reasoning_effort="${effort}"`] : []), '-'] };
 }
 
 const toPercent = (value) => {
@@ -202,9 +207,9 @@ const lastLines = (text, count = 3) => String(text || '').replace(/\u001b\[[0-9;
 /**
  * @returns {Promise<{status: 'completed'|'rate-limited'|'failed'|'timeout'|'too-large', text: string, error: string, resetsAt: number, usage?: object, tokens?: object}>}
  */
-export async function runText({ account, prompt, timeoutMs, maxOutputBytes = MAX_OUTPUT_BYTES, spawnImpl = spawn, tmpRoot = tmpdir(), allowCodex, allowAgy }) {
+export async function runText({ account, prompt, timeoutMs, maxOutputBytes = MAX_OUTPUT_BYTES, spawnImpl = spawn, tmpRoot = tmpdir(), allowCodex, allowAgy, model, effort }) {
   const dir = await mkdtemp(join(tmpRoot, 'harness-text-'));
-  const command = (() => { try { return buildTextCommand(account, { allowCodex, ...(allowAgy === undefined ? {} : { allowAgy }), workDir: dir }); } catch (error) { return { error }; } })();
+  const command = (() => { try { return buildTextCommand(account, { allowCodex, ...(allowAgy === undefined ? {} : { allowAgy }), workDir: dir, model, effort }); } catch (error) { return { error }; } })();
   if (command.error) { await rm(dir, { recursive: true, force: true }).catch(() => {}); throw command.error; }
   const { bin } = command;
   const args = command.promptArg ? [...command.args, prompt] : command.args;

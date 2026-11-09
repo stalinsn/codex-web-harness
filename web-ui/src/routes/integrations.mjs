@@ -19,6 +19,7 @@ export const INTEGRATION_PATHS = new Set([
   '/api/integrations/logout',
   '/api/integrations/generate-text',
   '/api/integrations/refresh-usage',
+  '/api/integrations/models',
 ]);
 
 /** Browsers always send one of these on cross-site or scripted requests. */
@@ -68,7 +69,7 @@ export async function keepAliveGenerate(integrations, session, body, res, interv
 export async function handleIntegrationApi(integrations, req, res, pathName) {
   try {
     if (isBrowserRequest(req)) return fail(res, 403, 'Esta rota aceita apenas chamadas entre servidores.');
-    const isStatus = pathName === '/api/integrations/status';
+    const isStatus = pathName === '/api/integrations/status' || pathName === '/api/integrations/models';
     if (req.method !== (isStatus ? 'GET' : 'POST')) return fail(res, 405, 'Método não permitido.');
 
     if (pathName === '/api/integrations/login') {
@@ -83,6 +84,7 @@ export async function handleIntegrationApi(integrations, req, res, pathName) {
       res.setHeader('WWW-Authenticate', 'Bearer');
       return fail(res, 401, 'Token de integração inválido, expirado ou revogado.');
     }
+    if (pathName === '/api/integrations/models') return json(res, 200, await integrations.models(session));
     if (isStatus) return json(res, 200, integrations.status(session));
     if (pathName === '/api/integrations/logout') return json(res, 200, await integrations.logout(session));
     if (pathName === '/api/integrations/refresh-usage') return json(res, 200, await integrations.refreshUsage(session, await readBody(req, limits.maxAuthBody).catch(() => ({}))));
