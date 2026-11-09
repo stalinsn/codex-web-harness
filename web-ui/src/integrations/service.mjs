@@ -33,6 +33,33 @@ export class IntegrationService {
     return textSupport(account, this.allowCodex === undefined ? undefined : { allowCodex: this.allowCodex });
   }
 
+  /** Last known subscription usage of an account (from its most recent run). */
+  #usageOf(account) {
+    const state = this.accounts.registry.stateOf(account.id);
+    const now = this.now();
+    const tokens = state.reportedUsage || {};
+    return {
+      percent: state.percent ?? null,
+      resetsAt: state.resetsAt || 0,
+      checkedAt: state.percentAt || 0,
+      windows: state.usageWindows || null,
+      cooldownUntil: state.cooldownUntil > now ? state.cooldownUntil : 0,
+      tokens: { total: tokens.totalTokens || 0, runs: tokens.runs || 0, lastAt: tokens.lastAt || 0 },
+    };
+  }
+
+  async #recordUsage(account, outcome) {
+    try {
+      if (outcome.usage) {
+        this.accounts.registry.stateOf(account.id).usageWindows = outcome.usage.windows;
+        await this.accounts.recordUsage(account.id, outcome.usage.percent, outcome.usage.resetsAt);
+      }
+      if (outcome.tokens) await this.accounts.recordReportedUsage(account.id, outcome.tokens);
+    } catch (error) {
+      this.log(`Integração: não foi possível registrar o uso de ${account.id}: ${error.message}`);
+    }
+  }
+
   async startLogin(body, ip) {
     const client = clean(body?.client, 41);
     if (!CLIENT.test(client)) throw new AuthError('Informe o nome do sistema cliente (1 a 40 letras, números, espaço, ponto, hífen ou sublinhado).', 400);
@@ -55,7 +82,14 @@ export class IntegrationService {
       const support = this.support(account);
       const availability = this.accounts.availability(account);
       const available = support.ok && availability.ok;
-      return { id: account.id, provider: account.provider, label: account.label, available, ...(available ? {} : { reason: support.reason || availability.reason }) };
+      return {
+        id: account.id,
+        provider: account.provider,
+        label: account.label,
+        available,
+        ...(available ? {} : { reason: support.reason || availability.reason }),
+        ...(support.ok ? { usage: this.#usageOf(account) } : {}),
+      };
     });
     return { valid: true, expiresAt: session.expiresAt, client: session.client, scopes: [...session.scopes], providers };
   }
@@ -135,6 +169,7 @@ export class IntegrationService {
         this.accounts.release(account.id, taskId);
       }
       const ms = this.now() - started;
+      await this.#recordUsage(account, outcome);
       this.log(`Integração ${session.id}: ${account.provider}/${account.id} ${outcome.status === 'completed' ? 'ok' : `falhou (${outcome.status})`} em ${ms} ms.`);
       if (outcome.status === 'completed') return { text: outcome.text, provider: account.provider, accountId: account.id, ms };
       if (outcome.status === 'rate-limited') {

@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { config } from '../config.mjs';
 import { accountEnv, commandFor } from '../accounts/cli-runner.mjs';
-import { looksRateLimited, resetFromText } from '../accounts/parsers.mjs';
+import { looksRateLimited, reportedTokenUsage, resetFromText } from '../accounts/parsers.mjs';
 
 export const MAX_OUTPUT_BYTES = 1024 * 1024;
 const KILL_GRACE_MS = 3000;
@@ -21,9 +21,13 @@ const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:[\]/-]{0,99}$/u;
 // MCP servers from any settings, --disable-slash-commands blocks custom commands/skills
 // (which can embed shell snippets), disableAllHooks stops settings hooks and
 // --no-session-persistence keeps nothing on disk. No prompt argument: -p reads stdin.
+// stream-json (needs --verbose) carries the answer in the final `result` event plus the
+// subscription windows (`rate_limit_event`) and token usage, recorded for the account.
+// The `init` event lists tools/MCP servers: any non-empty list discards the answer.
 export const CLAUDE_TEXT_ARGS = Object.freeze([
   '-p',
-  '--output-format', 'text',
+  '--output-format', 'stream-json',
+  '--verbose',
   '--tools', '',
   '--strict-mcp-config',
   '--no-session-persistence',
@@ -74,13 +78,68 @@ export function buildTextCommand(account, options = {}) {
   return { bin: account.bin || config.codexBin, args: [...CODEX_TEXT_ARGS, ...(model ? ['--model', model] : []), '-'] };
 }
 
+const toPercent = (value) => {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return null;
+  return Math.round((number <= 1 ? number * 100 : number) * 10) / 10;
+};
+
+/**
+ * Subscription windows from a Claude `rate_limit_event`: { five_hour: {percent, resetsAt,
+ * status}, seven_day: ... }. `percent`/`resetsAt` are the tightest window, which is what
+ * the account queue uses to decide availability.
+ */
+export function claudeUsageFromRateLimit(info) {
+  if (!info || typeof info !== 'object') return null;
+  const windows = {};
+  for (const [name, value] of Object.entries(info.unifiedWindows || {})) {
+    const percent = toPercent(value?.utilization);
+    if (percent == null || !/^[a-z0-9_]{1,40}$/u.test(name)) continue;
+    windows[name] = { percent, resetsAt: Number(value.resetsAt) || 0, status: String(value.status || '').slice(0, 40) };
+  }
+  if (!Object.keys(windows).length) {
+    const percent = toPercent(info.utilization);
+    if (percent == null) return null;
+    windows[String(info.rateLimitType || 'janela').slice(0, 40)] = { percent, resetsAt: Number(info.resetsAt) || 0, status: String(info.status || '').slice(0, 40) };
+  }
+  const tightest = Object.values(windows).sort((a, b) => b.percent - a.percent)[0];
+  return { percent: tightest.percent, resetsAt: tightest.resetsAt, windows };
+}
+
+/** Reads the stream-json lines of a text run. Unknown or broken lines are ignored. */
+export function readClaudeStream(raw) {
+  const out = { result: null, usage: null, tokens: null, limit: null, exposedTools: false };
+  for (const line of String(raw || '').split('\n')) {
+    if (!line.trim()) continue;
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    if (event?.type === 'system' && event.subtype === 'init') {
+      const listed = (value) => Array.isArray(value) && value.length > 0;
+      if (listed(event.tools) || listed(event.mcp_servers)) out.exposedTools = true;
+    } else if (event?.type === 'rate_limit_event') {
+      const info = event.rate_limit_info || {};
+      out.usage = claudeUsageFromRateLimit(info) || out.usage;
+      if (/rate_?limited|rejected|exceeded/iu.test(String(info.status || ''))) {
+        out.limit = { resetsAt: Number(info.resetsAt) || 0, message: `Limite da assinatura (${info.rateLimitType || 'uso'})` };
+      }
+    } else if (event?.type === 'result') {
+      const text = typeof event.result === 'string' ? event.result : '';
+      out.result = { ok: !event.is_error && event.subtype === 'success', text };
+      out.tokens = reportedTokenUsage(event.usage) ? event.usage : null;
+      if (event.is_error && looksRateLimited(text)) out.limit = { resetsAt: resetFromText(text), message: text.replace(/\|\d{10}\b/u, '').slice(0, 300) };
+    }
+  }
+  return out;
+}
+
 const lastLines = (text, count = 3) => String(text || '').replace(/\u001b\[[0-9;]*m/gu, '').trim().split('\n').map((line) => line.trim()).filter(Boolean).slice(-count).join(' ').slice(-600);
 
 /**
- * @returns {Promise<{status: 'completed'|'rate-limited'|'failed'|'timeout'|'too-large', text: string, error: string, resetsAt: number}>}
+ * @returns {Promise<{status: 'completed'|'rate-limited'|'failed'|'timeout'|'too-large', text: string, error: string, resetsAt: number, usage?: object, tokens?: object}>}
  */
 export async function runText({ account, prompt, timeoutMs, maxOutputBytes = MAX_OUTPUT_BYTES, spawnImpl = spawn, tmpRoot = tmpdir(), allowCodex }) {
   const { bin, args } = buildTextCommand(account, { allowCodex });
+  const streamed = account.provider === 'claude-code';
   const dir = await mkdtemp(join(tmpRoot, 'harness-text-'));
   try {
     return await new Promise((resolvePromise) => {
@@ -135,7 +194,26 @@ export async function runText({ account, prompt, timeoutMs, maxOutputBytes = MAX
       });
       child.on('close', (code) => {
         if (!finish()) return;
-        const text = Buffer.concat(chunks).toString('utf8');
+        let text = Buffer.concat(chunks).toString('utf8');
+        if (streamed && !reason) {
+          const stream = readClaudeStream(text);
+          if (stream.usage) outcome.usage = stream.usage;
+          if (stream.tokens) outcome.tokens = stream.tokens;
+          if (stream.exposedTools) {
+            Object.assign(outcome, { status: 'failed', error: 'A CLI iniciou com ferramentas ou MCP ativos; a resposta foi descartada.' });
+            resolvePromise(outcome);
+            return;
+          }
+          if (stream.limit) {
+            Object.assign(outcome, { status: 'rate-limited', resetsAt: stream.limit.resetsAt, error: stream.limit.message });
+            resolvePromise(outcome);
+            return;
+          }
+          if (stream.result) {
+            if (stream.result.ok) text = stream.result.text;
+            else { outcome.error = lastLines(stream.result.text, 2) || 'A CLI terminou com erro.'; text = stream.result.text; code = code || 1; }
+          }
+        }
         if (reason === 'timeout') Object.assign(outcome, { status: 'timeout', error: 'A geração excedeu o tempo máximo.' });
         else if (reason === 'too-large') Object.assign(outcome, { status: 'too-large', error: 'A resposta ultrapassou o tamanho máximo permitido.' });
         else if (code === 0 && text.trim()) Object.assign(outcome, { status: 'completed', text: text.replace(/\s+$/u, '') });

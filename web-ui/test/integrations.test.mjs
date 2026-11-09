@@ -11,7 +11,7 @@ import { AccountService } from '../src/accounts/service.mjs';
 import { AuthError, AuthManager } from '../src/auth/auth-manager.mjs';
 import { IntegrationService } from '../src/integrations/service.mjs';
 import { INTEGRATION_TTL_MS, IntegrationSessions, MAX_ACTIVE_INTEGRATIONS } from '../src/integrations/sessions.mjs';
-import { buildTextCommand, CLAUDE_TEXT_ARGS, runText, textSupport } from '../src/integrations/text-runner.mjs';
+import { buildTextCommand, CLAUDE_TEXT_ARGS, claudeUsageFromRateLimit, readClaudeStream, runText, textSupport } from '../src/integrations/text-runner.mjs';
 import { handleIntegrationApi } from '../src/routes/integrations.mjs';
 
 const tempDir = (prefix) => mkdtemp(join(tmpdir(), prefix));
@@ -173,7 +173,7 @@ test('Claude Code text runs use the no-tools argument list, stdin and an empty t
   const { bin, args } = buildTextCommand(claude);
   assert.equal(bin, 'claude');
   assert.deepEqual(args, [...CLAUDE_TEXT_ARGS, '--model', 'sonnet']);
-  assert.deepEqual(CLAUDE_TEXT_ARGS, ['-p', '--output-format', 'text', '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--disable-slash-commands', '--settings', '{"disableAllHooks":true}']);
+  assert.deepEqual(CLAUDE_TEXT_ARGS, ['-p', '--output-format', 'stream-json', '--verbose', '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--disable-slash-commands', '--settings', '{"disableAllHooks":true}']);
   assert.equal(args.includes('bypassPermissions'), false);
 
   let seenDir = '';
@@ -191,6 +191,68 @@ test('Claude Code text runs use the no-tools argument list, stdin and an empty t
   assert.deepEqual(call.options.stdio, ['pipe', 'pipe', 'pipe']);
   assert.equal(call.options.env.CLAUDE_CONFIG_DIR, claude.dir);
   await assert.rejects(access(seenDir));
+});
+
+const streamLines = (...events) => `${events.map((event) => JSON.stringify(event)).join('\n')}\n`;
+const INIT = { type: 'system', subtype: 'init', tools: [], mcp_servers: [], slash_commands: [] };
+const RATE = { type: 'rate_limit_event', rate_limit_info: { status: 'allowed', resetsAt: 1794275400, rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 0.09, resetsAt: 1794275400, status: 'allowed' }, seven_day: { utilization: 0.28, resetsAt: 1794484800, status: 'allowed' } } } };
+const RESULT = { type: 'result', subtype: 'success', is_error: false, result: '{"ok":true}', usage: { input_tokens: 2, output_tokens: 8 } };
+
+test('Claude stream-json runs return the result text plus subscription usage', async () => {
+  const claude = account('claude-a', 'claude-code');
+  const spawn = fakeSpawn(reply(streamLines(INIT, { type: 'assistant' }, RATE, RESULT)));
+  const outcome = await runText({ account: claude, prompt: 'oi', timeoutMs: 5000, spawnImpl: spawn.impl });
+  assert.equal(outcome.status, 'completed');
+  assert.equal(outcome.text, '{"ok":true}');
+  assert.deepEqual(outcome.usage, {
+    percent: 28,
+    resetsAt: 1794484800,
+    windows: { five_hour: { percent: 9, resetsAt: 1794275400, status: 'allowed' }, seven_day: { percent: 28, resetsAt: 1794484800, status: 'allowed' } },
+  });
+  assert.deepEqual(outcome.tokens, { input_tokens: 2, output_tokens: 8 });
+  assert.equal(claudeUsageFromRateLimit({ utilization: 0.5, resetsAt: 10, rateLimitType: 'five_hour' }).windows.five_hour.percent, 50);
+  assert.equal(claudeUsageFromRateLimit({}), null);
+});
+
+test('Claude stream-json runs are discarded when tools or MCP servers show up', async () => {
+  const claude = account('claude-a', 'claude-code');
+  for (const init of [{ ...INIT, tools: ['Bash'] }, { ...INIT, mcp_servers: [{ name: 'x' }] }]) {
+    const spawn = fakeSpawn(reply(streamLines(init, RESULT)));
+    const outcome = await runText({ account: claude, prompt: 'oi', timeoutMs: 5000, spawnImpl: spawn.impl });
+    assert.equal(outcome.status, 'failed');
+    assert.equal(outcome.text, '');
+  }
+  assert.equal(readClaudeStream(streamLines(INIT, RESULT)).exposedTools, false);
+});
+
+test('Claude stream-json limits and errors are reported', async () => {
+  const claude = account('claude-a', 'claude-code');
+  const rejected = { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 1800000000, rateLimitType: 'seven_day' } };
+  const limited = await runText({ account: claude, prompt: 'oi', timeoutMs: 5000, spawnImpl: fakeSpawn(reply(streamLines(INIT, rejected), 1)).impl });
+  assert.equal(limited.status, 'rate-limited');
+  assert.equal(limited.resetsAt, 1800000000);
+  const failed = await runText({ account: claude, prompt: 'oi', timeoutMs: 5000, spawnImpl: fakeSpawn(reply(streamLines(INIT, { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'falhou feio' }), 1)).impl });
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.error, /falhou feio/u);
+});
+
+test('generate-text records usage and status reports it per account', async () => {
+  const accounts = fakeAccounts([account('claude-a', 'claude-code'), account('gem', 'gemini-cli')]);
+  const usage = { percent: 28, resetsAt: 1794484800, windows: { five_hour: { percent: 9, resetsAt: 1794275400, status: 'allowed' }, seven_day: { percent: 28, resetsAt: 1794484800, status: 'allowed' } } };
+  const runTextImpl = async () => ({ status: 'completed', text: 'ok', error: '', resetsAt: 0, usage, tokens: { input_tokens: 2, output_tokens: 8 } });
+  const sessions = await new IntegrationSessions(join(await tempDir('harness-int-'), 'i.json')).load();
+  const integrations = new IntegrationService({ auth: fakeAuth(), accounts, sessions, runTextImpl, log() {} });
+  await sessions.issue({ client: 'live-rooms' });
+  const entry = sessions.sessions[0];
+  await integrations.generate(entry, { prompt: 'x' });
+  const [claude, gem] = integrations.status(entry).providers;
+  assert.equal(claude.usage.percent, 28);
+  assert.equal(claude.usage.resetsAt, 1794484800);
+  assert.deepEqual(claude.usage.windows, usage.windows);
+  assert.equal(claude.usage.tokens.total, 10);
+  assert.equal(claude.usage.tokens.runs, 1);
+  assert.ok(claude.usage.checkedAt > 0);
+  assert.equal(gem.usage, undefined, 'contas sem modo de texto não expõem uso');
 });
 
 test('providers without a guaranteed no-tools mode are refused', () => {

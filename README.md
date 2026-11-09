@@ -154,7 +154,7 @@ O token (`nyxh_<id>_<segredo>`) aparece uma única vez e vale 30 dias. Em `CODEX
 
 | Rota | Resposta |
 | --- | --- |
-| `GET /api/integrations/status` | `{ "valid": true, "expiresAt", "client", "scopes", "providers": [{ "id", "provider", "label", "available", "reason"? }] }` |
+| `GET /api/integrations/status` | `{ "valid": true, "expiresAt", "client", "scopes", "providers": [{ "id", "provider", "label", "available", "reason"?, "usage"? }] }`. `usage` (só contas com modo de texto): `percent` e `resetsAt` da janela mais apertada, `windows` (ex.: `five_hour`, `seven_day`, cada uma com `percent`, `resetsAt`, `status`), `checkedAt`, `cooldownUntil` e `tokens` `{ total, runs, lastAt }`; atualizado a cada geração do Claude Code (`stream-json`). |
 | `POST /api/integrations/generate-text` | Corpo `{ "prompt": "…" (1 a 60000 caracteres), "provider"?: "auto" \| "<preset>" \| "<id da conta>", "timeoutSeconds"?: 10–300 (padrão 240) }` → `{ "text", "provider", "accountId", "ms" }` |
 | `POST /api/integrations/logout` | Revoga o próprio token → `{ "ok": true }` |
 
