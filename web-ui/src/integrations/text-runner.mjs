@@ -35,30 +35,61 @@ export const CLAUDE_TEXT_ARGS = Object.freeze([
   '--settings', '{"disableAllHooks":true}',
 ]);
 
-// Codex exec: read-only sandbox (no writes, no network) and every tool feature turned
-// off through config overrides; `-` reads the prompt from stdin. The overrides could not
-// be verified against the installed Codex version, and `codex exec` silently ignores
-// unknown keys, so this stays disabled unless CODEX_UI_INTEGRATION_CODEX=1.
+// Codex exec (verificado na 0.164 com arquivo-isca): sem config do usuário (MCP), sem regras,
+// sem sessão em disco, sandbox só leitura e todos os recursos de ferramenta desligados por
+// --disable (conectores "apps", shell, code mode/exec, MCP, imagem, navegador, subagentes,
+// hooks). Sobram só ferramentas inertes (wait/request_user_input/colaboração com a mesma
+// config). --json: a resposta vem do último agent_message; qualquer item de ferramenta
+// (comando, arquivo, MCP, web) descarta a resposta. `-` lê o prompt do stdin.
+export const CODEX_DISABLED_FEATURES = Object.freeze([
+  'apps', 'shell_tool', 'plugins', 'remote_plugin', 'browser_use', 'browser_use_external', 'computer_use',
+  'image_generation', 'multi_agent', 'hooks', 'in_app_browser', 'goals', 'incremental_tools', 'code_mode_host',
+  'code_mode_interrupt', 'unified_exec', 'unified_exec_tty', 'view_image', 'sleep_tool', 'tool_suggest',
+  'skill_mcp_dependency_install', 'tool_call_mcp_elicitation', 'guardian_approval',
+]);
 export const CODEX_TEXT_ARGS = Object.freeze([
   'exec',
-  '--sandbox', 'read-only',
   '--skip-git-repo-check',
+  '--ephemeral',
+  '--ignore-user-config',
+  '--ignore-rules',
+  '--sandbox', 'read-only',
   '--color', 'never',
-  '-c', 'features.shell_tool=false',
-  '-c', 'features.unified_exec=false',
-  '-c', 'features.view_image_tool=false',
-  '-c', 'features.apply_patch_freeform=false',
+  '--json',
+  ...CODEX_DISABLED_FEATURES.flatMap((feature) => ['--disable', feature]),
   '-c', 'web_search="disabled"',
-  '-c', 'tools.web_search=false',
   '-c', 'mcp_servers={}',
 ]);
+
+/** Itens do Codex que não usam ferramenta. */
+const CODEX_INERT_ITEMS = new Set(['agent_message', 'reasoning', 'error']);
+
+/** Lê o JSONL do `codex exec --json`: texto final, tokens, limite e ferramentas usadas. */
+export function readCodexStream(raw) {
+  const out = { text: null, tokens: null, limit: null, usedTools: [], failure: '' };
+  for (const line of String(raw || '').split('\n')) {
+    if (!line.trim()) continue;
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    const item = event?.item;
+    if (item && typeof item.type === 'string' && !CODEX_INERT_ITEMS.has(item.type)) out.usedTools.push(item.type);
+    if (event?.type === 'item.completed' && item?.type === 'agent_message' && typeof item.text === 'string') out.text = item.text;
+    if (event?.type === 'turn.completed' && event.usage && typeof event.usage === 'object') out.tokens = event.usage;
+    if (event?.type === 'turn.failed' || event?.type === 'error') {
+      const message = String(event.error?.message ?? event.message ?? 'falha do Codex');
+      out.failure = message.slice(0, 400);
+      if (looksRateLimited(message)) out.limit = { resetsAt: resetFromText(message), message: out.failure };
+    }
+  }
+  return out;
+}
 
 const UNSUPPORTED = {
   antigravity: 'O Antigravity CLI não oferece um modo comprovadamente sem ferramentas; a geração de texto não usa esta conta.',
   'gemini-cli': 'O Gemini CLI não oferece um modo comprovadamente sem ferramentas; a geração de texto não usa esta conta.',
   custom: 'CLIs personalizadas não têm um modo sem ferramentas garantido pelo harness.',
 };
-const CODEX_DISABLED = 'O Codex exec mantém ferramentas (leitura de arquivos pelo shell) mesmo em --sandbox read-only, e não foi possível confirmar como desativá-las nesta versão. Ative com CODEX_UI_INTEGRATION_CODEX=1 somente após conferir.';
+const CODEX_DISABLED = 'O Codex foi desligado na integração (CODEX_UI_INTEGRATION_CODEX=0).';
 
 /** Whether an account's provider can run text generation safely. */
 export function textSupport(account, { allowCodex = config.integrationCodexText } = {}) {
@@ -140,6 +171,7 @@ const lastLines = (text, count = 3) => String(text || '').replace(/\u001b\[[0-9;
 export async function runText({ account, prompt, timeoutMs, maxOutputBytes = MAX_OUTPUT_BYTES, spawnImpl = spawn, tmpRoot = tmpdir(), allowCodex }) {
   const { bin, args } = buildTextCommand(account, { allowCodex });
   const streamed = account.provider === 'claude-code';
+  const codexJson = account.provider === 'codex';
   const dir = await mkdtemp(join(tmpRoot, 'harness-text-'));
   try {
     return await new Promise((resolvePromise) => {
@@ -213,6 +245,22 @@ export async function runText({ account, prompt, timeoutMs, maxOutputBytes = MAX
             if (stream.result.ok) text = stream.result.text;
             else { outcome.error = lastLines(stream.result.text, 2) || 'A CLI terminou com erro.'; text = stream.result.text; code = code || 1; }
           }
+        }
+        if (codexJson && !reason) {
+          const stream = readCodexStream(text);
+          if (stream.tokens) outcome.tokens = stream.tokens;
+          if (stream.usedTools.length) {
+            Object.assign(outcome, { status: 'failed', error: `O Codex usou ferramentas (${[...new Set(stream.usedTools)].join(', ')}); a resposta foi descartada.` });
+            resolvePromise(outcome);
+            return;
+          }
+          if (stream.limit) {
+            Object.assign(outcome, { status: 'rate-limited', resetsAt: stream.limit.resetsAt, error: stream.limit.message });
+            resolvePromise(outcome);
+            return;
+          }
+          if (stream.text !== null) text = stream.text;
+          else { outcome.error = stream.failure || 'O Codex não devolveu texto.'; text = ''; code = code || 1; }
         }
         if (reason === 'timeout') Object.assign(outcome, { status: 'timeout', error: 'A geração excedeu o tempo máximo.' });
         else if (reason === 'too-large') Object.assign(outcome, { status: 'too-large', error: 'A resposta ultrapassou o tamanho máximo permitido.' });

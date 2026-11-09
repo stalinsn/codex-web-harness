@@ -11,7 +11,7 @@ import { AccountService } from '../src/accounts/service.mjs';
 import { AuthError, AuthManager } from '../src/auth/auth-manager.mjs';
 import { IntegrationService } from '../src/integrations/service.mjs';
 import { INTEGRATION_TTL_MS, IntegrationSessions, MAX_ACTIVE_INTEGRATIONS } from '../src/integrations/sessions.mjs';
-import { buildTextCommand, CLAUDE_TEXT_ARGS, claudeUsageFromRateLimit, readClaudeStream, runText, textSupport } from '../src/integrations/text-runner.mjs';
+import { buildTextCommand, CLAUDE_TEXT_ARGS, claudeUsageFromRateLimit, readClaudeStream, readCodexStream, runText, textSupport } from '../src/integrations/text-runner.mjs';
 import { handleIntegrationApi } from '../src/routes/integrations.mjs';
 
 const tempDir = (prefix) => mkdtemp(join(tmpdir(), prefix));
@@ -270,9 +270,14 @@ test('providers without a guaranteed no-tools mode are refused', () => {
   assert.equal(textSupport(account('codex', 'codex'), { allowCodex: false }).ok, false);
   assert.throws(() => buildTextCommand(account('codex', 'codex'), { allowCodex: false }), (error) => error.statusCode === 422);
   const codex = buildTextCommand(account('codex-b', 'codex'), { allowCodex: true });
-  assert.deepEqual(codex.args.slice(0, 4), ['exec', '--sandbox', 'read-only', '--skip-git-repo-check']);
+  assert.deepEqual(codex.args.slice(0, 5), ['exec', '--skip-git-repo-check', '--ephemeral', '--ignore-user-config', '--ignore-rules']);
   assert.equal(codex.args.at(-1), '-');
-  assert.ok(codex.args.includes('features.shell_tool=false'));
+  for (const feature of ['apps', 'shell_tool', 'code_mode_host', 'unified_exec', 'plugins', 'multi_agent']) {
+    const at = codex.args.indexOf(feature);
+    assert.ok(at > 0 && codex.args[at - 1] === '--disable', `desliga ${feature}`);
+  }
+  assert.ok(codex.args.includes('--json'));
+  assert.equal(textSupport(account('codex', 'codex'), { allowCodex: true }).ok, true);
 });
 
 test('text runs stop on timeout and on oversized output, and detect limits', async () => {
@@ -343,4 +348,35 @@ test('generate-text allows one run per token and 30 per hour', async () => {
   for (let index = 1; index < 30; index += 1) await integrations.generate(one, { prompt: 'x' });
   await assert.rejects(integrations.generate(one, { prompt: 'x' }), (error) => error.statusCode === 429 && error.retryAfter > 0);
   assert.equal((await integrations.generate(two, { prompt: 'x' })).text, 'ok');
+});
+
+const codexLines = (...events) => `${events.map((event) => JSON.stringify(event)).join('\n')}\n`;
+
+test('Codex --json: resposta do último agent_message, tokens e descarte se usar ferramenta', async () => {
+  const codex = account('codex-b', 'codex');
+  const ok = fakeSpawn(reply(codexLines(
+    { type: 'thread.started' },
+    { type: 'item.completed', item: { type: 'reasoning', text: 'pensando' } },
+    { type: 'item.completed', item: { type: 'agent_message', text: '{"ok":true}' } },
+    { type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 5 } },
+  )));
+  const outcome = await runText({ account: codex, prompt: 'oi', timeoutMs: 5000, spawnImpl: ok.impl, allowCodex: true });
+  assert.equal(outcome.status, 'completed');
+  assert.equal(outcome.text, '{"ok":true}');
+  assert.deepEqual(outcome.tokens, { input_tokens: 10, output_tokens: 5 });
+  assert.equal(ok.calls[0].input, 'oi');
+
+  for (const tool of ['command_execution', 'mcp_tool_call', 'file_change', 'web_search']) {
+    const used = fakeSpawn(reply(codexLines(
+      { type: 'item.started', item: { type: tool } },
+      { type: 'item.completed', item: { type: 'agent_message', text: 'segredo' } },
+    )));
+    const refused = await runText({ account: codex, prompt: 'oi', timeoutMs: 5000, spawnImpl: used.impl, allowCodex: true });
+    assert.equal(refused.status, 'failed', tool);
+    assert.equal(refused.text, '');
+  }
+
+  const limited = fakeSpawn(reply(codexLines({ type: 'turn.failed', error: { message: 'You have hit your usage limit. Try again later.' } }), 1));
+  assert.equal((await runText({ account: codex, prompt: 'oi', timeoutMs: 5000, spawnImpl: limited.impl, allowCodex: true })).status, 'rate-limited');
+  assert.equal(readCodexStream(codexLines({ type: 'item.completed', item: { type: 'error', message: 'code-mode host is disabled' } })).usedTools.length, 0, 'tentativa recusada não conta');
 });
