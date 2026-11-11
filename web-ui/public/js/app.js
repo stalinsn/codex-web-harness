@@ -4,7 +4,7 @@ import { api } from './api.js';
 import { bindAttachmentEvents } from './attachments.js';
 import { bindCodeCopy } from './code-copy.js';
 import { initializeAuthentication } from './auth.js';
-import { addFiles, steerMessage, submitMessage, updateComposerControls } from './composer.js';
+import { addFiles, steerMessage, submitDecisionAnswer, submitMessage, updateComposerControls } from './composer.js';
 import { PREFIX } from './config.js';
 import { newChat, openThread } from './conversation.js';
 import { loadDeferredQueue, maybeDrainDeferredQueue } from './deferred-queue.js';
@@ -157,6 +157,12 @@ export function bindEvents() {
     catch (error) { button.disabled = false; toast(error.message, 'error'); }
   });
   $('#composerForm').addEventListener('submit', (event) => { closeComposerOptions(); submitMessage(event); });
+  window.addEventListener('harness:decision-answer', async (event) => {
+    const answer = event.detail;
+    const sent = await submitDecisionAnswer(answer?.text || '');
+    if (sent) answer?.accepted?.();
+    else answer?.failed?.();
+  });
   $('#composerOptions').addEventListener('toggle', () => {
     const options = $('#composerOptions');
     const toggle = $('#composerOptionsToggle');

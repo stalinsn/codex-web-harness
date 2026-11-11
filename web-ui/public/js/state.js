@@ -26,7 +26,7 @@ export const state = {
   queueItems: [], recoveredQueueItems: [], deferredQueueItems: [], rateLimitFailure: null, draftQueueGroupId: localStorage.getItem('codex-draft-queue-group') || '', turnStartedAtMs: null, turnTimer: null,
   streamedMessages: new Map(), activityCards: new Map(), commandGroups: new Map(), reasoningGroups: new Map(), turnIntermediates: new Map(), userMessageIds: new Set(), pendingApprovals: new Map(),
   activeTurnId: null,
-  completedTurnIds: new Set(), progressSegments: new Map(), executionRevision: 0, lastExecutionEventAt: Date.now(),
+  completedTurnIds: new Set(), progressSegments: new Map(), executionRevision: 0, lastExecutionEventAt: Date.now(), lastExecutionActivity: '', lastExecutionThreadId: '',
   activeThreadIds: new Set(),
   followLatest: true,
   threadListRequest: 0,

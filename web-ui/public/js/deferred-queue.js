@@ -77,7 +77,7 @@ export async function updateDeferredQueueItems(items) {
   renderRateLimitNotice();
 }
 
-export async function queueDraftForRateLimit(text, files, threadId, block = getRateLimitBlock()) {
+export async function queueDraftForRateLimit(text, files, threadId, block = getRateLimitBlock(), { preserveComposer = false, focusComposer = true } = {}) {
   const textarea = $('#messageInput');
   const wasSending = state.sending;
   state.sending = true;
@@ -102,8 +102,8 @@ export async function queueDraftForRateLimit(text, files, threadId, block = getR
       lastError: '',
     };
     await putDeferredQueueItem(item);
-    if (textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
-    if (files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
+    if (!preserveComposer && textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
+    if (!preserveComposer && files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
     const wait = block && block.resetAt ? ' Libera ' + formatCountdown(block.resetAt) + '.' : '';
     toast('Limite de uso atingido. Mensagem guardada na fila.' + wait);
     textarea.dispatchEvent(new Event('input'));
@@ -114,7 +114,7 @@ export async function queueDraftForRateLimit(text, files, threadId, block = getR
   } finally {
     state.sending = wasSending;
     updateComposerControls();
-    if (!touchComposer()) textarea.focus();
+    if (focusComposer && !touchComposer()) textarea.focus();
   }
 }
 

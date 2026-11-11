@@ -162,7 +162,7 @@ export function attachmentPayload(files) {
   };
 }
 
-export async function submitMessage(event, { allowVoice = false } = {}) {
+export async function submitMessage(event, { allowVoice = false, textOverride = null, filesOverride = null, preserveComposer = false, focusComposer = true } = {}) {
   event?.preventDefault();
   if (state.sending) return;
   if (state.accessModeUpdating) { toast('Aguarde a atualização das permissões antes de enviar.', 'error'); return false; }
@@ -177,15 +177,15 @@ export async function submitMessage(event, { allowVoice = false } = {}) {
   }
   if (voice.phase !== 'idle' && !allowVoice) { toast('Conclua a gravação antes de enviar.', 'error'); return false; }
   const textarea = $('#messageInput');
-  const text = textarea.value.trim();
-  if (!text && !state.files.length) return;
+  const text = textOverride == null ? textarea.value.trim() : String(textOverride).trim();
+  const files = filesOverride == null ? [...state.files] : [...filesOverride];
+  if (!text && !files.length) return false;
   const currentThread = state.selectedThreadId;
-  const files = [...state.files];
   const accountId = state.chatAccountId || 'codex';
   const selection = getComposerModelSelection();
   // The browser-side limit queue only concerns the Codex account; other accounts answer directly.
   const rateLimitBlock = accountId === 'codex' && !String(currentThread || '').startsWith('ext-') ? getEffectiveRateLimitBlock() : null;
-  if (rateLimitBlock) return queueDraftForRateLimit(text, files, currentThread, rateLimitBlock);
+  if (rateLimitBlock) return queueDraftForRateLimit(text, files, currentThread, rateLimitBlock, { preserveComposer, focusComposer });
   state.sending = true; updateComposerControls();
   try {
     const result = await api('/api/turn', {
@@ -194,8 +194,8 @@ export async function submitMessage(event, { allowVoice = false } = {}) {
     });
     // Another account continuing a Codex conversation answers in a new harness conversation.
     if (currentThread && result.threadId && result.threadId !== currentThread) {
-      if (textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
-      if (files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
+      if (!preserveComposer && textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
+      if (!preserveComposer && files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
       toast('A conversa continua com a outra conta, levando o contexto desta.');
       await openThread(result.threadId);
       return true;
@@ -220,8 +220,8 @@ export async function submitMessage(event, { allowVoice = false } = {}) {
         setBusy(true);
       }
     }
-    if (textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
-    if (files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
+    if (!preserveComposer && textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
+    if (!preserveComposer && files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
     return true;
   } catch (error) {
     if (isRateLimitError(error.message)) {
@@ -234,7 +234,7 @@ export async function submitMessage(event, { allowVoice = false } = {}) {
         updateThreadHeader({ id: failedThreadId, name: 'Nova conversa', model: getSelectedModel()?.displayName || state.modelId });
         refreshThreadList().catch(() => {});
       }
-      return await queueDraftForRateLimit(text, files, failedThreadId, getEffectiveRateLimitBlock());
+      return await queueDraftForRateLimit(text, files, failedThreadId, getEffectiveRateLimitBlock(), { preserveComposer, focusComposer });
     }
     toast(error.message, 'error');
     return false;
@@ -242,19 +242,22 @@ export async function submitMessage(event, { allowVoice = false } = {}) {
     state.sending = false;
     updateComposerControls();
     textarea.dispatchEvent(new Event('input'));
-    if (!touchComposer()) textarea.focus();
+    if (focusComposer && !touchComposer()) textarea.focus();
   }
 }
 
-export async function steerMessage() {
+export async function steerMessage(event, { textOverride = null, filesOverride = null, preserveComposer = false, fallbackToTurn = false, focusComposer = true } = {}) {
+  event?.preventDefault();
   if (state.sending || voice.phase !== 'idle' || !state.selectedThreadId) return;
+  if (state.accessModeUpdating) { toast('Aguarde a atualização das permissões antes de enviar.', 'error'); return false; }
   const textarea = $('#messageInput');
-  const text = textarea.value.trim();
-  if (!text && !state.files.length) return;
+  const text = textOverride == null ? textarea.value.trim() : String(textOverride).trim();
+  const files = filesOverride == null ? [...state.files] : [...filesOverride];
+  if (!text && !files.length) return false;
   const threadId = state.selectedThreadId;
-  const files = [...state.files];
   const rateLimitBlock = getEffectiveRateLimitBlock();
-  if (rateLimitBlock) return queueDraftForRateLimit(text, files, threadId, rateLimitBlock);
+  if (rateLimitBlock) return queueDraftForRateLimit(text, files, threadId, rateLimitBlock, { preserveComposer, focusComposer });
+  let fallback = false;
   state.sending = true; updateComposerControls();
   try {
     await api(`/api/threads/${encodeURIComponent(threadId)}/steer`, {
@@ -263,20 +266,37 @@ export async function steerMessage() {
     });
     state.rateLimitFailure = null;
     renderRateLimitNotice();
-    if (textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
-    if (files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
+    if (!preserveComposer && textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
+    if (!preserveComposer && files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
+    state.lastExecutionEventAt = Date.now();
+    state.lastExecutionActivity = 'Orientação enviada';
     toast('Orientação enviada para a execução atual.');
+    return true;
   } catch (error) {
-    if (isRateLimitError(error.message)) {
-      state.rateLimitFailure = { message: error.message, resetAt: getRateLimitBlock()?.resetAt || 0, createdAt: Date.now() };
-      await refreshUsage(true).catch(() => {});
-      await queueDraftForRateLimit(text, files, threadId, getEffectiveRateLimitBlock());
-    } else toast(error.message, 'error');
+    if (fallbackToTurn && error.status === 409) fallback = true;
+    else {
+      if (isRateLimitError(error.message)) {
+        state.rateLimitFailure = { message: error.message, resetAt: getRateLimitBlock()?.resetAt || 0, createdAt: Date.now() };
+        await refreshUsage(true).catch(() => {});
+        return await queueDraftForRateLimit(text, files, threadId, getEffectiveRateLimitBlock(), { preserveComposer, focusComposer });
+      }
+      toast(error.message, 'error');
+      return false;
+    }
   }
   finally {
     state.sending = false;
     updateComposerControls();
     textarea.dispatchEvent(new Event('input'));
-    textarea.focus();
+    if (focusComposer && !touchComposer()) textarea.focus();
   }
+  if (fallback) return submitMessage(undefined, { allowVoice: true, textOverride: text, filesOverride: files, preserveComposer, focusComposer });
+  return false;
+}
+
+export async function submitDecisionAnswer(text) {
+  if (state.busy && state.chatAccountId === 'codex' && !String(state.selectedThreadId || '').startsWith('ext-')) {
+    return steerMessage(undefined, { textOverride: text, filesOverride: [], preserveComposer: true, fallbackToTurn: true, focusComposer: false });
+  }
+  return submitMessage(undefined, { allowVoice: true, textOverride: text, filesOverride: [], preserveComposer: true, focusComposer: false });
 }

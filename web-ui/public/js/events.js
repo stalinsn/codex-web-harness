@@ -9,8 +9,7 @@ import { $, onNextFrame, randomKey, toast } from './dom.js';
 import { rememberError } from './error-history.js';
 import { applyAccountData, refreshUsage, renderContextUsage, renderUsage, updateThreadHeader } from './inspector.js';
 import { setConnection } from './layout.js';
-import { markdown } from './markdown.js';
-import { addApproval, getOrCreateStreamMessage, imageFromContent, makeMessage, placeStreamMessage, scrollConversation, splitAttachmentText } from './messages.js';
+import { addApproval, getOrCreateStreamMessage, imageFromContent, makeMessage, markDecisionCardsAnswered, placeStreamMessage, renderAssistantMessageContent, scrollConversation, splitAttachmentText } from './messages.js';
 import { getSelectedModel, populateModels, setChatAccount } from './models.js';
 import { associateThreadWithSelectedProject, renderConversationContext } from './projects.js';
 import { refreshQueue, renderQueue } from './queue.js';
@@ -47,6 +46,14 @@ function handleCodexNotification(message) {
   if (eventThreadId === state.selectedThreadId) {
     state.executionRevision += 1;
     state.lastExecutionEventAt = Date.now();
+    state.lastExecutionThreadId = eventThreadId;
+    const itemType = params.item?.type;
+    if (message.method === 'turn/started') state.lastExecutionActivity = 'Iniciando execução';
+    else if (message.method === 'item/started' || message.method === 'item/completed') {
+      const labels = { commandExecution: 'Comandos', fileChange: 'Alterações de arquivos', webSearch: 'Pesquisa na web', reasoning: 'Análise', agentMessage: 'Resposta do agente', mcpToolCall: 'Integração', collabToolCall: 'Agentes auxiliares', userMessage: 'Mensagem recebida' };
+      if (itemType && labels[itemType]) state.lastExecutionActivity = labels[itemType];
+    } else if (message.method === 'item/commandExecution/outputDelta') state.lastExecutionActivity = 'Comandos';
+    else if (message.method === 'item/agentMessage/delta') state.lastExecutionActivity = 'Escrevendo resposta';
   }
   if (eventThreadId && message.method === 'turn/started') {
     state.activeThreadIds.add(eventThreadId);
@@ -113,7 +120,7 @@ function handleCodexNotification(message) {
     stream.text += params.delta || '';
     // Re-rendering the whole Markdown on every token is quadratic; do it once per frame.
     onNextFrame(stream, () => {
-      $('.message-content', stream.row).innerHTML = markdown(stream.text);
+      renderAssistantMessageContent(stream.row, stream.text);
       scrollConversation();
     });
     return;
@@ -153,7 +160,7 @@ function handleCodexNotification(message) {
       stream.turnId = params.turnId || stream.turnId;
       placeStreamMessage(stream, item.phase);
       if (item.text) stream.text = item.text;
-      $('.message-content', stream.row).innerHTML = markdown(stream.text);
+      renderAssistantMessageContent(stream.row, stream.text, { enableDecision: message.method === 'item/completed' && state.busy });
     } else if (item.type === 'reasoning') {
       renderReasoningSummary(item, params.turnId, true);
     } else if (item.type === 'userMessage' && message.method === 'item/started') {
@@ -161,7 +168,7 @@ function handleCodexNotification(message) {
         const { text, files } = splitAttachmentText((item.content || []).filter((part) => part.type === 'text').map((part) => part.text).join('\n'), state.selectedThreadId);
         const images = imageFromContent(item.content, state.selectedThreadId);
         if (item.id) state.userMessageIds.add(item.id);
-        if (text || images.length || files.length) { makeMessage('user', { text, images, files, id: item.id }); startProgressSegment(params.turnId); }
+        if (text || images.length || files.length) { makeMessage('user', { text, images, files, id: item.id }); startProgressSegment(params.turnId); markDecisionCardsAnswered(params.turnId); }
       }
     } else if (item.type === 'userMessage') {
       // The user message was rendered when its item started.
