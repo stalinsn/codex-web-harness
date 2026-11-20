@@ -502,7 +502,7 @@ class MainActivity : Activity() {
         val (name, isDefault) = if (m.isNotEmpty()) prettyModel(m) to false else resolvedModel(acc)
         return listOf(acc?.str("label") ?: accountId, if (isDefault && name != "padrão da CLI") "$name (padrão)" else name, effortName(e)).filter { it.isNotBlank() }.joinToString(" · ")
     }
-    private fun effortName(e: String) = mapOf("low" to "Baixo", "medium" to "Médio", "high" to "Alto", "xhigh" to "Máx.", "minimal" to "Mínimo", "max" to "Máx.")[e] ?: e
+    private fun effortName(e: String) = mapOf("low" to "Baixo", "medium" to "Médio", "high" to "Alto", "xhigh" to "Muito alto", "minimal" to "Mínimo", "max" to "Máx.")[e] ?: e
 
     private fun updateLive() {
         if (!::liveText.isInitialized || tab != TAB_CHAT) return
@@ -710,7 +710,11 @@ class MainActivity : Activity() {
             val completedAt = turn.optDouble("completedAt", 0.0)
             if (!busy && completedAt.isFinite() && completedAt > 0) box.addView(ui.text("Concluída em ${messageTime(completedAt)}", 11f, C.TX3), ui.lp(top = 4))
             val ms = turn.optLong("durationMs").takeIf { it > 0 } ?: ((turn.optDouble("completedAt") - turn.optDouble("startedAt")) * 1000).toLong()
-            if (ms > 0 && !busy) box.addView(ui.pill("⏱ Trabalhou por ${duration(ms)}"), ui.lp(WRAP, WRAP, top = 2))
+            val footer = ui.row()
+            if (ms > 0 && !busy) footer.addView(ui.pill("⏱ Trabalhou por ${duration(ms)}"), ui.lp(WRAP, WRAP, end = 6))
+            val answerText = final.str("text")
+            footer.addView(ui.pill("Copiar").apply { contentDescription = "Copiar resposta"; setPadding(dp(10), dp(4), dp(10), dp(4)); setOnClickListener { copyText(answerText) } })
+            box.addView(footer, ui.lp(WRAP, WRAP, top = 2))
             history.addView(box, ui.lp(top = 4, bottom = 14))
             if (isLast && !busy) decision(final.str("text"))?.let { decisionCard(it) }
         }
@@ -727,11 +731,36 @@ class MainActivity : Activity() {
 
     private fun userBubble(item: JSONObject, turn: JSONObject) {
         val content = item.optJSONArray("content").objects()
-        val text = content.filter { it.str("type") == "text" }.joinToString("\n") { it.str("text") }
-        val attachments = content.count { it.str("type") != "text" }
+        val raw = content.filter { it.str("type") == "text" }.joinToString("\n") { it.str("text") }
+        val sentFiles = mutableListOf<Triple<String, String, String>>() // name, mime, api path
+        val text = raw.replace(Regex("\\[Arquivo anexado]\\s*\\n([^\\n]+)\\n\\[/Arquivo anexado]")) { m ->
+            runCatching {
+                val f = JSONObject(m.groupValues[1]); val stored = f.str("path").substringAfterLast('/')
+                if (f.str("name").isBlank() || !Regex("^[a-zA-Z0-9._-]{1,200}$").matches(stored)) m.value
+                else { sentFiles += Triple(f.str("name"), f.str("mime").ifBlank { "application/octet-stream" }, "/api/files/${enc(threadId)}/${enc(stored)}?name=${enc(f.str("name"))}"); "" }
+            }.getOrDefault(m.value)
+        }.trim()
+        val sentImages = content.filter { it.str("type") == "localImage" && it.str("path").isNotBlank() }.map { "/api/images/${enc(threadId)}/${enc(it.str("path").substringAfterLast('/'))}" }
+        val attachments = 0
         val bubble = ui.column().apply { background = ui.shape(C.BLUE, 18, 1, C.BLUE_LINE).apply { cornerRadii = floatArrayOf(dp(18f), dp(18f), dp(18f), dp(18f), dp(6f), dp(6f), dp(18f), dp(18f)) }; setPadding(dp(14), dp(10), dp(14), dp(10)) }
         if (text.isNotBlank()) bubble.addView(ui.text(text.trim(), 15f, 0xffeef3ff.toInt()).apply { setTextIsSelectable(true) })
-        if (attachments > 0) bubble.addView(ui.text("📎 $attachments anexo(s)", 12f, 0xffaab6dc.toInt()), ui.lp(top = 4))
+        if (sentImages.isNotEmpty() || sentFiles.isNotEmpty()) {
+            val strip = ui.row()
+            sentImages.forEach { path ->
+                strip.addView(ImageView(this).apply {
+                    scaleType = ImageView.ScaleType.CENTER_CROP; background = ui.shape(0xff1a2b4a.toInt(), 10); clipToOutline = true; outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
+                    contentDescription = "Imagem enviada"; setOnClickListener { showApiImage(path, "Imagem enviada") }
+                    loadApiImage(path, this)
+                }, ui.lp(dp(92), dp(92), end = 6))
+            }
+            sentFiles.forEach { (name, mime, path) ->
+                strip.addView(ui.text("📄 ${name.take(22)}", 12f, 0xffdbe4ff.toInt()).apply {
+                    background = ui.shape(0xff1a2b4a.toInt(), 10, 1, 0xff3a5a90.toInt()); setPadding(dp(10), dp(8), dp(10), dp(8)); maxLines = 1
+                    setOnClickListener { previewFile(name, mime) { api.bytes(path) } }
+                }, ui.lp(WRAP, WRAP, end = 6))
+            }
+            bubble.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(strip) }, ui.lp(top = if (text.isNotBlank()) 8 else 0))
+        }
         val queuedAt = turn.optDouble("queuedAt", 0.0)
         val startedAt = turn.optDouble("startedAt", 0.0)
         val stamp = if (queuedAt.isFinite() && queuedAt > 0) queuedAt else startedAt
@@ -932,13 +961,47 @@ class MainActivity : Activity() {
             menuOption(body, "Renomear", "Alterar o título desta conversa") { dialog.dismiss(); renameThread(id, threadTitle) { threadTitle = it; saveThread(); show(TAB_CHAT) } }
             menuOption(body, "Atualizar", "Recarregar mensagens e fila") { dialog.dismiss(); rendered = ""; readHistory(); readQueue(); readContext() }
             menuOption(body, "Abrir no Web Harness", "Continuar esta conversa no navegador") { dialog.dismiss(); openLink("$BASE/#thread=$id") }
+            val pinned = id in pinnedIds
+            menuOption(body, if (pinned) "Desafixar" else "Fixar", if (pinned) "Tirar da seção Fixadas" else "Manter no topo, na seção Fixadas") { dialog.dismiss(); setPinned(id, !pinned) }
+            menuOption(body, "Copiar última resposta", "Texto da resposta mais recente") {
+                dialog.dismiss()
+                allTurns().flatMap { it.optJSONArray("items").objects() }.lastOrNull { it.str("type") == "agentMessage" && it.str("text").isNotBlank() }?.let { copyText(it.str("text")) } ?: ui.toast("Ainda não há resposta para copiar.")
+            }
             menuOption(body, "Arquivar", "Retirar da lista de conversas recentes") {
                 dialog.dismiss()
                 AlertDialog.Builder(this).setTitle("Arquivar conversa?").setMessage("Você poderá encontrá-la em conversas arquivadas.")
                     .setPositiveButton("Arquivar") { _, _ -> request({ api.call("/api/threads/${enc(id)}/archive", JSONObject()) }) { ui.toast("Conversa arquivada."); if (threadId == id) { threadId = ""; threadTitle = ""; saveThread(); show(TAB_PROJECTS) } } }
                     .setNegativeButton("Cancelar", null).show()
             }
+            menuOption(body, "Excluir", "Apagar a conversa de vez") { dialog.dismiss(); deleteThread(id, threadTitle) }
         }
+    }
+
+    private val pinnedIds = mutableSetOf<String>()
+    private val PINNED_SECTION = "01984de2-8f74-7c91-a3b2-5c5e937cf318"
+    private fun isPinned(t: JSONObject) = t.optJSONObject("section")?.str("id") == PINNED_SECTION
+
+    private fun setPinned(id: String, pinned: Boolean) = request({ api.call("/api/threads/${enc(id)}/pin", obj("pinned" to pinned)) }) {
+        if (pinned) pinnedIds += id else pinnedIds -= id
+        ui.toast(if (pinned) "Conversa fixada." else "Conversa desafixada.")
+        if (tab == TAB_PROJECTS) show(TAB_PROJECTS)
+    }
+
+    private fun deleteThread(id: String, title: String) {
+        AlertDialog.Builder(this).setTitle("Excluir conversa?").setMessage("\"${title.take(80)}\" e as mensagens dela serão apagadas. Não dá para desfazer.")
+            .setPositiveButton("Excluir") { _, _ ->
+                request({ api.call("/api/threads/${enc(id)}/delete", method = "DELETE") }) {
+                    ui.toast("Conversa excluída.")
+                    pinnedIds -= id
+                    if (threadId == id) { threadId = ""; threadTitle = ""; saveThread() }
+                    show(TAB_PROJECTS)
+                }
+            }.setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun copyText(text: String) {
+        (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("Codex Harness", text))
+        if (Build.VERSION.SDK_INT < 33) ui.toast("Copiado.")
     }
 
     private fun renameThread(id: String, current: String, done: (String) -> Unit) {
@@ -1219,10 +1282,27 @@ class MainActivity : Activity() {
         if (!::attachmentStrip.isInitialized) return
         attachmentStrip.removeAllViews()
         for (file in attachments.toList()) {
-            val chip = ui.row().apply { background = ui.shape(C.CARD2, 10, 1, C.LINE2); setPadding(dp(10), dp(6), dp(6), dp(6)) }
-            chip.addView(ui.text((if (file.image) "🖼 " else "📄 ") + file.name.take(26), 12f, C.TX2).apply { maxLines = 1 })
-            chip.addView(ui.text("  ✕", 12f, C.TX3).apply { contentDescription = "Remover ${file.name}"; setOnClickListener { attachments.remove(file); drawAttachments() } })
-            attachmentStrip.addView(chip, ui.lp(WRAP, WRAP, end = 6, top = 4))
+            val tile = FrameLayout(this)
+            val bytes = { android.util.Base64.decode(file.data, android.util.Base64.NO_WRAP) }
+            if (file.image) {
+                val thumb = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP; background = ui.shape(C.CARD2, 12); clipToOutline = true; outlineProvider = android.view.ViewOutlineProvider.BACKGROUND }
+                tile.addView(thumb, FrameLayout.LayoutParams(dp(72), dp(72)))
+                worker.execute { val bmp = runCatching { decodeSampled(bytes(), 240) }.getOrNull(); runOnUiThread { bmp?.let { thumb.setImageBitmap(it) } } }
+            } else {
+                tile.addView(ui.column().apply {
+                    gravity = Gravity.CENTER; background = ui.shape(C.CARD2, 12, 1, C.LINE2); setPadding(dp(6), dp(6), dp(6), dp(6))
+                    addView(ui.text(file.name.substringAfterLast('.', "arq").take(5).uppercase(), 13f, C.LAV, bold = true).apply { gravity = Gravity.CENTER })
+                    addView(ui.text(file.name, 9.5f, C.TX2).apply { maxLines = 2; gravity = Gravity.CENTER; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE }, ui.lp(top = 2))
+                }, FrameLayout.LayoutParams(dp(72), dp(72)))
+            }
+            tile.contentDescription = "Prévia de ${file.name}"
+            tile.setOnClickListener { previewFile(file.name, file.mime, bytes) }
+            tile.addView(ui.text("✕", 11f, Color.WHITE, bold = true).apply {
+                gravity = Gravity.CENTER; contentDescription = "Remover ${file.name}"
+                background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0xdd101218.toInt()); setStroke(dp(1), C.LINE2) }
+                setOnClickListener { attachments.remove(file); drawAttachments() }
+            }, FrameLayout.LayoutParams(dp(24), dp(24), Gravity.TOP or Gravity.END).apply { setMargins(0, dp(3), dp(3), 0) })
+            attachmentStrip.addView(tile, ui.lp(WRAP, WRAP, end = 8, top = 6))
         }
     }
 
@@ -1340,24 +1420,29 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun loadImage(path: String, view: ImageView) {
-        images.get(path)?.let { view.setImageBitmap(it); return }
+    private fun loadImage(path: String, view: ImageView) = loadApiImage(localUrl(path), view)
+
+    /** Any authenticated image path (/api/local-files, /api/images, /api/files), cached by path. */
+    private fun loadApiImage(apiPath: String, view: ImageView) {
+        images.get(apiPath)?.let { view.setImageBitmap(it); return }
         view.setImageDrawable(ui.shape(0xff1a1d24.toInt(), 10))
         worker.execute {
-            val bitmap = runCatching {
-                val bytes = api.bytes(localUrl(path))
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                var sample = 1
-                while (bounds.outWidth / sample > 1600 || bounds.outHeight / sample > 1600) sample *= 2
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
-            }.getOrNull()
+            val bitmap = runCatching { decodeSampled(api.bytes(apiPath), 1600) }.getOrNull()
             runOnUiThread {
-                if (bitmap != null) { images.put(path, bitmap); view.setImageBitmap(bitmap) }
+                if (bitmap != null) { images.put(apiPath, bitmap); view.setImageBitmap(bitmap) }
                 else view.contentDescription = "Imagem indisponível"
             }
         }
     }
+
+    private fun decodeSampled(bytes: ByteArray, maxPx: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sample = 1
+        while (bounds.outWidth / sample > maxPx || bounds.outHeight / sample > maxPx) sample *= 2
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
+    }
+
 
     private fun fullscreen(build: (FrameLayout, Dialog) -> Unit) {
         val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
@@ -1370,11 +1455,93 @@ class MainActivity : Activity() {
         dialog.show()
     }
 
-    private fun showImage(path: String, caption: String) = fullscreen { frame, dialog ->
-        val image = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER; setOnClickListener { dialog.dismiss() }; contentDescription = caption }
+    private fun showImage(path: String, caption: String) = showApiImage(localUrl(path), caption)
+
+    /** Full-screen image with pinch zoom and double tap; one tap toggles the caption. */
+    private fun showApiImage(apiPath: String, caption: String, bitmap: Bitmap? = null) = fullscreen { frame, _ ->
+        lateinit var label: TextView
+        val image = ZoomImageView(this) { label.visibility = if (label.visibility == View.VISIBLE) View.GONE else View.VISIBLE }.apply { contentDescription = caption }
         frame.addView(image, FrameLayout.LayoutParams(MATCH, MATCH))
-        if (caption.isNotBlank()) frame.addView(ui.text(caption, 13f, C.TX2).apply { setPadding(dp(16), dp(12), dp(16), dp(20)) }, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
-        loadImage(path, image)
+        label = ui.text(caption.ifBlank { "Toque duas vezes para ampliar" }, 13f, C.TX2).apply { setPadding(dp(16), dp(12), dp(16), dp(24)); setBackgroundColor(0x99000000.toInt()) }
+        frame.addView(label, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
+        if (bitmap != null) image.setImageBitmap(bitmap) else loadApiImage(apiPath, image)
+    }
+
+    /**
+     * In-app file viewer: images (zoom), PDF (pages rendered natively), text and code; anything else
+     * shows its details. Bytes come from the composer (not sent yet) or from the server.
+     */
+    private fun previewFile(name: String, mime: String, load: () -> ByteArray) = fullscreen { frame, _ ->
+        val column = ui.column()
+        val head = ui.column().apply { setPadding(dp(16), dp(14), dp(60), dp(10)) }
+        head.addView(ui.text(name, 15f, bold = true).apply { maxLines = 2 })
+        val meta = ui.text(mime, 11.5f, C.TX3)
+        head.addView(meta)
+        column.addView(head)
+        val area = FrameLayout(this)
+        column.addView(area, ui.lp(MATCH, 0, 1f))
+        area.addView(ProgressBar(this), FrameLayout.LayoutParams(WRAP, WRAP, Gravity.CENTER))
+        frame.addView(column, FrameLayout.LayoutParams(MATCH, MATCH))
+        val lower = name.lowercase()
+        val isText = mime.startsWith("text/") || mime in setOf("application/json", "application/xml", "application/javascript", "application/x-sh") ||
+            Regex("\\.(txt|md|json|csv|log|kt|kts|java|js|mjs|ts|tsx|jsx|py|sh|yml|yaml|xml|html|css|sql|gradle|env|ini|toml)$").containsMatchIn(lower)
+        worker.execute {
+            val result = runCatching {
+                val bytes = load()
+                when {
+                    mime.startsWith("image/") -> decodeSampled(bytes, 2400) ?: error("Imagem inválida.")
+                    mime == "application/pdf" || lower.endsWith(".pdf") -> renderPdf(bytes)
+                    isText -> String(bytes, Charsets.UTF_8).let { if (it.length > 300_000) it.take(300_000) + "\n\n… (cortado)" else it }
+                    else -> bytes.size
+                } to bytes.size
+            }
+            runOnUiThread {
+                area.removeAllViews()
+                result.onFailure { area.addView(ui.text("Não consegui abrir: ${it.message}", 14f, C.RED).apply { setPadding(dp(16), dp(16), dp(16), dp(16)) }) }
+                result.onSuccess { (content, size) ->
+                    meta.text = "$mime · ${size / 1024} KB"
+                    when (content) {
+                        is Bitmap -> area.addView(ZoomImageView(this) {}.apply { setImageBitmap(content) }, FrameLayout.LayoutParams(MATCH, MATCH))
+                        is String -> area.addView(ScrollView(this).apply { addView(HorizontalScrollView(this@MainActivity).apply { addView(ui.text(content, 12.5f, 0xffc9cfdb.toInt(), mono = true).apply { setTextIsSelectable(true); setPadding(dp(14), dp(8), dp(14), dp(30)) }) }) }, FrameLayout.LayoutParams(MATCH, MATCH))
+                        is List<*> -> {
+                            val pages = ui.column().apply { setPadding(dp(10), 0, dp(10), dp(30)) }
+                            content.filterIsInstance<Bitmap>().forEachIndexed { i, page ->
+                                pages.addView(ImageView(this).apply { setImageBitmap(page); adjustViewBounds = true; setBackgroundColor(Color.WHITE); setOnClickListener { showApiImage("", "$name · página ${i + 1}", page) } }, ui.lp(bottom = 10))
+                            }
+                            if (content.size >= 30) pages.addView(ui.text("Mostrando as 30 primeiras páginas.", 12f, C.TX3))
+                            area.addView(ScrollView(this).apply { addView(pages) }, FrameLayout.LayoutParams(MATCH, MATCH))
+                        }
+                        else -> area.addView(ui.column().apply {
+                            gravity = Gravity.CENTER; setPadding(dp(30), 0, dp(30), 0)
+                            addView(ui.text("📄", 44f).apply { gravity = Gravity.CENTER })
+                            addView(ui.text("Sem prévia para este tipo de arquivo.", 14f, C.TX2).apply { gravity = Gravity.CENTER }, ui.lp(top = 10))
+                            addView(ui.text("Ele vai anexado normalmente; o agente lê o arquivo no servidor.", 12.5f, C.TX3).apply { gravity = Gravity.CENTER }, ui.lp(top = 4))
+                        }, FrameLayout.LayoutParams(MATCH, MATCH))
+                    }
+                }
+            }
+        }
+    }
+
+    private fun renderPdf(bytes: ByteArray): List<Bitmap> {
+        val file = java.io.File(cacheDir, "preview-${System.nanoTime()}.pdf")
+        file.writeBytes(bytes)
+        try {
+            android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
+                android.graphics.pdf.PdfRenderer(fd).use { pdf ->
+                    val width = resources.displayMetrics.widthPixels - dp(20)
+                    return (0 until minOf(pdf.pageCount, 30)).map { index ->
+                        pdf.openPage(index).use { page ->
+                            val height = (width.toFloat() * page.height / page.width).toInt()
+                            Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { bmp ->
+                                bmp.eraseColor(Color.WHITE)
+                                page.render(bmp, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                            }
+                        }
+                    }
+                }
+            }
+        } finally { file.delete() }
     }
 
     private fun showPreview(path: String, label: String) = showWeb(BASE + localUrl(path), label)
@@ -1454,6 +1621,14 @@ class MainActivity : Activity() {
                 if (inside.isEmpty() && (archived || query.isNotBlank())) null else p to inside
             }.sortedByDescending { (_, t) -> t.maxOfOrNull { it.optDouble("updatedAt", 0.0) } ?: 0.0 }
             val loose = threads.filter { it.str("id") !in used }
+            pinnedIds.clear(); pinnedIds += threads.filter { isPinned(it) }.map { it.str("id") }
+            val pinnedThreads = threads.filter { isPinned(it) }
+            if (pinnedThreads.isNotEmpty() && !archived) {
+                list.addView(ui.caption("Fixadas"), ui.lp(top = 4, bottom = 6))
+                val box = ui.card(C.CARD, C.LINE, 16, 0)
+                pinnedThreads.forEachIndexed { i, t -> if (i > 0) box.addView(View(this).apply { setBackgroundColor(C.LINE) }, ui.lp(MATCH, 1, start = 12, end = 12)); box.addView(threadRow(t)) }
+                list.addView(box, ui.lp(bottom = 12))
+            }
             if (threadId.isNotEmpty() && !archived) threads.firstOrNull { it.str("id") == threadId }?.let { current ->
                 list.addView(ui.caption("Aberta"), ui.lp(top = 4, bottom = 6))
                 list.addView(threadRow(current, highlight = true).apply { background = ui.shape(0xff161a26.toInt(), 14, 1, 0xff33406a.toInt()) }, ui.lp(bottom = 12))
@@ -1507,13 +1682,14 @@ class MainActivity : Activity() {
         box.addView(texts, ui.lp(0, WRAP, 1f))
         box.setOnClickListener { openThread(t.str("id"), title, t.str("cwd"), t.str("accountId")) }
         box.setOnLongClickListener {
-            AlertDialog.Builder(this).setTitle(title).setItems(arrayOf("Abrir", "Renomear", if (archived) "Desarquivar" else "Arquivar")) { _, i ->
-                when (i) {
-                    0 -> openThread(t.str("id"), title, t.str("cwd"), t.str("accountId"))
-                    1 -> renameThread(t.str("id"), title) { show(TAB_PROJECTS) }
-                    2 -> request({ api.call("/api/threads/${enc(t.str("id"))}/${if (archived) "unarchive" else "archive"}", JSONObject()) }) { show(TAB_PROJECTS) }
-                }
-            }.show(); true
+            val id = t.str("id")
+            ui.sheet(title) { body, dialog ->
+                menuOption(body, "Abrir", "Continuar esta conversa") { dialog.dismiss(); openThread(id, title, t.str("cwd"), t.str("accountId")) }
+                menuOption(body, if (isPinned(t)) "Desafixar" else "Fixar", if (isPinned(t)) "Tirar da seção Fixadas" else "Manter no topo, na seção Fixadas") { dialog.dismiss(); setPinned(id, !isPinned(t)) }
+                menuOption(body, "Renomear", "Alterar o título") { dialog.dismiss(); renameThread(id, title) { show(TAB_PROJECTS) } }
+                menuOption(body, if (archived) "Desarquivar" else "Arquivar", if (archived) "Voltar para as recentes" else "Retirar das recentes") { dialog.dismiss(); request({ api.call("/api/threads/${enc(id)}/${if (archived) "unarchive" else "archive"}", JSONObject()) }) { show(TAB_PROJECTS) } }
+                menuOption(body, "Excluir", "Apagar a conversa de vez") { dialog.dismiss(); deleteThread(id, title) }
+            }; true
         }
         return box
     }

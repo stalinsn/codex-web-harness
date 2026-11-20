@@ -152,27 +152,43 @@ open class Kit(val a: Activity) {
         return box
     }
 
-    /** Bottom sheet built on a plain Dialog. */
+    /**
+     * Bottom sheet: full-screen translucent dialog with a dim scrim (tap closes), a grabber and a
+     * body that follows the finger (drag down closes). Back also closes. Content scrolls inside.
+     */
     fun sheet(title: String, build: (body: LinearLayout, dialog: Dialog) -> Unit): Dialog {
-        val dialog = Dialog(a)
-        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
-        val body = column().apply { setPadding(dp(16), dp(10), dp(16), dp(26)) }
-        body.addView(View(a).apply { background = shape(0xff3a3f4a.toInt(), 3) }, lp(dp(40), dp(5)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(12) })
+        val dialog = Dialog(a, android.R.style.Theme_Translucent_NoTitleBar)
+        val root = FrameLayout(a)
+        val scrim = View(a).apply { setBackgroundColor(0x9e04050a.toInt()); contentDescription = "Fechar painel" }
+        root.addView(scrim, FrameLayout.LayoutParams(MATCH, MATCH))
+        lateinit var sheet: DragSheet
+        sheet = DragSheet(a, 0.92f) { dialog.dismiss() }.apply {
+            background = shape(0xff14171d.toInt(), 26).apply { cornerRadii = floatArrayOf(dp(26).toFloat(), dp(26).toFloat(), dp(26).toFloat(), dp(26).toFloat(), 0f, 0f, 0f, 0f) }
+        }
+        val top = column().apply { setPadding(dp(16), dp(10), dp(16), dp(4)) }
+        top.addView(View(a).apply { background = shape(0xff4a505c.toInt(), 3) }, lp(dp(44), dp(5)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(12) })
         val head = row()
-        head.addView(text(title, 17f, bold = true), lp(0, WRAP, 1f))
-        head.addView(text("✕", 16f, C.TX3).apply { setPadding(dp(10), dp(4), dp(4), dp(4)); setOnClickListener { dialog.dismiss() }; contentDescription = "Fechar" })
-        body.addView(head, lp(bottom = 8))
+        head.addView(text(title, 17f, bold = true).apply { maxLines = 2 }, lp(0, WRAP, 1f))
+        head.addView(text("✕", 16f, C.TX3).apply { setPadding(dp(12), dp(6), dp(4), dp(6)); setOnClickListener { sheet.close() }; contentDescription = "Fechar" })
+        top.addView(head, lp(bottom = 4))
+        sheet.addView(top, lp())
+        val body = column().apply { setPadding(dp(16), dp(4), dp(16), dp(26)) }
         build(body, dialog)
-        val scroll = ScrollView(a).apply { addView(body); background = shape(0xff14171d.toInt(), 26).apply { cornerRadii = floatArrayOf(dp(26).toFloat(), dp(26).toFloat(), dp(26).toFloat(), dp(26).toFloat(), 0f, 0f, 0f, 0f) } }
-        dialog.setContentView(scroll)
+        val scroll = ScrollView(a).apply { addView(body); isVerticalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER }
+        sheet.scroll = scroll
+        sheet.addView(scroll, lp(MATCH, WRAP))
+        root.addView(sheet, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
+        scrim.setOnClickListener { sheet.close() }
+        dialog.setContentView(root)
         dialog.window?.apply {
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            setGravity(Gravity.BOTTOM)
-            setLayout(MATCH, WRAP)
-            setDimAmount(0.62f)
+            setLayout(MATCH, MATCH)
+            statusBarColor = Color.TRANSPARENT
             setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         }
         dialog.show()
+        scrim.fadeIn()
+        sheet.post { sheet.translationY = sheet.height.toFloat(); sheet.animate().translationY(0f).setDuration(200).start() }
         return dialog
     }
 }

@@ -109,11 +109,21 @@ class Markdown(
 
     private fun localPath(raw: String) = raw.removePrefix("file://")
 
-    private fun codeBlock(code: String) = HorizontalScrollView(kit.a).apply {
+    private fun codeBlock(code: String) = android.widget.FrameLayout(kit.a).apply {
         background = kit.shape(0xff101113.toInt(), 10, 1, 0xff34353a.toInt())
-        addView(kit.text(code, 12.5f, 0xffc9cfdb.toInt(), mono = true).apply {
-            setPadding(kit.dp(12), kit.dp(10), kit.dp(12), kit.dp(10)); setTextIsSelectable(true)
+        addView(HorizontalScrollView(kit.a).apply {
+            addView(kit.text(code, 12.5f, 0xffc9cfdb.toInt(), mono = true).apply {
+                setPadding(kit.dp(12), kit.dp(12), kit.dp(64), kit.dp(10)); setTextIsSelectable(true)
+            })
         })
+        addView(kit.text("Copiar", 11f, 0xffb8bfd4.toInt()).apply {
+            background = kit.shape(0xff202127.toInt(), 7, 1, 0xff3a3d49.toInt()); setPadding(kit.dp(8), kit.dp(4), kit.dp(8), kit.dp(4))
+            contentDescription = "Copiar código"
+            setOnClickListener {
+                (kit.a.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("código", code))
+                text = "Copiado"; postDelayed({ text = "Copiar" }, 1400)
+            }
+        }, android.widget.FrameLayout.LayoutParams(WRAP, WRAP, android.view.Gravity.TOP or android.view.Gravity.END).apply { setMargins(0, kit.dp(6), kit.dp(6), 0) })
     }
 
     private fun tableBlock(lines: List<String>): View {
