@@ -6,7 +6,7 @@ import { config } from '../config.mjs';
 import { CodexAppServer } from '../codex/app-server.mjs';
 import { httpError } from '../http/respond.mjs';
 import { accountEnv, checkCliLogin, commandFor, runCliSegment } from './cli-runner.mjs';
-import { codexUsage } from './codex-usage.mjs';
+import { codexUsage, codexWindows } from './codex-usage.mjs';
 import { runCodexSegment } from './codex-runner.mjs';
 import { reportedTokenUsage } from './parsers.mjs';
 import { PROVIDERS } from './providers.mjs';
@@ -36,7 +36,14 @@ export class AccountService {
       const state = this.registry.stateOf(account.id);
       if (account.primary) {
         const { percent, resetsAt } = codexUsage(this.primaryCodex.rateLimits);
-        if (percent != null) Object.assign(state, { percent, resetsAt, percentAt: now });
+        if (percent != null) {
+          const windows = codexWindows(this.primaryCodex.rateLimits);
+          Object.assign(state, { percent, resetsAt, percentAt: now });
+          if (Object.keys(windows).length) {
+            state.usageWindow = Object.entries(windows).find(([, value]) => value.percent === percent && value.resetsAt === resetsAt)?.[0] || state.usageWindow;
+            state.usageWindows = { ...state.usageWindows, ...Object.fromEntries(Object.entries(windows).map(([key, value]) => [key, { ...value, updatedAt: now }])) };
+          }
+        }
         if (this.primaryCodex.account) state.loggedIn = true;
       }
       const usage = this.currentUsage(account, now);
@@ -194,7 +201,10 @@ export class AccountService {
 
   #recordCodexUsage(id, params) {
     const { percent, resetsAt } = codexUsage(params);
-    if (percent != null) this.recordUsage(id, percent, resetsAt).catch(() => {});
+    if (percent == null) return;
+    const windows = codexWindows(params);
+    const top = Object.entries(windows).find(([, value]) => value.percent === percent && value.resetsAt === resetsAt)?.[0] || '';
+    this.recordUsage(id, percent, resetsAt, top, Object.keys(windows).length ? windows : null).catch(() => {});
   }
 
   codexServerFor(account) {

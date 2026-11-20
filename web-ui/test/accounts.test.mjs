@@ -126,3 +126,10 @@ test('claude init event reports the model the CLI resolved', () => {
   assert.deepEqual(parse('{"type":"system","subtype":"init","session_id":"s1","model":"claude-opus-5-5"}'), [{ type: 'session', sessionId: 's1', model: 'claude-opus-5-5' }]);
   assert.deepEqual(parse('{"type":"system","subtype":"init","session_id":"s2"}'), [{ type: 'session', sessionId: 's2' }]);
 });
+
+test('codex usage windows keep the 5 h and weekly limits apart', async () => {
+  const { codexWindows } = await import('../src/accounts/codex-usage.mjs');
+  const windows = codexWindows({ rateLimitsByLimitId: { codex: { limitId: 'codex', primary: { usedPercent: 13, windowDurationMins: 300, resetsAt: 100 }, secondary: { usedPercent: 19, windowDurationMins: 10080, resetsAt: 200 } } } });
+  assert.deepEqual(windows, { five_hour: { percent: 13, resetsAt: 100, minutes: 300 }, seven_day: { percent: 19, resetsAt: 200, minutes: 10080 } });
+  assert.deepEqual(codexWindows(null), {});
+});

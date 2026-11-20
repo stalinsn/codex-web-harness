@@ -2072,15 +2072,58 @@ class MainActivity : Activity() {
         head.addView(ui.text("↓", 16f, if (index < order.lastIndex) C.TX2 else C.LINE2).apply { setPadding(dp(8), dp(2), dp(4), dp(2)); if (index < order.lastIndex) setOnClickListener { reorder(order, index, 1) }; contentDescription = "Descer na fila" })
         card.addView(head)
         val percent = if (acc.isNull("percent")) null else acc.optDouble("percent")
-        if (percent != null) card.addView(ui.progress(percent, if (percent >= rotation.optInt("switchAtPercent", 90)) C.AMBER else C.LAV), ui.lp(MATCH, dp(5), top = 10))
+        val windows = usageWindowsView(acc)
+        if (windows != null) card.addView(windows, ui.lp(top = 10))
+        else if (percent != null) card.addView(ui.progress(percent, if (percent >= rotation.optInt("switchAtPercent", 90)) C.AMBER else C.LAV), ui.lp(MATCH, dp(5), top = 10))
         val status = ui.row()
         val ok = acc.optBoolean("available")
         status.addView(ui.dot(if (!acc.optBoolean("enabled")) C.TX3 else if (ok) C.GREEN else C.RED, 7))
         status.addView(ui.text(if (!acc.optBoolean("enabled")) "Desativada" else if (ok) "Disponível" else acc.str("unavailableReason").ifBlank { "Indisponível" }, 11.5f, C.TX2), ui.lp(0, WRAP, 1f, start = 6))
-        status.addView(ui.text(if (percent != null) "${percent.toInt()}% usado" else "uso não informado", 11f, C.TX3))
+        status.addView(ui.text(if (windows != null) "" else if (percent != null) "${percent.toInt()}% usado" else "uso não informado", 11f, C.TX3))
         card.addView(status, ui.lp(top = 8))
         card.setOnClickListener { accountSheet(acc) }
         return card
+    }
+
+    private val usageNames = mapOf("five_hour" to "5 horas", "seven_day" to "Semana", "seven_day_opus" to "Semana · Opus", "seven_day_sonnet" to "Semana · Sonnet", "one_day" to "Dia", "thirty_day" to "30 dias")
+    private fun usageName(key: String): String {
+        val scope = key.substringBefore(':', "")
+        val base = key.substringAfter(':')
+        val name = usageNames[base] ?: Regex("^(\\d+)_min$").find(base)?.let { m -> val min = m.groupValues[1].toInt(); if (min % 60 == 0) "${min / 60} h" else "$min min" } ?: base.replace('_', ' ')
+        return if (scope.isNotEmpty()) "$name · $scope" else name
+    }
+    private fun compactNumber(n: Long) = when { n >= 1_000_000 -> "%.1f mi".format(n / 1_000_000.0); n >= 1_000 -> "${n / 1000} mil"; else -> "$n" }
+
+    /** "renova às 18:14 · em 2 h 05 min" or "renova sáb 21:58", always in São Paulo time. */
+    private fun resetLabel(seconds: Long): String {
+        if (seconds <= 0) return ""
+        val ms = seconds * 1000
+        val left = ms - System.currentTimeMillis()
+        if (left <= 0) return "renovando"
+        val zone = TimeZone.getTimeZone("America/Sao_Paulo")
+        val time = SimpleDateFormat("HH:mm", Locale("pt", "BR")).apply { timeZone = zone }.format(Date(ms))
+        return if (left < 24 * 3600_000L) "renova às $time · em ${duration(left).replace(Regex(" \\d+ s$"), "")}"
+        else "renova ${SimpleDateFormat("EEE", Locale("pt", "BR")).apply { timeZone = zone }.format(Date(ms)).trimEnd('.')} $time"
+    }
+
+    /** One row per usage window (Codex 5 h + semana, Claude 5 h + semana…), same look for every provider. */
+    private fun usageWindowsView(acc: JSONObject, detailed: Boolean = false): View? {
+        val windows = acc.optJSONArray("usageWindows").objects().filter { it.has("percent") && !it.isNull("percent") }
+        if (windows.isEmpty()) return null
+        val order = listOf("five_hour", "one_day", "seven_day", "seven_day_opus", "seven_day_sonnet", "thirty_day")
+        val box = ui.column()
+        windows.sortedBy { order.indexOf(it.str("window").substringAfter(':')).let { i -> if (i < 0) 99 else i } }.forEachIndexed { index, w ->
+            val percent = w.optDouble("percent")
+            val color = when { percent >= rotation.optInt("switchAtPercent", 90) -> C.AMBER; percent >= 100 -> C.RED; else -> C.LAV }
+            val line = ui.row()
+            line.addView(ui.text(usageName(w.str("window")), if (detailed) 12.5f else 11.5f, C.TX2), ui.lp(0, WRAP, 1f))
+            line.addView(ui.text("${if (percent % 1.0 == 0.0) percent.toInt().toString() else "%.1f".format(percent)}%", if (detailed) 13f else 12f, if (percent >= rotation.optInt("switchAtPercent", 90)) C.AMBER else C.TX, bold = true))
+            box.addView(line, ui.lp(top = if (index > 0) 8 else 0))
+            box.addView(ui.progress(percent, color), ui.lp(MATCH, dp(5), top = 4))
+            val reset = resetLabel(w.optLong("resetsAt"))
+            if (reset.isNotEmpty()) box.addView(ui.text(reset, 10.5f, C.TX3), ui.lp(top = 3))
+        }
+        return box
     }
 
     private fun reorder(order: List<String>, index: Int, delta: Int) {
@@ -2097,12 +2140,9 @@ class MainActivity : Activity() {
         kpis.addView(small("Uso", if (acc.isNull("percent")) "n/d" else "${acc.optDouble("percent").toInt()}%"), ui.lp(0, WRAP, 1f, end = 6))
         kpis.addView(small("Último uso", if (acc.optLong("lastUsedAt") > 0) ago(acc.optLong("lastUsedAt")) else "—"), ui.lp(0, WRAP, 1f))
         body.addView(kpis, ui.lp(bottom = 12))
-        acc.optJSONArray("usageWindows").objects().forEach { w ->
-            val line = ui.row()
-            line.addView(ui.text(mapOf("five_hour" to "Janela de 5 h", "seven_day" to "Semana", "seven_day_opus" to "Semana (Opus)")[w.str("window")] ?: w.str("window"), 12.5f, C.TX2), ui.lp(0, WRAP, 1f))
-            line.addView(ui.text("${w.optDouble("percent").toInt()}%" + if (w.optLong("resetsAt") > 0) " · renova ${clockTime(w.optLong("resetsAt").toDouble())}" else "", 12f, C.TX3))
-            body.addView(line, ui.lp(bottom = 4))
-            body.addView(ui.progress(w.optDouble("percent")), ui.lp(MATCH, dp(5), bottom = 10))
+        usageWindowsView(acc, detailed = true)?.let { body.addView(it, ui.lp(bottom = 10)) }
+        acc.optJSONObject("reportedUsage")?.takeIf { it.optLong("totalTokens") > 0 }?.let { u ->
+            body.addView(ui.text("Tokens registrados pelo harness: ${compactNumber(u.optLong("totalTokens"))} (entrada ${compactNumber(u.optLong("inputTokens"))} · saída ${compactNumber(u.optLong("outputTokens"))}) em ${u.optInt("runs")} execuç${if (u.optInt("runs") == 1) "ão" else "ões"}", 11.5f, C.TX3), ui.lp(bottom = 10))
         }
         if (acc.str("provider") == "claude-code") {
             body.addView(ui.caption("Acesso do agente"), ui.lp(top = 6, bottom = 8))
