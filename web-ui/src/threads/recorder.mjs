@@ -65,14 +65,15 @@ export class TurnRecorder {
   }
 
   /** Begin a turn with the user's message. */
-  async start({ text, content = null, account = null }) {
+  async start({ text, content = null, account = null, queuedAt = 0 }) {
     this.turnId = `turn-${randomUUID()}`;
     // Who answers this turn (the client colours and labels the reply by provider).
     const who = account ? { id: account.id, label: account.label, provider: account.provider } : null;
     const user = { type: 'userMessage', id: `${this.turnId}-user`, content: content || [{ type: 'text', text }] };
     const startedAt = nowSeconds();
     await this.store.update(this.threadId, (record) => {
-      record.turns.push({ id: this.turnId, status: 'inProgress', startedAt, items: [user], ...(who ? { account: who } : {}) });
+      // queuedAt: when a message sent during an earlier answer was written (it runs later, in queue order).
+      record.turns.push({ id: this.turnId, status: 'inProgress', startedAt, items: [user], ...(who ? { account: who } : {}), ...(queuedAt > 0 ? { queuedAt } : {}) });
       record.thread.status = { type: 'active' };
       if (!record.thread.preview) record.thread.preview = String(text || '').slice(0, 160);
     });

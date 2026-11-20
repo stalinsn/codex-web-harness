@@ -260,7 +260,7 @@ export class ProviderChat {
     return { prompt: parts.join('\n\n'), sessionId: sessionMatchesModel ? sessionId : '' };
   }
 
-  async #startTurn(record, account, { text, content = null, handoff = false, label = '', accessMode = '' }) {
+  async #startTurn(record, account, { text, content = null, handoff = false, label = '', accessMode = '', queuedAt = 0 }) {
     const threadId = record.thread.id;
     // Claim the thread before any await: one turn per conversation at a time.
     if (this.running.has(threadId)) throw httpError('Esta conversa já está respondendo.', 409);
@@ -270,7 +270,7 @@ export class ProviderChat {
     const recorder = new TurnRecorder({ store: this.store, threadId, emit: this.emit });
     execution.recorder = recorder;
     let turnId;
-    try { turnId = await recorder.start({ text: label || text, content: label ? null : content, account }); }
+    try { turnId = await recorder.start({ text: label || text, content: label ? null : content, account, queuedAt }); }
     catch (error) { this.running.delete(threadId); throw error; }
     this.emit('turn-accepted', { threadId, turnId, model: this.#modelLabel(account), cwd: record.thread.cwd });
     this.#run(record, account, recorder, { text, handoff, controller, accessMode, execution }).catch((error) => console.error('Falha numa conversa do harness:', error.message));
@@ -369,7 +369,8 @@ export class ProviderChat {
       const account = await this.#withChatSelection(this.accountFor(record, next.accountId), next);
       if (!this.accounts.availability(account).ok) throw new Error(`${account.label} indisponível`);
       const queuedAccessMode = ACCESS_MODES.has(next.accessMode) ? next.accessMode : ACCESS_MODES.has(record.thread.accessMode) ? record.thread.accessMode : 'manual';
-      const started = this.#startTurn(record, account, { text, content: next.input, accessMode: account.primary ? queuedAccessMode : '' });
+      const queuedAt = Number(next.createdAt) > 0 ? Math.round(Number(next.createdAt)) / 1000 : 0;
+      const started = this.#startTurn(record, account, { text, content: next.input, accessMode: account.primary ? queuedAccessMode : '', queuedAt });
       await this.store.update(threadId, (stored) => { stored.queue = stored.queue.filter((item) => item.id !== next.id); });
       this.emit('thread-queue-changed', { threadId });
       await started;

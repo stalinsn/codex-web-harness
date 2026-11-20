@@ -2004,3 +2004,14 @@ input[type="radio"]:disabled { opacity: .5; cursor: not-allowed; }
 .local-preview-card.is-open .local-preview-toggle { color: #151735; border-color: var(--accent); background: var(--accent); }
 .local-preview-frame { display: block; width: 100%; height: min(78dvh, 900px); border: 0; border-top: 1px solid #2c2d32; background: #07080a; resize: vertical; }
 @media (max-width: 640px) { .local-preview-title span { display: none; } .local-preview-frame { height: 72dvh; } }
+
+/* Queued messages and turns that stopped before answering. */
+.message.user .message-meta.message-queue-note { color: #aab6dc; font-size: 11.5px; text-align: right; }
+.turn-stop-notice { display: flex; align-items: center; gap: 12px; max-width: 760px; margin: 4px 0 18px; padding: 10px 12px; border: 1px solid #4a3a2a; border-radius: 10px; background: #1f1a15; }
+.turn-stop-notice.failed { border-color: #5a2c2c; background: #211515; }
+.turn-stop-text { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
+.turn-stop-text strong { color: #f2c88a; font-size: 13px; font-weight: 600; }
+.turn-stop-notice.failed .turn-stop-text strong { color: #ff9c9c; }
+.turn-stop-text span { color: var(--muted); font-size: 12px; }
+.turn-stop-retry { flex: none; padding: 7px 12px; color: #eef0ff; font: inherit; font-size: 12.5px; border: 1px solid #4b5170; border-radius: 8px; background: #252838; cursor: pointer; }
+.turn-stop-retry:hover { border-color: var(--accent); }

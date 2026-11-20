@@ -132,3 +132,15 @@ test('merged thread lists keep the Codex order and slot local threads by time', 
   const local = [{ id: 'x', updatedAt: 70 }, { id: 'y', updatedAt: 5 }];
   assert.deepEqual(mergeThreads(codex, local).map((thread) => thread.id), ['x', 'a', 'b', 'c', 'y']);
 });
+
+test('a turn started from the queue keeps the time the message was sent', async () => {
+  const store = await new LocalThreadStore({ dir: await mkdtemp(join(tmpdir(), 'harness-threads-')) }).load();
+  const record = await store.create({ cwd: '/tmp', accountId: 'claude-1', provider: 'claude-code' });
+  const queuedAt = Math.floor(Date.now() / 1000) - 120;
+  await new TurnRecorder({ store, threadId: record.thread.id, emit() {} }).start({ text: 'Enviada durante a resposta anterior', queuedAt });
+  await new TurnRecorder({ store, threadId: record.thread.id, emit() {} }).start({ text: 'Enviada direto' });
+  const [queued, direct] = (await store.get(record.thread.id)).turns;
+  assert.equal(queued.queuedAt, queuedAt);
+  assert.ok(queued.startedAt - queued.queuedAt >= 120);
+  assert.equal('queuedAt' in direct, false);
+});

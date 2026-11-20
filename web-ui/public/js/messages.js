@@ -271,7 +271,8 @@ export function renderTurnHistory(turns, threadId) {
         const images = imageFromContent(item.content, threadId);
         if (text || images.length || files.length) {
           if (item.id) state.userMessageIds.add(item.id);
-          makeMessage('user', { text, images, files, id: item.id }); startProgressSegment(turn.id); count++;
+          const userRow = makeMessage('user', { text, images, files, id: item.id }); startProgressSegment(turn.id); count++;
+          annotateQueuedTurn(userRow, turn);
         }
       } else if (item.type === 'agentMessage') {
         if (item.text) {
@@ -301,6 +302,9 @@ export function renderTurnHistory(turns, threadId) {
         renderActivity(item, true, turn.id); count++;
       }
     });
+    if (!lastAssistant && !items.some((item) => item.type !== 'userMessage')) {
+      if (appendTurnStopNotice(turn, items)) count++;
+    }
     const durationMs = Number(turn.durationMs) || (turn.startedAt && turn.completedAt ? (Number(turn.completedAt) - Number(turn.startedAt)) * 1000 : 0);
     const groups = [...state.turnIntermediates.values()].filter((group) => group.turnId === turn.id);
     if (groups.length && durationMs > 0) groups.forEach((group) => { group.durationMs = durationMs; updateTurnIntermediateTitle(group); });
@@ -309,6 +313,57 @@ export function renderTurnHistory(turns, threadId) {
   $('#welcome').classList.toggle('hidden', count > 0);
   if (sameThread && !state.followLatest) $('#messages').scrollTop = previousScrollTop;
   else scrollConversation(true);
+}
+
+const QUEUE_NOTE_MIN_SECONDS = 5;
+const clockTime = (seconds) => new Date(seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+// A message sent while an earlier answer was running is processed (and shown) after it.
+function annotateQueuedTurn(row, turn) {
+  const queuedAt = Number(turn.queuedAt);
+  const startedAt = Number(turn.startedAt);
+  if (!row || !(queuedAt > 0) || !(startedAt - queuedAt >= QUEUE_NOTE_MIN_SECONDS)) return;
+  const meta = $('.message-meta', row);
+  if (!meta) return;
+  meta.classList.add('message-queue-note');
+  meta.textContent = `Enviada às ${clockTime(queuedAt)} · esperou ${formatDuration((startedAt - queuedAt) * 1000)} na fila`;
+  meta.title = 'Você enviou esta mensagem enquanto a resposta anterior ainda estava em andamento; ela foi processada em seguida.';
+}
+
+// Turns that ended before producing anything would otherwise leave the user's message unanswered with no hint.
+function appendTurnStopNotice(turn, items) {
+  const status = turnStatus(turn);
+  if (!['interrupted', 'failed'].includes(status)) return false;
+  const user = items.find((item) => item.type === 'userMessage');
+  const prompt = (user?.content || []).filter((part) => part.type === 'text').map((part) => part.text).join('\n').trim();
+  const notice = document.createElement('div');
+  notice.className = `turn-stop-notice ${status}`;
+  notice.setAttribute('role', 'status');
+  const text = document.createElement('div');
+  text.className = 'turn-stop-text';
+  const title = document.createElement('strong');
+  title.textContent = status === 'interrupted' ? 'Interrompida antes de responder' : 'Falhou antes de responder';
+  const detail = document.createElement('span');
+  detail.textContent = turn.error?.message || (status === 'interrupted' ? 'A execução foi encerrada (parada manual ou reinício do serviço). Nada foi executado.' : 'A conta não devolveu resposta.');
+  text.append(title, detail);
+  notice.append(text);
+  if (prompt) {
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'turn-stop-retry';
+    retry.textContent = 'Reenviar';
+    retry.title = 'Coloca a mensagem de volta no campo de texto para você revisar e enviar';
+    retry.addEventListener('click', () => {
+      const input = $('#messageInput');
+      if (!input) return;
+      input.value = prompt;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.focus();
+    });
+    notice.append(retry);
+  }
+  $('#messages').append(notice);
+  return true;
 }
 
 export function getOrCreateStreamMessage(itemId, turnId = '', phase = '') {
