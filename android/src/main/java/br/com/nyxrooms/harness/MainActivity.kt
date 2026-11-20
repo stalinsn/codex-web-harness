@@ -246,13 +246,18 @@ class MainActivity : Activity() {
     // Model actually in use: explicit choice › account setting › model the provider reported in this
     // conversation › default flagged by the account's catalog. Never just "padrão" when it can be known.
     private val defaultModels = mutableMapOf<String, String>()
+    private val defaultEfforts = mutableMapOf<String, String>()
     private fun loadDefaultModels() {
-        for (acc in accounts.filter { it.optBoolean("enabled") && it.str("model").isBlank() && it.str("id") !in defaultModels }) {
+        for (acc in accounts.filter { it.optBoolean("enabled") && it.str("model").isBlank() && defaultModels[it.str("id")].isNullOrEmpty() }) {
             val id = acc.str("id")
+            if (id in defaultModels) continue // request in flight; a failure clears the marker so the next refresh retries
             defaultModels[id] = ""
             worker.execute {
-                val found = runCatching { api.call("/api/accounts/${enc(id)}/models").optJSONArray("models").objects().firstOrNull { it.optBoolean("isDefault") }?.let { it.str("label").ifBlank { it.str("id") } } }.getOrNull().orEmpty()
-                runOnUiThread { if (found.isNotEmpty()) { defaultModels[id] = found; updateLive() } }
+                val def = runCatching { api.call("/api/accounts/${enc(id)}/models").optJSONArray("models").objects().firstOrNull { it.optBoolean("isDefault") } }.getOrNull()
+                val found = def?.let { it.str("label").ifBlank { it.str("id") } }.orEmpty()
+                runOnUiThread {
+                    if (found.isNotEmpty()) { defaultModels[id] = found; def?.str("defaultEffort")?.let { defaultEfforts[id] = it }; updateLive() } else defaultModels.remove(id)
+                }
             }
         }
     }
@@ -487,7 +492,7 @@ class MainActivity : Activity() {
         val box = ui.column().apply { background = ui.shape(C.PANEL, 22, 1, C.LINE2); setPadding(dp(10), dp(6), dp(10), dp(8)) }
         composerHint = ui.text("", 11f, C.TX3).apply { visibility = View.GONE; setPadding(dp(4), dp(4), 0, 0) }
         box.addView(composerHint)
-        composer = EditText(this).apply {
+        composer = PasteAwareEditText(this) { uris -> addAttachmentUris(uris) }.apply {
             hint = "Mensagem para o Codex…"; setHintTextColor(C.TX3); setTextColor(C.TX); textSize = 15f; background = null
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
             maxLines = 6; setPadding(dp(4), dp(6), dp(4), dp(6))
@@ -558,7 +563,7 @@ class MainActivity : Activity() {
 
     private fun modelLabel(acc: JSONObject?): String {
         val m = model.ifEmpty { acc?.str("model").orEmpty() }
-        val e = effort.ifEmpty { acc?.str("effort").orEmpty() }
+        val e = effort.ifEmpty { acc?.str("effort").orEmpty() }.ifEmpty { if (model.isEmpty()) defaultEfforts[acc?.str("id") ?: accountId].orEmpty() else "" }
         val (name, isDefault) = if (m.isNotEmpty()) prettyModel(m) to false else resolvedModel(acc)
         return listOf(acc?.str("label") ?: accountId, if (isDefault && name != "padrão da CLI") "$name (padrão)" else name, effortName(e)).filter { it.isNotBlank() }.joinToString(" · ")
     }
@@ -1306,6 +1311,11 @@ class MainActivity : Activity() {
         }
         if (resultCode != RESULT_OK || data == null || requestCode !in setOf(PICK_IMAGES, PICK_FILES)) return
         val uris = data.clipData?.let { clip -> (0 until clip.itemCount).map { clip.getItemAt(it).uri } } ?: listOfNotNull(data.data)
+        addAttachmentUris(uris)
+    }
+
+    /** Shared by the picker and by paste (long-press ▸ Colar, keyboard clipboard, keyboard images). */
+    private fun addAttachmentUris(uris: List<Uri>) {
         worker.execute {
             val added = mutableListOf<Attachment>(); var problem = ""
             for (uri in uris) {
@@ -2452,5 +2462,29 @@ class MainActivity : Activity() {
                 }
             }
         }
+    }
+}
+
+/** Composer that turns pasted files/images (clipboard URIs, keyboard-inserted images) into attachments. */
+class PasteAwareEditText(context: android.content.Context, private val onFiles: (List<Uri>) -> Unit) : EditText(context) {
+    init {
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            setOnReceiveContentListener(arrayOf("image/*", "application/pdf", "text/plain", "*/*"), android.view.OnReceiveContentListener { view, payload ->
+                val clip = payload.clip
+                val uris = (0 until clip.itemCount).map { clip.getItemAt(it) }.filter { it.uri != null && it.text.isNullOrEmpty() }.mapNotNull { it.uri }
+                if (uris.isNotEmpty()) { view.post { onFiles(uris) }; null } else payload // plain text keeps flowing into the field
+            })
+        }
+    }
+    override fun onTextContextMenuItem(id: Int): Boolean {
+        if (id == android.R.id.paste || id == android.R.id.pasteAsPlainText) {
+            val clip = (context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).primaryClip
+            if (clip != null) {
+                val items = (0 until clip.itemCount).map { clip.getItemAt(it) }
+                val uris = items.filter { it.uri != null && it.text.isNullOrEmpty() }.mapNotNull { it.uri }
+                if (uris.isNotEmpty() && items.none { !it.text.isNullOrEmpty() }) { onFiles(uris); return true }
+            }
+        }
+        return super.onTextContextMenuItem(id)
     }
 }
