@@ -7,6 +7,9 @@ import { setCardSummary } from './inspector-layout.js';
 import { state } from './state.js';
 import { createThreadRow, renderThreads } from './thread-list.js';
 
+let pendingProjectRevealId = '';
+let pendingThreadRevealId = '';
+
 export function pathIsWithin(path, root) {
   const base = String(root || '').replace(/\/+$/, '');
   const target = String(path || '');
@@ -206,6 +209,8 @@ export function openThreadColorMenu(thread, trigger) {
 export function renderProjects() {
   const list = $('#projectList');
   if (!list) return;
+  const navigation = $('#sidebarNavigation');
+  const previousScrollTop = navigation?.scrollTop || 0;
   closeProjectColorMenus();
   $$('.project-tree-thread-actions-popover').forEach((popover) => popover.remove());
   list.replaceChildren();
@@ -226,6 +231,7 @@ export function renderProjects() {
     const unassignedThreads = state.threads.filter((thread) => !projectForThread(thread));
     const unassignedNode = document.createElement('div');
     unassignedNode.className = 'project-tree-node unassigned-tree-node';
+    unassignedNode.dataset.projectId = 'unassigned';
     const unassignedRow = document.createElement('div');
     unassignedRow.className = 'project-tree-row';
     const unassignedToggle = document.createElement('button');
@@ -238,6 +244,7 @@ export function renderProjects() {
     unassignedToggle.addEventListener('click', () => {
       state.unassignedExpanded = !state.unassignedExpanded;
       localStorage.setItem('codex-unassigned-expanded', String(state.unassignedExpanded));
+      if (state.unassignedExpanded) pendingProjectRevealId = 'unassigned';
       renderThreads(state.threads, $('#threadSearch').value.trim());
     });
     const unassignedButton = document.createElement('button');
@@ -280,6 +287,7 @@ export function renderProjects() {
   state.projects.forEach((project) => {
     const node = document.createElement('div');
     node.className = 'project-tree-node';
+    node.dataset.projectId = project.id;
     const row = document.createElement('div');
     row.className = 'project-tree-row';
     const toggle = document.createElement('button');
@@ -349,6 +357,29 @@ export function renderProjects() {
   });
   installIcons();
   renderConversationContext();
+  if (navigation) {
+    navigation.scrollTop = previousScrollTop;
+    const projectNode = pendingProjectRevealId
+      ? [...list.querySelectorAll('.project-tree-node')].find((node) => node.dataset.projectId === pendingProjectRevealId)
+      : null;
+    const threadRow = pendingThreadRevealId
+      ? [...list.querySelectorAll('.project-thread-row')].find((row) => row.dataset.threadId === pendingThreadRevealId)
+      : null;
+    const target = threadRow
+      || (projectNode?.querySelector('.project-tree-children .project-thread-row') || projectNode?.querySelector('.project-tree-row'));
+    if (target) {
+      const viewport = navigation.getBoundingClientRect();
+      const rect = target.getBoundingClientRect();
+      if (rect.top < viewport.top) navigation.scrollTop -= viewport.top - rect.top;
+      else if (rect.bottom > viewport.bottom) navigation.scrollTop += rect.bottom - viewport.bottom;
+    }
+  }
+  pendingProjectRevealId = '';
+  if (!pendingThreadRevealId || [...list.querySelectorAll('.project-thread-row')].some((row) => row.dataset.threadId === pendingThreadRevealId)) pendingThreadRevealId = '';
+}
+
+export function revealProjectThread(threadId) {
+  pendingThreadRevealId = threadId || '';
 }
 
 export function selectProject(id, { folderPath = null, updateActiveThread = false } = {}) {
@@ -363,6 +394,7 @@ export function selectProject(id, { folderPath = null, updateActiveThread = fals
   if (project) {
     state.expandedProjectId = project.id;
     localStorage.setItem('codex-expanded-project', project.id);
+    pendingProjectRevealId = project.id;
   }
   if (folderPath) updateWorkingDirectory(folderPath);
   else if (!state.selectedThreadId) updateWorkingDirectory(project?.cwd || state.defaultCwd || state.cwd);

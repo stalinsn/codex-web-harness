@@ -1,5 +1,5 @@
-// Chat turns on harness-held conversations: any account (Claude Code, Antigravity,
-// Gemini, extra Codex accounts). Keeps one CLI session per account and thread, falls
+// Chat turns on harness-held conversations: any account (including the primary Codex,
+// Claude Code, Antigravity, Gemini and extra Codex accounts). Keeps one CLI session per account and thread, falls
 // back to a transcript when the account changes, queues follow-ups while a turn runs
 // and, when the account hits its limit, continues on the next one of the rotation.
 import { randomUUID } from 'node:crypto';
@@ -7,6 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { HANDOFF_FILE } from '../accounts/codex-usage.mjs';
 import { PRIMARY_ID } from '../accounts/registry.mjs';
+import { ACCESS_MODES } from '../codex/access-mode.mjs';
 import { config } from '../config.mjs';
 import { httpError } from '../http/respond.mjs';
 import { getAccountModelCatalog } from '../accounts/model-catalog.mjs';
@@ -47,10 +48,11 @@ export class ProviderChat {
   isRunning(threadId) { return this.running.has(threadId); }
 
   accountFor(record, accountId) {
-    // "codex" (the chat's own account) cannot answer here; keep the conversation's account.
-    const wanted = accountId && accountId !== PRIMARY_ID ? accountId : record.thread.accountId;
+    // Respect an explicit account choice. This also lets a harness-held conversation
+    // switch back to the primary Codex account instead of silently keeping its old CLI.
+    const wanted = accountId || record.thread.accountId;
     const account = this.accounts.registry.get(wanted);
-    if (!account || account.id === PRIMARY_ID) throw httpError('Escolha uma conta conectada para esta conversa.', 400);
+    if (!account) throw httpError('Escolha uma conta conectada para esta conversa.', 400);
     return account;
   }
 
@@ -64,17 +66,55 @@ export class ProviderChat {
   }
 
   /** Create a conversation bound to an account. */
-  async create({ accountId, cwd, name = '', taskId = '', seed = '' }) {
+  async create({ accountId, cwd, name = '', taskId = '', seed = '', sourceCodexThreadId = '', sourceCodexModel = '', accessMode = '' }) {
     const account = this.accounts.registry.get(accountId);
     if (!account || account.primary) throw httpError('Escolha uma conta conectada para esta conversa.', 400);
-    const record = await this.store.create({ cwd, accountId: account.id, provider: account.provider, model: this.#modelLabel(account), name, taskId });
+    const record = await this.store.create({ cwd, accountId: account.id, provider: account.provider, model: this.#modelLabel(account), name, taskId, accessMode });
     if (seed) await this.store.update(record.thread.id, (stored) => { stored.seed = seed.slice(-24_000); });
+    if (sourceCodexThreadId) {
+      const codex = this.accounts.registry.get(PRIMARY_ID);
+      await this.store.update(record.thread.id, (stored) => {
+        stored.sessions[PRIMARY_ID] = sourceCodexThreadId;
+        stored.sessionModels[PRIMARY_ID] = [codex?.label || 'Codex', sourceCodexModel].filter(Boolean).join(' · ');
+        stored.sessionTurnCounts[PRIMARY_ID] = 0;
+        stored.thread.internalCodexThreadIds = [...new Set([...(Array.isArray(stored.thread.internalCodexThreadIds) ? stored.thread.internalCodexThreadIds : []), sourceCodexThreadId])];
+      });
+      await this.store.flush(record.thread.id);
+    }
     this.emit('thread-created', { thread: record.thread });
     return record;
   }
 
   #modelLabel(account) {
     return [account.label, account.model].filter(Boolean).join(' · ');
+  }
+
+  async #recoverSourceCodexSession(record) {
+    if (!record.seed || record.sessions?.[PRIMARY_ID]) return record;
+    const title = String(record.thread.name || '').replace(/\s+\(continuação.*$/i, '').trim();
+    if (!title) return record;
+    try {
+      const primary = this.accounts.registry.get(PRIMARY_ID);
+      const server = primary && this.accounts.codexServerFor(primary);
+      if (!server?.ready) return record;
+      const listed = await server.rpc('thread/list', { limit: 100, sortKey: 'updated_at', sortDirection: 'desc', searchTerm: title });
+      const candidates = (listed.data || []).filter((thread) => thread.name === title || thread.preview === title || thread.name?.startsWith(title));
+      for (const candidate of candidates.slice(0, 5)) {
+        const turns = await server.rpc('thread/turns/list', { threadId: candidate.id, limit: 20, sortDirection: 'desc', itemsView: 'full' });
+        if (transcriptOf([...(turns.data || [])].reverse()) !== record.seed) continue;
+        const read = await server.rpc('thread/read', { threadId: candidate.id });
+        const model = typeof read.thread?.model === 'string' ? read.thread.model : '';
+        await this.store.update(record.thread.id, (stored) => {
+          stored.sessions[PRIMARY_ID] = candidate.id;
+          stored.sessionModels[PRIMARY_ID] = [primary.label, model].filter(Boolean).join(' · ');
+          stored.sessionTurnCounts[PRIMARY_ID] = 0;
+          stored.thread.internalCodexThreadIds = [...new Set([...(Array.isArray(stored.thread.internalCodexThreadIds) ? stored.thread.internalCodexThreadIds : []), candidate.id])];
+        });
+        await this.store.flush(record.thread.id);
+        return record;
+      }
+    } catch { /* If the original session cannot be matched safely, start from its saved transcript. */ }
+    return record;
   }
 
   async #withChatSelection(account, selection = {}) {
@@ -84,7 +124,7 @@ export class ProviderChat {
     const selectedModel = model
       ? (catalog.models || []).find((item) => item.id === model)
       : (catalog.models || []).find((item) => item.isDefault);
-    if (model && catalog.models?.length && !selectedModel) {
+    if (model && catalog.models?.length && !selectedModel && model !== account.model) {
       throw httpError(`O modelo “${model}” não consta no catálogo atual de ${account.label}. Atualize as opções e escolha um modelo disponível.`, 400);
     }
     if (account.provider === 'antigravity' && (selectedModel?.effortEncoded || ANTIGRAVITY_ENCODED_EFFORT.test(model || ''))) effort = '';
@@ -102,23 +142,77 @@ export class ProviderChat {
    * Send a user message. Starts a turn, or queues it while one is running.
    * @returns {Promise<{threadId: string, turnId?: string, queued?: boolean, queuedSubmission?: object}>}
    */
-  async send({ threadId, accountId, text, extraText = '', content = null, model, effort }) {
-    const record = await this.store.get(threadId);
+  async send({ threadId, accountId, text, extraText = '', content = null, model, effort, accessMode = '' }) {
+    let record = await this.store.get(threadId);
     if (!record) throw httpError('Conversa não encontrada.', 404);
     if (record.thread.taskId) throw httpError('Esta conversa pertence a uma execução contínua. Para orientar, use Retomar no painel Execuções contínuas.', 409);
+    if (accountId === PRIMARY_ID && record.seed && !record.sessions?.[PRIMARY_ID]) record = await this.#recoverSourceCodexSession(record);
     const account = await this.#withChatSelection(this.accountFor(record, accountId), { model, effort });
+    const codexAccessMode = account.primary
+      ? (ACCESS_MODES.has(accessMode) ? accessMode : ACCESS_MODES.has(record.thread.accessMode) ? record.thread.accessMode : 'manual')
+      : '';
+    if (account.primary && record.thread.accessMode !== codexAccessMode) {
+      await this.store.update(threadId, (stored) => { stored.thread.accessMode = codexAccessMode; });
+      await this.store.flush(threadId);
+    }
     const message = [text, extraText].filter(Boolean).join('\n\n');
     if (this.running.has(threadId)) {
       if (record.queue.length >= MAX_QUEUE) throw httpError('A fila desta conversa está cheia.', 409);
-      const queued = { id: `q-${randomUUID()}`, accountId: account.id, model: account.model, effort: account.effort, input: content || [{ type: 'text', text: message }], prompt: message, createdAt: Date.now() };
+      const queued = { id: `q-${randomUUID()}`, accountId: account.id, model: account.model, effort: account.effort, accessMode: codexAccessMode, input: content || [{ type: 'text', text: message }], prompt: message, createdAt: Date.now() };
       await this.store.update(threadId, (stored) => { stored.queue.push(queued); });
       this.emit('thread-queue-changed', { threadId });
       return { threadId, queued: true, queuedSubmission: queued };
     }
     const availability = this.accounts.availability(account);
     if (!availability.ok) throw httpError(`${account.label}: ${availability.reason.toLowerCase()}. Escolha outra conta para continuar.`, 409);
-    const turnId = await this.#startTurn(record, account, { text: message, content });
+    const turnId = await this.#startTurn(record, account, { text: message, content, accessMode: codexAccessMode });
     return { threadId, turnId };
+  }
+
+  async steer(threadId, input) {
+    const running = this.running.get(threadId);
+    if (!running) throw httpError('A execução terminou; a mensagem continua disponível na fila.', 409);
+    const record = await this.store.get(threadId);
+    if (!record) throw httpError('Conversa não encontrada.', 404);
+    const account = this.accountFor(record, running.accountId);
+    if (account.provider !== 'codex') throw httpError(`${account.label} não aceita orientação durante a resposta; a mensagem continua na fila.`, 409);
+    const sessionId = running.sessionId || record.sessions?.[account.id] || '';
+    const server = this.accounts.codexServerFor(account);
+    const turnId = running.turnId || server.activeTurns.get(sessionId) || '';
+    if (!sessionId || !turnId) throw httpError('A execução do Codex ainda não está pronta para receber orientação; a mensagem continua na fila.', 409);
+    await server.rpc('turn/steer', {
+      threadId: sessionId,
+      expectedTurnId: turnId,
+      clientUserMessageId: randomUUID(),
+      input,
+    });
+    await running.recorder.recordSteeredMessage(input);
+    return { threadId, turnId, steered: true };
+  }
+
+  async steerQueued(threadId, queuedId) {
+    const record = await this.store.get(threadId);
+    const queued = record?.queue.find((item) => item.id === queuedId);
+    if (!queued) throw httpError('A mensagem não está mais na fila.', 404);
+    const input = (queued.input || []).filter((part) => part && ['text', 'localImage'].includes(part.type));
+    if (!input.length) throw httpError('Não consegui ler o conteúdo da mensagem na fila.', 400);
+    const result = await this.steer(threadId, input);
+    await this.store.update(threadId, (stored) => { stored.queue = stored.queue.filter((item) => item.id !== queuedId); });
+    await this.store.flush(threadId);
+    this.emit('thread-queue-changed', { threadId });
+    return result;
+  }
+
+  async setAccessMode(threadId, mode) {
+    if (!ACCESS_MODES.has(mode)) throw httpError('Escolha Pedir aprovação ou Automático.', 400);
+    const record = await this.store.get(threadId);
+    if (!record) throw httpError('Conversa não encontrada.', 404);
+    const sessionId = record.sessions?.[PRIMARY_ID];
+    const primary = this.accounts.registry.get(PRIMARY_ID);
+    if (sessionId && primary) await this.accounts.codexServerFor(primary).setThreadAccessMode(sessionId, mode);
+    await this.store.update(threadId, (stored) => { stored.thread.accessMode = mode; });
+    await this.store.flush(threadId);
+    return { mode, active: this.running.has(threadId) };
   }
 
   async interrupt(threadId) {
@@ -139,16 +233,21 @@ export class ProviderChat {
   }
 
   async #prompt(record, account, text, { handoff = false } = {}) {
-    const selectionMatches = record.thread.accountId === account.id && record.thread.model === this.#modelLabel(account);
-    const sessionId = selectionMatches ? (record.sessions[account.id] || '') : '';
-    if (sessionId && record.lastAccountId === account.id && !handoff) return { prompt: text, sessionId };
+    const sessionId = record.sessions[account.id] || '';
+    const sessionMatchesModel = Boolean(sessionId) && record.sessionModels?.[account.id] === this.#modelLabel(account);
+    const earlierTurns = record.turns.slice(0, -1);
+    const includedTurns = Number(record.sessionTurnCounts?.[account.id]) || 0;
+    const sessionCaughtUp = sessionMatchesModel && includedTurns >= earlierTurns.length;
+    if (sessionCaughtUp && record.lastAccountId === account.id && !handoff) return { prompt: text, sessionId };
     const parts = [];
     if (account.provider !== 'codex') {
       const policies = (await Promise.all([join(config.codexHome, 'AGENTS.md'), join(record.thread.cwd, 'AGENTS.md')].map((file) => readText(file, MAX_POLICY)))).filter((policy) => policy.trim());
       if (policies.length) parts.push(`## Diretrizes da instalação (obrigatórias)\n\n${policies.join('\n\n---\n\n')}\n\nQuando estas diretrizes exigirem pedido explícito ou confirmação, explique o plano e peça a confirmação em vez de executar.`);
     }
     parts.push(`Você está conversando pelo Codex Web Harness. Pasta de trabalho: \`${record.thread.cwd}\`.`);
-    const history = [record.seed ? `(Conversa anterior no Codex)\n${record.seed}` : '', transcriptOf(record.turns.slice(0, -1))].filter(Boolean).join('\n\n');
+    const history = sessionMatchesModel
+      ? transcriptOf(earlierTurns.slice(includedTurns))
+      : [record.seed ? `(Conversa anterior no Codex)\n${record.seed}` : '', transcriptOf(earlierTurns)].filter(Boolean).join('\n\n');
     if (history) parts.push(`## Conversa até aqui (outra conta ou modelo pode ter respondido antes)\n\n${history}`);
     if (handoff) {
       const file = await readText(join(record.thread.cwd, HANDOFF_FILE), 30_000);
@@ -158,34 +257,56 @@ export class ProviderChat {
       parts.push('## Compatibilidade do modelo\n\nO catálogo do provedor declara que o modelo selecionado não oferece ferramentas. Responda a perguntas conversacionais, mas não solicite comandos, leituras ou alterações de arquivos; explique a limitação quando a tarefa depender dessas ferramentas.');
     }
     parts.push(`## Mensagem do usuário\n\n${text}`);
-    return { prompt: parts.join('\n\n'), sessionId: '' };
+    return { prompt: parts.join('\n\n'), sessionId: sessionMatchesModel ? sessionId : '' };
   }
 
-  async #startTurn(record, account, { text, content = null, handoff = false, label = '' }) {
+  async #startTurn(record, account, { text, content = null, handoff = false, label = '', accessMode = '' }) {
     const threadId = record.thread.id;
     // Claim the thread before any await: one turn per conversation at a time.
     if (this.running.has(threadId)) throw httpError('Esta conversa já está respondendo.', 409);
     const controller = new AbortController();
-    this.running.set(threadId, { controller, accountId: account.id });
+    const execution = { controller, accountId: account.id, sessionId: record.sessions?.[account.id] || '', turnId: '' };
+    this.running.set(threadId, execution);
     const recorder = new TurnRecorder({ store: this.store, threadId, emit: this.emit });
+    execution.recorder = recorder;
     let turnId;
     try { turnId = await recorder.start({ text: label || text, content: label ? null : content, account }); }
     catch (error) { this.running.delete(threadId); throw error; }
     this.emit('turn-accepted', { threadId, turnId, model: this.#modelLabel(account), cwd: record.thread.cwd });
-    this.#run(record, account, recorder, { text, handoff, controller }).catch((error) => console.error('Falha numa conversa do harness:', error.message));
+    this.#run(record, account, recorder, { text, handoff, controller, accessMode, execution }).catch((error) => console.error('Falha numa conversa do harness:', error.message));
     return turnId;
   }
 
-  async #run(record, account, recorder, { text, handoff, controller }) {
+  async #run(record, account, recorder, { text, handoff, controller, accessMode, execution }) {
     const threadId = record.thread.id;
     let outcome;
     let eventRecording = Promise.resolve();
     try {
       const { prompt, sessionId } = await this.#prompt(record, account, text, { handoff });
       outcome = await this.accounts.runSegment(account, {
-        taskId: `chat:${threadId}`, prompt, cwd: record.thread.cwd, sessionId, title: record.thread.name || record.thread.preview || 'Conversa', signal: controller.signal,
+        taskId: `chat:${threadId}`, prompt, cwd: record.thread.cwd, sessionId, title: record.thread.name || record.thread.preview || 'Conversa', signal: controller.signal, accessMode,
         // Codex accounts are mirrored item by item (onCodexMessage); CLIs go through the parser events.
         onEvent: (event) => {
+          if (event.type === 'turn-started') {
+            execution.sessionId = event.sessionId || execution.sessionId;
+            execution.turnId = event.turnId || execution.turnId;
+            return;
+          }
+          if (event.type === 'session' && account.primary && event.sessionId) {
+            execution.sessionId = event.sessionId;
+            eventRecording = eventRecording.then(async () => {
+              const updated = await this.store.update(threadId, (stored) => {
+                const previousSessionId = stored.sessions[account.id] || '';
+                stored.sessions[account.id] = event.sessionId;
+                stored.sessionModels[account.id] = this.#modelLabel(account);
+                if (previousSessionId !== event.sessionId) stored.sessionTurnCounts[account.id] = Math.max(0, stored.turns.length - 1);
+                stored.thread.internalCodexThreadIds = [...new Set([...(Array.isArray(stored.thread.internalCodexThreadIds) ? stored.thread.internalCodexThreadIds : []), event.sessionId])];
+              });
+              await this.store.flush(threadId);
+              if (updated) this.emit('thread-updated', { threadId, thread: updated.thread });
+            }).catch((error) => console.error('Falha ao vincular a sessão Codex à conversa:', error.message));
+            return;
+          }
           if (event.type !== 'session' && (account.provider !== 'codex' || event.type === 'error')) {
             eventRecording = eventRecording.then(() => recorder.handle(event)).catch((error) => console.error('Falha ao registrar evento da CLI:', error.message));
           }
@@ -206,7 +327,12 @@ export class ProviderChat {
       const limitNote = outcome.status === 'rate-limited' ? `Limite de uso atingido em ${account.label}.` : '';
       await recorder.finish({ status, error: limitNote || (status === 'failed' ? outcome.error || 'A conta não concluiu a resposta.' : ''), finalText: status === 'completed' ? outcome.text : '' });
       await this.store.update(threadId, (stored) => {
-        if (outcome.sessionId) stored.sessions[account.id] = outcome.sessionId;
+        if (outcome.sessionId) {
+          stored.sessions[account.id] = outcome.sessionId;
+          stored.sessionModels[account.id] = this.#modelLabel(account);
+          if (status === 'completed') stored.sessionTurnCounts[account.id] = stored.turns.length;
+          if (account.primary) stored.thread.internalCodexThreadIds = [...new Set([...(Array.isArray(stored.thread.internalCodexThreadIds) ? stored.thread.internalCodexThreadIds : []), outcome.sessionId])];
+        }
         stored.lastAccountId = account.id;
         stored.thread.accountId = account.id;
         stored.thread.provider = account.provider;
@@ -242,7 +368,8 @@ export class ProviderChat {
     try {
       const account = await this.#withChatSelection(this.accountFor(record, next.accountId), next);
       if (!this.accounts.availability(account).ok) throw new Error(`${account.label} indisponível`);
-      const started = this.#startTurn(record, account, { text, content: next.input });
+      const queuedAccessMode = ACCESS_MODES.has(next.accessMode) ? next.accessMode : ACCESS_MODES.has(record.thread.accessMode) ? record.thread.accessMode : 'manual';
+      const started = this.#startTurn(record, account, { text, content: next.input, accessMode: account.primary ? queuedAccessMode : '' });
       await this.store.update(threadId, (stored) => { stored.queue = stored.queue.filter((item) => item.id !== next.id); });
       this.emit('thread-queue-changed', { threadId });
       await started;

@@ -22,7 +22,7 @@ export async function startTranscription(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw error('Solicitação de áudio inválida.');
   if (activeJob) throw error('Outro áudio está sendo transcrito. Aguarde e tente novamente.', 429);
   const extensions = { 'audio/webm': 'webm', 'audio/mp4': 'm4a', 'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/ogg': 'ogg', 'audio/aac': 'aac', 'audio/x-m4a': 'm4a' };
-  const extension = extensions[String(body.mime || '').split(';')[0].toLowerCase()];
+  const extension = extensions[String(body.mime || '').split(';')[0].trim().toLowerCase()];
   if (!extension || typeof body.data !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(body.data)) throw error('Formato de áudio inválido. Grave novamente ou escolha MP3, M4A, WAV ou WebM.');
   if (body.data.length > 16 * 1024 * 1024) throw error('O limite é de 12 MB por áudio.', 413);
   const audio = Buffer.from(body.data, 'base64');

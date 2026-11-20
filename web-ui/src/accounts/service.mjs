@@ -8,6 +8,7 @@ import { httpError } from '../http/respond.mjs';
 import { accountEnv, checkCliLogin, commandFor, runCliSegment } from './cli-runner.mjs';
 import { codexUsage } from './codex-usage.mjs';
 import { runCodexSegment } from './codex-runner.mjs';
+import { reportedTokenUsage } from './parsers.mjs';
 import { PROVIDERS } from './providers.mjs';
 import { accountsDir } from './registry.mjs';
 
@@ -58,6 +59,7 @@ export class AccountService {
         usageWindows: Object.entries(state.usageWindows || {}).flatMap(([window, reading]) => reading.resetsAt && reading.resetsAt * 1000 <= now ? [] : [{ window, ...reading }]),
         percentAt: state.percentAt,
         resetsAt: state.resetsAt,
+        reportedUsage: state.reportedUsage,
         cooldownUntil: state.cooldownUntil > now ? state.cooldownUntil : 0,
         lastLimit: state.lastLimit,
         segments: state.segments,
@@ -174,6 +176,22 @@ export class AccountService {
     this.emit('accounts-changed', {});
   }
 
+  async recordReportedUsage(id, value) {
+    const usage = reportedTokenUsage(value);
+    if (!usage) return false;
+    const state = this.registry.stateOf(id);
+    const totals = state.reportedUsage;
+    for (const key of ['inputTokens', 'outputTokens']) {
+      if (usage[key] != null) totals[key] = (totals[key] || 0) + usage[key];
+    }
+    totals.totalTokens += usage.totalTokens;
+    totals.runs += 1;
+    totals.lastAt = Date.now();
+    await this.registry.saveState();
+    this.emit('accounts-changed', {});
+    return true;
+  }
+
   #recordCodexUsage(id, params) {
     const { percent, resetsAt } = codexUsage(params);
     if (percent != null) this.recordUsage(id, percent, resetsAt).catch(() => {});
@@ -196,21 +214,29 @@ export class AccountService {
   }
 
   /** Run one segment and update the account's bookkeeping. */
-  async runSegment(account, { taskId, prompt, cwd, sessionId, title, onEvent, onCodexMessage = null, signal }) {
+  async runSegment(account, { taskId, prompt, cwd, sessionId, title, onEvent, onCodexMessage = null, signal, accessMode = '' }) {
     const reservedHere = this.busy.get(account.id) !== taskId;
     if (!this.reserve(account.id, taskId)) throw new Error('A conta já está executando outra tarefa.');
     const state = this.registry.stateOf(account.id);
     state.segments += 1;
     state.lastUsedAt = Date.now();
     this.emit('accounts-changed', {});
+    let recordedUsage = false;
     const handleEvent = (event) => {
       if (event.type === 'usage' && account.provider !== 'codex') this.recordUsage(account.id, event.percent, event.resetsAt, event.window, event.windows).catch(() => {});
+      if (!recordedUsage && event.type === 'result' && event.usage) {
+        const usage = reportedTokenUsage(event.usage);
+        if (usage) {
+          recordedUsage = true;
+          this.recordReportedUsage(account.id, event.usage).catch(() => {});
+        }
+      }
       if (event.type === 'session' && account.primary) this.onOrchestratedThread(event.sessionId);
       onEvent(event);
     };
     try {
       const outcome = account.provider === 'codex'
-        ? await runCodexSegment({ server: this.codexServerFor(account), prompt, cwd, model: account.model, effort: account.effort, threadId: sessionId, title, onEvent: handleEvent, onRaw: onCodexMessage, signal, handoff: { enabled: this.registry.rotation.proactiveHandoff, atPercent: this.registry.rotation.switchAtPercent } })
+        ? await runCodexSegment({ server: this.codexServerFor(account), prompt, cwd, model: account.model, effort: account.effort, threadId: sessionId, title, onEvent: handleEvent, onRaw: onCodexMessage, signal, accessMode, handoff: { enabled: this.registry.rotation.proactiveHandoff, atPercent: this.registry.rotation.switchAtPercent } })
         : await runCliSegment({ account, prompt, cwd, sessionId, onEvent: handleEvent, signal });
       if (outcome.status === 'rate-limited') await this.markLimited(account.id, { resetsAt: outcome.resetsAt, message: outcome.error });
       return outcome;

@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { codexUsage, handoffInstruction } from './codex-usage.mjs';
 import { looksRateLimited } from './parsers.mjs';
+import { ACCESS_MODES, accessParams } from '../codex/access-mode.mjs';
 
 async function waitReady(server, timeoutMs = 60000) {
   const deadline = Date.now() + timeoutMs;
@@ -15,15 +16,20 @@ async function waitReady(server, timeoutMs = 60000) {
 const SEGMENT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const stoppedEarly = (threadId = '') => ({ status: 'stopped', text: '', sessionId: threadId, threadId, resetsAt: 0, error: '' });
 
-export async function runCodexSegment({ server, prompt, cwd, model, effort, threadId = '', title = '', onEvent = () => {}, signal, handoff = { enabled: false, atPercent: 95 }, timeoutMs = SEGMENT_TIMEOUT_MS, onRaw = null }) {
+export async function runCodexSegment({ server, prompt, cwd, model, effort, threadId = '', title = '', onEvent = () => {}, signal, accessMode = '', handoff = { enabled: false, atPercent: 95 }, timeoutMs = SEGMENT_TIMEOUT_MS, onRaw = null }) {
   if (signal?.aborted) return stoppedEarly(threadId);
   await waitReady(server);
   if (signal?.aborted) return stoppedEarly(threadId);
-  if (threadId) await server.ensureResumed(threadId);
+  const permissionMode = ACCESS_MODES.has(accessMode) ? accessMode : '';
+  if (threadId) {
+    await server.ensureResumed(threadId);
+    if (permissionMode) await server.setThreadAccessMode(threadId, permissionMode);
+  }
   else {
-    const created = await server.rpc('thread/start', { ...(model ? { model } : {}), cwd });
+    const created = await server.rpc('thread/start', { ...(model ? { model } : {}), ...(permissionMode ? accessParams(permissionMode, { threadStart: true }) : {}), cwd });
     threadId = created.thread.id;
     server.resumedThreads.add(threadId);
+    if (permissionMode) server.rememberThreadAccessMode(threadId, created.thread);
     if (title) server.rpc('thread/name/set', { threadId, name: title.slice(0, 120) }).catch(() => {});
   }
   onEvent({ type: 'session', sessionId: threadId });
@@ -80,6 +86,14 @@ export async function runCodexSegment({ server, prompt, cwd, model, effort, thre
       }
       const eventThread = params.threadId || params.turn?.threadId;
       if (eventThread !== threadId) return;
+      if (message.method === 'turn/started') {
+        turnId = params.turn?.id || turnId;
+        if (turnId) {
+          server.activeTurns.set(threadId, turnId);
+          onEvent({ type: 'turn-started', sessionId: threadId, turnId });
+        }
+        return;
+      }
       if (onRaw && message.method !== 'turn/completed' && message.method !== 'turn/started') onRaw(message);
       if (message.method === 'item/agentMessage/delta') {
         const id = params.itemId || 'message';
@@ -111,6 +125,7 @@ export async function runCodexSegment({ server, prompt, cwd, model, effort, thre
       .then((result) => {
         turnId = result.turn?.id || '';
         if (turnId) server.activeTurns.set(threadId, turnId);
+        if (turnId) onEvent({ type: 'turn-started', sessionId: threadId, turnId });
         if (signal?.aborted) { abort(); return; }
         const { percent } = codexUsage(server.rateLimits);
         if (handoff.enabled && percent != null && percent >= handoff.atPercent) steerHandoff(percent);

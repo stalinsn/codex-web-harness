@@ -1,5 +1,6 @@
 // Composer controls, attachments, sending and steering.
 import { api } from './api.js';
+import { syncComposerSelect } from './custom-selects.js';
 import { openThread, setBusy } from './conversation.js';
 import { queueDraftForRateLimit } from './deferred-queue.js';
 import { $, installIcons, toast } from './dom.js';
@@ -7,16 +8,56 @@ import { formatBytes, formatCountdown } from './format.js';
 import { refreshUsage, updateThreadHeader } from './inspector.js';
 import { openImagePreview } from './layout.js';
 import { getComposerModelSelection, getSelectedModel } from './models.js';
-import { associateThreadWithSelectedProject } from './projects.js';
+import { associateThreadWithSelectedProject, revealProjectThread } from './projects.js';
 import { refreshQueue } from './queue.js';
 import { getEffectiveRateLimitBlock, getRateLimitBlock, isRateLimitError, renderRateLimitNotice } from './rate-limit.js';
 import { state, voice } from './state.js';
 import { refreshThreadList } from './thread-list.js';
 import { clearRecordedAudio, prepareVoicePreview, sendVoiceRecording, touchComposer } from './voice.js';
 
+function renderComposerOptionsSummary() {
+  const summary = $('#composerOptionsSummary');
+  if (!summary) return;
+  const model = $('#modelSelect')?.selectedOptions?.[0]?.textContent.trim() || 'Modelo';
+  const shortModel = model.replace(/^GPT-6[-.]?/i, '').replace(/^Codex /i, '');
+  const effort = $('#effortSelect')?.selectedOptions?.[0]?.textContent.trim() || '';
+  const accountSelect = $('#accountSelect');
+  const account = accountSelect?.selectedOptions?.[0]?.textContent.trim() || '';
+  const codexAccount = !accountSelect || accountSelect.value === 'codex';
+  const permission = $('#accessModeSelect')?.value === 'automatic' ? 'Auto' : 'Manual';
+  const parts = [codexAccount ? permission : account, shortModel, effort].filter(Boolean);
+  summary.textContent = parts.join(' · ');
+  const toggle = $('#composerOptionsToggle');
+  if (toggle) {
+    toggle.classList.toggle('is-automatic', codexAccount && $('#accessModeSelect')?.value === 'automatic');
+    toggle.title = `Modelo: ${model}${effort ? `; esforço: ${effort}` : ''}${codexAccount ? `; permissões: ${permission}` : `; conta: ${account}`}; pasta: ${$('#cwdLabel')?.textContent.trim() || ''}`;
+    toggle.setAttribute('aria-label', `Configurações da mensagem: ${parts.join(', ')}`);
+  }
+}
+
+function renderAccessModeControl(usesCodex) {
+  const control = $('#permissionModeControl');
+  const select = $('#accessModeSelect');
+  const note = $('#accessModeNote');
+  if (!control || !select || !note) return;
+  control.classList.toggle('hidden', !usesCodex);
+  note.classList.toggle('hidden', !usesCodex);
+  if (!usesCodex) return;
+  const automatic = state.accessMode === 'automatic';
+  select.value = state.accessMode;
+  select.disabled = state.accessModeUpdating;
+  control.classList.toggle('is-automatic', automatic);
+  note.classList.toggle('is-automatic', automatic);
+  note.textContent = state.accessModeUpdating ? 'Atualizando as permissões desta conversa…' : automatic
+    ? state.busy ? 'Comandos pendentes desta conversa serão liberados; acesso completo vale no próximo turno.' : 'Comandos e alterações seguem sem pedir aprovação nesta conversa.'
+    : state.busy ? 'Pedidos de aprovação voltam a aparecer; a execução atual conserva as permissões com que começou.' : 'Codex pede sua aprovação quando necessário.';
+  syncComposerSelect(select);
+}
+
 export function updateComposerControls() {
   const hasDraft = Boolean($('#messageInput')?.value.trim() || state.files.length);
-  const usesCodex = (state.chatAccountId || 'codex') === 'codex' && !String(state.selectedThreadId || '').startsWith('ext-');
+  const usesCodex = (state.chatAccountId || 'codex') === 'codex';
+  renderAccessModeControl(usesCodex);
   const limitBlock = usesCodex ? getEffectiveRateLimitBlock() : null;
   const limitBlocked = Boolean(limitBlock);
   const send = $('#sendButton');
@@ -24,6 +65,7 @@ export function updateComposerControls() {
   const effortSelect = $('#effortSelect');
   const externalAccount = state.chatAccountId && state.chatAccountId !== 'codex';
   const loadingModels = externalAccount && state.chatModelsLoading;
+  renderComposerOptionsSummary();
   if (modelSelect) modelSelect.disabled = loadingModels || (externalAccount ? !state.chatModels.length : !state.models.length);
   if (effortSelect) effortSelect.disabled = !getSelectedModel()?.supportedReasoningEfforts?.length;
   if (send) {
@@ -34,7 +76,7 @@ export function updateComposerControls() {
       ? limitBlocked ? `Guardar ${transcriptReady ? 'texto' : 'áudio'} na fila até o limite liberar` : voiceLabel
       : state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem';
     send.setAttribute('aria-label', limitBlocked ? 'Guardar mensagem na fila até o limite liberar' : state.busy ? 'Adicionar mensagem à fila' : 'Enviar mensagem');
-    send.disabled = state.sending || loadingModels || !['idle', 'ready'].includes(voice.phase) || (!hasDraft && !voice.blob);
+    send.disabled = state.sending || state.accessModeUpdating || loadingModels || !['idle', 'ready'].includes(voice.phase) || (!hasDraft && !voice.blob);
     $('#sendLabel').textContent = loadingModels ? 'Carregando…' : state.sending ? 'Enviando…' : (state.busy || limitBlocked) ? (voice.phase === 'ready' ? `${transcriptReady ? 'Texto' : 'Áudio'} à fila` : 'Fila') : voice.phase === 'ready' ? voiceLabel : 'Enviar';
     if (voice.phase === 'ready' && !state.sending) send.setAttribute('aria-label', send.title);
     send.classList.toggle('queue-mode', state.busy || limitBlocked);
@@ -120,9 +162,10 @@ export function attachmentPayload(files) {
   };
 }
 
-export async function submitMessage(event, { allowVoice = false } = {}) {
+export async function submitMessage(event, { allowVoice = false, textOverride = null, filesOverride = null, preserveComposer = false, focusComposer = true } = {}) {
   event?.preventDefault();
   if (state.sending) return;
+  if (state.accessModeUpdating) { toast('Aguarde a atualização das permissões antes de enviar.', 'error'); return false; }
   if (voice.phase === 'ready' && !allowVoice) {
     if (voice.transcriptInserted && $('#messageInput').value.trim()) {
       const sent = await submitMessage(event, { allowVoice: true });
@@ -134,25 +177,25 @@ export async function submitMessage(event, { allowVoice = false } = {}) {
   }
   if (voice.phase !== 'idle' && !allowVoice) { toast('Conclua a gravação antes de enviar.', 'error'); return false; }
   const textarea = $('#messageInput');
-  const text = textarea.value.trim();
-  if (!text && !state.files.length) return;
+  const text = textOverride == null ? textarea.value.trim() : String(textOverride).trim();
+  const files = filesOverride == null ? [...state.files] : [...filesOverride];
+  if (!text && !files.length) return false;
   const currentThread = state.selectedThreadId;
-  const files = [...state.files];
   const accountId = state.chatAccountId || 'codex';
   const selection = getComposerModelSelection();
   // The browser-side limit queue only concerns the Codex account; other accounts answer directly.
   const rateLimitBlock = accountId === 'codex' && !String(currentThread || '').startsWith('ext-') ? getEffectiveRateLimitBlock() : null;
-  if (rateLimitBlock) return queueDraftForRateLimit(text, files, currentThread, rateLimitBlock);
+  if (rateLimitBlock) return queueDraftForRateLimit(text, files, currentThread, rateLimitBlock, { preserveComposer, focusComposer });
   state.sending = true; updateComposerControls();
   try {
     const result = await api('/api/turn', {
       method: 'POST',
-      body: JSON.stringify({ threadId: currentThread, accountId, text, model: selection.model, effort: selection.effort, cwd: state.cwd, ...attachmentPayload(files) }),
+      body: JSON.stringify({ threadId: currentThread, accountId, text, model: selection.model, effort: selection.effort, cwd: state.cwd, ...(accountId === 'codex' ? { accessMode: state.accessMode } : {}), ...attachmentPayload(files) }),
     });
     // Another account continuing a Codex conversation answers in a new harness conversation.
     if (currentThread && result.threadId && result.threadId !== currentThread) {
-      if (textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
-      if (files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
+      if (!preserveComposer && textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
+      if (!preserveComposer && files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
       toast('A conversa continua com a outra conta, levando o contexto desta.');
       await openThread(result.threadId);
       return true;
@@ -162,6 +205,7 @@ export async function submitMessage(event, { allowVoice = false } = {}) {
     state.selectedThreadId = result.threadId;
     if (!currentThread) {
       state.activeThreadProjectId = state.selectedProjectId;
+      revealProjectThread(result.threadId);
       associateThreadWithSelectedProject(result.threadId);
     }
     if (!currentThread && !result.queued) updateThreadHeader({ id: result.threadId, name: 'Nova conversa', model: getSelectedModel()?.displayName || state.modelId, status: { type: 'active' } });
@@ -176,8 +220,8 @@ export async function submitMessage(event, { allowVoice = false } = {}) {
         setBusy(true);
       }
     }
-    if (textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
-    if (files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
+    if (!preserveComposer && textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
+    if (!preserveComposer && files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
     return true;
   } catch (error) {
     if (isRateLimitError(error.message)) {
@@ -190,7 +234,7 @@ export async function submitMessage(event, { allowVoice = false } = {}) {
         updateThreadHeader({ id: failedThreadId, name: 'Nova conversa', model: getSelectedModel()?.displayName || state.modelId });
         refreshThreadList().catch(() => {});
       }
-      return await queueDraftForRateLimit(text, files, failedThreadId, getEffectiveRateLimitBlock());
+      return await queueDraftForRateLimit(text, files, failedThreadId, getEffectiveRateLimitBlock(), { preserveComposer, focusComposer });
     }
     toast(error.message, 'error');
     return false;
@@ -198,19 +242,22 @@ export async function submitMessage(event, { allowVoice = false } = {}) {
     state.sending = false;
     updateComposerControls();
     textarea.dispatchEvent(new Event('input'));
-    if (!touchComposer()) textarea.focus();
+    if (focusComposer && !touchComposer()) textarea.focus();
   }
 }
 
-export async function steerMessage() {
+export async function steerMessage(event, { textOverride = null, filesOverride = null, preserveComposer = false, fallbackToTurn = false, focusComposer = true } = {}) {
+  event?.preventDefault();
   if (state.sending || voice.phase !== 'idle' || !state.selectedThreadId) return;
+  if (state.accessModeUpdating) { toast('Aguarde a atualização das permissões antes de enviar.', 'error'); return false; }
   const textarea = $('#messageInput');
-  const text = textarea.value.trim();
-  if (!text && !state.files.length) return;
+  const text = textOverride == null ? textarea.value.trim() : String(textOverride).trim();
+  const files = filesOverride == null ? [...state.files] : [...filesOverride];
+  if (!text && !files.length) return false;
   const threadId = state.selectedThreadId;
-  const files = [...state.files];
   const rateLimitBlock = getEffectiveRateLimitBlock();
-  if (rateLimitBlock) return queueDraftForRateLimit(text, files, threadId, rateLimitBlock);
+  if (rateLimitBlock) return queueDraftForRateLimit(text, files, threadId, rateLimitBlock, { preserveComposer, focusComposer });
+  let fallback = false;
   state.sending = true; updateComposerControls();
   try {
     await api(`/api/threads/${encodeURIComponent(threadId)}/steer`, {
@@ -219,20 +266,37 @@ export async function steerMessage() {
     });
     state.rateLimitFailure = null;
     renderRateLimitNotice();
-    if (textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
-    if (files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
+    if (!preserveComposer && textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
+    if (!preserveComposer && files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
+    state.lastExecutionEventAt = Date.now();
+    state.lastExecutionActivity = 'Orientação enviada';
     toast('Orientação enviada para a execução atual.');
+    return true;
   } catch (error) {
-    if (isRateLimitError(error.message)) {
-      state.rateLimitFailure = { message: error.message, resetAt: getRateLimitBlock()?.resetAt || 0, createdAt: Date.now() };
-      await refreshUsage(true).catch(() => {});
-      await queueDraftForRateLimit(text, files, threadId, getEffectiveRateLimitBlock());
-    } else toast(error.message, 'error');
+    if (fallbackToTurn && error.status === 409) fallback = true;
+    else {
+      if (isRateLimitError(error.message)) {
+        state.rateLimitFailure = { message: error.message, resetAt: getRateLimitBlock()?.resetAt || 0, createdAt: Date.now() };
+        await refreshUsage(true).catch(() => {});
+        return await queueDraftForRateLimit(text, files, threadId, getEffectiveRateLimitBlock(), { preserveComposer, focusComposer });
+      }
+      toast(error.message, 'error');
+      return false;
+    }
   }
   finally {
     state.sending = false;
     updateComposerControls();
     textarea.dispatchEvent(new Event('input'));
-    textarea.focus();
+    if (focusComposer && !touchComposer()) textarea.focus();
   }
+  if (fallback) return submitMessage(undefined, { allowVoice: true, textOverride: text, filesOverride: files, preserveComposer, focusComposer });
+  return false;
+}
+
+export async function submitDecisionAnswer(text) {
+  if (state.busy && state.chatAccountId === 'codex' && !String(state.selectedThreadId || '').startsWith('ext-')) {
+    return steerMessage(undefined, { textOverride: text, filesOverride: [], preserveComposer: true, fallbackToTurn: true, focusComposer: false });
+  }
+  return submitMessage(undefined, { allowVoice: true, textOverride: text, filesOverride: [], preserveComposer: true, focusComposer: false });
 }

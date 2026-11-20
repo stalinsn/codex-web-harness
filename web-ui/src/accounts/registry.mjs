@@ -103,7 +103,10 @@ export class AccountRegistry {
 
   stateOf(id) {
     this.state[id] ||= { cooldownUntil: 0, percent: null, percentAt: 0, resetsAt: 0, lastLimit: null, segments: 0, lastUsedAt: 0, loggedIn: null, checkedAt: 0, statusDetail: '' };
-    return this.state[id];
+    const state = this.state[id];
+    // Backfill counters for account-state files created by earlier harness versions.
+    state.reportedUsage ||= { inputTokens: null, outputTokens: null, totalTokens: 0, runs: 0, lastAt: 0 };
+    return state;
   }
 
   ordered() {

@@ -33,7 +33,7 @@ export function captureToken(raw, pattern) {
 }
 
 /** Links and device codes in the visible text; wrapped URLs are re-joined. */
-export function extractHints(text, cols) {
+export function extractHints(text, cols, provider = '') {
   const lines = plainText(text).split('\n').map((line) => line.replace(/[│┃║|]\s*$/, '').replace(/^\s*[│┃║|]\s?/, ''));
   const joined = [];
   for (let index = 0; index < lines.length; index += 1) {
@@ -45,7 +45,21 @@ export function extractHints(text, cols) {
     joined.push(line);
   }
   const all = joined.join('\n');
-  const links = [...new Set([...all.matchAll(/https?:\/\/[^\s"'<>]+[^\s"'<>.,;:)]/g)].map(([url]) => url))].slice(-4);
+  const links = [...new Set([...all.matchAll(/https?:\/\/[^\s"'<>]+[^\s"'<>.,;:)]/g)].map(([url]) => url))]
+    // Claude's authorization endpoint rejects a URL without its state value. While
+    // Claude streams the long URL, only expose it once the entire query is present.
+    .filter((value) => {
+      if (provider !== 'claude-code') return true;
+      try {
+        const url = new URL(value);
+        return ['claude.ai', 'claude.com'].includes(url.hostname)
+          && url.pathname === '/oauth/authorize'
+          && (url.searchParams.get('state') || '').length >= 16
+          && (url.searchParams.get('code_challenge') || '').length >= 16
+          && url.searchParams.get('code_challenge_method') === 'S256';
+      } catch { return false; }
+    })
+    .slice(-4);
   const codes = [...new Set([...all.matchAll(/\b[A-Z0-9]{4}-[A-Z0-9]{4,5}\b/g)].map(([code]) => code))].slice(-2);
   return { links, codes };
 }
@@ -145,7 +159,7 @@ export class LoginSessions {
     session.output = `${session.output}${text}`;
     if (session.output.length > BUFFER_BYTES) session.output = session.output.slice(-BUFFER_BYTES);
     session.pending += text;
-    const hints = extractHints(session.output.slice(-64 * 1024), session.cols);
+    const hints = extractHints(session.output.slice(-64 * 1024), session.cols, account.provider);
     if (hints.links.join() !== session.hints.links.join() || hints.codes.join() !== session.hints.codes.join()) {
       session.hints = hints;
       this.#state(session);

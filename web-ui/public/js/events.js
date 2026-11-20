@@ -1,5 +1,6 @@
 // Server-sent events from the harness and Codex app-server notifications.
 import { refreshAccountsSoon } from './accounts.js';
+import { updateComposerControls } from './composer.js';
 import { rememberAgentThread, renderActivity, renderReasoningSummary, setReasoningPart, startProgressSegment, updateTurnIntermediateTitle } from './activity.js';
 import { PREFIX } from './config.js';
 import { loadThreadHistory, rememberCompletedTurn, setBusy, syncExecutionState, turnStatus } from './conversation.js';
@@ -8,9 +9,8 @@ import { $, onNextFrame, randomKey, toast } from './dom.js';
 import { rememberError } from './error-history.js';
 import { applyAccountData, refreshUsage, renderContextUsage, renderUsage, updateThreadHeader } from './inspector.js';
 import { setConnection } from './layout.js';
-import { markdown } from './markdown.js';
-import { addApproval, getOrCreateStreamMessage, imageFromContent, makeMessage, placeStreamMessage, scrollConversation, splitAttachmentText } from './messages.js';
-import { getSelectedModel, populateModels } from './models.js';
+import { addApproval, getOrCreateStreamMessage, imageFromContent, makeMessage, markDecisionCardsAnswered, placeStreamMessage, renderAssistantMessageContent, scrollConversation, splitAttachmentText } from './messages.js';
+import { getSelectedModel, populateModels, setChatAccount } from './models.js';
 import { associateThreadWithSelectedProject, renderConversationContext } from './projects.js';
 import { refreshQueue, renderQueue } from './queue.js';
 import { clearResolvedRateLimitFailure, getEffectiveRateLimitBlock, isRateLimitError, recordRateLimitFailure } from './rate-limit.js';
@@ -19,10 +19,16 @@ import { rememberTurnAccount } from './responders.js';
 import { state } from './state.js';
 import { onTaskEvent, onTaskUpdated, refreshTasks } from './tasks.js';
 import { refreshThreadList, renderThreads } from './thread-list.js';
+import { handleServerTerminalEvent, reconnectServerTerminal } from './server-terminal.js';
 import { onLoginOutput, onLoginState } from './wizard.js';
 
 function handleCodexNotification(message) {
   const params = message.params || {};
+  if (message.method === 'thread/settings/updated' && params.threadId === state.selectedThreadId && !state.accessModeUpdating && params.threadSettings) {
+    const settings = params.threadSettings;
+    state.accessMode = settings.approvalPolicy === 'never' && settings.sandboxPolicy?.type === 'dangerFullAccess' ? 'automatic' : 'manual';
+    updateComposerControls();
+  }
   if (message.method === 'account/rateLimits/updated') {
     const candidate = params.rateLimitsByLimitId || params.rateLimits || params;
     const values = candidate ? (Array.isArray(candidate) ? candidate : Object.values(candidate)) : [];
@@ -40,6 +46,14 @@ function handleCodexNotification(message) {
   if (eventThreadId === state.selectedThreadId) {
     state.executionRevision += 1;
     state.lastExecutionEventAt = Date.now();
+    state.lastExecutionThreadId = eventThreadId;
+    const itemType = params.item?.type;
+    if (message.method === 'turn/started') state.lastExecutionActivity = 'Iniciando execução';
+    else if (message.method === 'item/started' || message.method === 'item/completed') {
+      const labels = { commandExecution: 'Comandos', fileChange: 'Alterações de arquivos', webSearch: 'Pesquisa na web', reasoning: 'Análise', agentMessage: 'Resposta do agente', mcpToolCall: 'Integração', collabToolCall: 'Agentes auxiliares', userMessage: 'Mensagem recebida' };
+      if (itemType && labels[itemType]) state.lastExecutionActivity = labels[itemType];
+    } else if (message.method === 'item/commandExecution/outputDelta') state.lastExecutionActivity = 'Comandos';
+    else if (message.method === 'item/agentMessage/delta') state.lastExecutionActivity = 'Escrevendo resposta';
   }
   if (eventThreadId && message.method === 'turn/started') {
     state.activeThreadIds.add(eventThreadId);
@@ -106,7 +120,7 @@ function handleCodexNotification(message) {
     stream.text += params.delta || '';
     // Re-rendering the whole Markdown on every token is quadratic; do it once per frame.
     onNextFrame(stream, () => {
-      $('.message-content', stream.row).innerHTML = markdown(stream.text);
+      renderAssistantMessageContent(stream.row, stream.text);
       scrollConversation();
     });
     return;
@@ -146,7 +160,7 @@ function handleCodexNotification(message) {
       stream.turnId = params.turnId || stream.turnId;
       placeStreamMessage(stream, item.phase);
       if (item.text) stream.text = item.text;
-      $('.message-content', stream.row).innerHTML = markdown(stream.text);
+      renderAssistantMessageContent(stream.row, stream.text, { enableDecision: message.method === 'item/completed' && state.busy });
     } else if (item.type === 'reasoning') {
       renderReasoningSummary(item, params.turnId, true);
     } else if (item.type === 'userMessage' && message.method === 'item/started') {
@@ -154,7 +168,7 @@ function handleCodexNotification(message) {
         const { text, files } = splitAttachmentText((item.content || []).filter((part) => part.type === 'text').map((part) => part.text).join('\n'), state.selectedThreadId);
         const images = imageFromContent(item.content, state.selectedThreadId);
         if (item.id) state.userMessageIds.add(item.id);
-        if (text || images.length || files.length) { makeMessage('user', { text, images, files, id: item.id }); startProgressSegment(params.turnId); }
+        if (text || images.length || files.length) { makeMessage('user', { text, images, files, id: item.id }); startProgressSegment(params.turnId); markDecisionCardsAnswered(params.turnId); }
       }
     } else if (item.type === 'userMessage') {
       // The user message was rendered when its item started.
@@ -178,7 +192,11 @@ function handleCodexNotification(message) {
 
 export function connectEvents() {
   const events = new EventSource(`${PREFIX}/api/events`, { withCredentials: true });
-  events.onopen = () => { setConnection(true, 'Codex conectado'); syncExecutionState().catch(() => {}); };
+  events.onopen = () => {
+    setConnection(true, 'Codex conectado');
+    reconnectServerTerminal();
+    refreshThreadList().then(() => syncExecutionState()).catch(() => {});
+  };
   events.onerror = () => setConnection(false, 'Reconectando ao Codex…');
   events.onmessage = (raw) => {
     let event; try { event = JSON.parse(raw.data); } catch { return; }
@@ -193,8 +211,24 @@ export function connectEvents() {
     else if (event.type === 'accounts-changed') refreshAccountsSoon();
     else if (event.type === 'login-output') onLoginOutput(event.data);
     else if (event.type === 'login-state') onLoginState(event.data);
+    else if (event.type === 'terminal-output' || event.type === 'terminal-state') handleServerTerminalEvent(event);
     else if (event.type === 'task-updated') onTaskUpdated(event.data);
     else if (event.type === 'task-event') onTaskEvent(event.data);
+    else if (event.type === 'thread-updated') {
+      const { threadId, thread } = event.data || {};
+      if (threadId && thread) {
+        const index = state.threads.findIndex((item) => item.id === threadId);
+        if (index >= 0) state.threads[index] = { ...state.threads[index], ...thread };
+        if (state.selectedThreadId === threadId) {
+          state.selectedThread = { ...(state.selectedThread || {}), ...thread };
+          setChatAccount(thread.accountId || 'codex');
+          updateThreadHeader(thread);
+          updateComposerControls();
+        }
+        renderThreads(state.threads, $('#threadSearch').value.trim());
+        refreshThreadList().catch(() => {});
+      }
+    }
     else if (event.type === 'handoff-steered') toast(`Conta perto do limite (${Math.round(event.data.percent)}%): pedi ao Codex para salvar o registro de retomada.`);
     else if (event.type === 'handoff-started') {
       toast(`Limite do Codex: “${event.data.title}” continua em outra conta.`);
@@ -226,11 +260,14 @@ export function connectEvents() {
     }
     else if (event.type === 'thread-created') {
       if (state.selectedThreadId || !state.sending) return;
-      state.selectedThreadId = event.data.thread.id;
+      const thread = event.data.thread;
+      state.selectedThreadId = thread.id;
       state.activeThreadProjectId = state.selectedProjectId;
-      associateThreadWithSelectedProject(event.data.thread.id);
-      updateThreadHeader({ id: event.data.thread.id, name: 'Nova conversa', model: getSelectedModel()?.displayName || state.modelId });
+      state.threads = [thread, ...state.threads.filter((item) => item.id !== thread.id)];
+      associateThreadWithSelectedProject(thread.id);
+      updateThreadHeader({ id: thread.id, name: 'Nova conversa', model: getSelectedModel()?.displayName || state.modelId });
       renderConversationContext();
+      renderThreads(state.threads, $('#threadSearch').value.trim());
     }
     else if (event.type === 'turn-completed') {
       const turnId = event.data.turn?.id;

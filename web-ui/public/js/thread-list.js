@@ -7,6 +7,7 @@ import { updateThreadHeader } from './inspector.js';
 import { openThreadColorMenu, projectColor, projectForThread, renderProjects, threadBelongsToProject, threadColor, threadDisplayTitle } from './projects.js';
 import { providerClass } from './responders.js';
 import { state } from './state.js';
+import { canonicalThreadId } from './thread-identity.js';
 
 export function closeThreadMenus() {
   $$('.thread-actions-popover').forEach((menu) => {
@@ -20,6 +21,7 @@ export function createThreadRow(thread, { nested = false, showUnassigned = false
   const color = project ? '' : threadColor(thread);
   const row = document.createElement('div');
   row.className = `thread-row${pinned ? ' pinned' : ''}${nested ? ' project-thread-row' : ''}${color ? ' has-thread-color' : ''}`;
+  row.dataset.threadId = thread.id;
   if (color) row.style.setProperty('--thread-color', color);
   const button = document.createElement('button');
   const isRunning = thread.id === state.selectedThreadId ? state.busy : state.activeThreadIds.has(thread.id) || thread.status?.type === 'active';
@@ -222,4 +224,6 @@ export async function refreshThreadList(query = $('#threadSearch')?.value.trim()
   const data = await api(`/api/threads${params.size ? `?${params}` : ''}`);
   if (requestId !== state.threadListRequest) return;
   renderThreads(data.threads || [], query);
+  const ownerId = canonicalThreadId(state.selectedThreadId, state.threads);
+  if (ownerId && ownerId !== state.selectedThreadId) await openThread(ownerId);
 }

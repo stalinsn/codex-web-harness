@@ -11,7 +11,8 @@ import { AccountService } from '../src/accounts/service.mjs';
 import { AuthError, AuthManager } from '../src/auth/auth-manager.mjs';
 import { IntegrationService } from '../src/integrations/service.mjs';
 import { INTEGRATION_TTL_MS, IntegrationSessions, MAX_ACTIVE_INTEGRATIONS } from '../src/integrations/sessions.mjs';
-import { buildTextCommand, CLAUDE_TEXT_ARGS, runText, textSupport } from '../src/integrations/text-runner.mjs';
+import { keepAliveGenerate } from '../src/routes/integrations.mjs';
+import { buildTextCommand, CLAUDE_TEXT_ARGS, claudeUsageFromRateLimit, readClaudeStream, readCodexStream, runText, textSupport } from '../src/integrations/text-runner.mjs';
 import { handleIntegrationApi } from '../src/routes/integrations.mjs';
 
 const tempDir = (prefix) => mkdtemp(join(tmpdir(), prefix));
@@ -136,6 +137,13 @@ test('integration routes refuse browser requests and missing bearer tokens', asy
 
   const ok = fakeRes();
   await handleIntegrationApi(integrations, fakeReq({ method: 'GET', headers: { authorization: `Bearer ${token}` } }), ok, '/api/integrations/status');
+  // O proxy público remove Authorization: o mesmo token vale no cabeçalho próprio.
+  const viaHeader = fakeRes();
+  await handleIntegrationApi(integrations, fakeReq({ method: 'GET', headers: { 'x-nyx-integration-token': token } }), viaHeader, '/api/integrations/status');
+  assert.equal(viaHeader.status, 200);
+  const badHeader = fakeRes();
+  await handleIntegrationApi(integrations, fakeReq({ method: 'GET', headers: { 'x-nyx-integration-token': 'nyxh_errado' } }), badHeader, '/api/integrations/status');
+  assert.equal(badHeader.status, 401);
   assert.equal(ok.status, 200);
   assert.equal(JSON.parse(ok.body).valid, true);
 
@@ -173,7 +181,7 @@ test('Claude Code text runs use the no-tools argument list, stdin and an empty t
   const { bin, args } = buildTextCommand(claude);
   assert.equal(bin, 'claude');
   assert.deepEqual(args, [...CLAUDE_TEXT_ARGS, '--model', 'sonnet']);
-  assert.deepEqual(CLAUDE_TEXT_ARGS, ['-p', '--output-format', 'text', '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--disable-slash-commands', '--settings', '{"disableAllHooks":true}']);
+  assert.deepEqual(CLAUDE_TEXT_ARGS, ['-p', '--output-format', 'stream-json', '--verbose', '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--disable-slash-commands', '--settings', '{"disableAllHooks":true}']);
   assert.equal(args.includes('bypassPermissions'), false);
 
   let seenDir = '';
@@ -193,17 +201,84 @@ test('Claude Code text runs use the no-tools argument list, stdin and an empty t
   await assert.rejects(access(seenDir));
 });
 
+const streamLines = (...events) => `${events.map((event) => JSON.stringify(event)).join('\n')}\n`;
+const INIT = { type: 'system', subtype: 'init', tools: [], mcp_servers: [], slash_commands: [] };
+const RATE = { type: 'rate_limit_event', rate_limit_info: { status: 'allowed', resetsAt: 1794275400, rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 0.09, resetsAt: 1794275400, status: 'allowed' }, seven_day: { utilization: 0.28, resetsAt: 1794484800, status: 'allowed' } } } };
+const RESULT = { type: 'result', subtype: 'success', is_error: false, result: '{"ok":true}', usage: { input_tokens: 2, output_tokens: 8 } };
+
+test('Claude stream-json runs return the result text plus subscription usage', async () => {
+  const claude = account('claude-a', 'claude-code');
+  const spawn = fakeSpawn(reply(streamLines(INIT, { type: 'assistant' }, RATE, RESULT)));
+  const outcome = await runText({ account: claude, prompt: 'oi', timeoutMs: 5000, spawnImpl: spawn.impl });
+  assert.equal(outcome.status, 'completed');
+  assert.equal(outcome.text, '{"ok":true}');
+  assert.deepEqual(outcome.usage, {
+    percent: 28,
+    resetsAt: 1794484800,
+    windows: { five_hour: { percent: 9, resetsAt: 1794275400, status: 'allowed' }, seven_day: { percent: 28, resetsAt: 1794484800, status: 'allowed' } },
+  });
+  assert.deepEqual(outcome.tokens, { input_tokens: 2, output_tokens: 8 });
+  assert.equal(claudeUsageFromRateLimit({ utilization: 0.5, resetsAt: 10, rateLimitType: 'five_hour' }).windows.five_hour.percent, 50);
+  assert.equal(claudeUsageFromRateLimit({}), null);
+});
+
+test('Claude stream-json runs are discarded when tools or MCP servers show up', async () => {
+  const claude = account('claude-a', 'claude-code');
+  for (const init of [{ ...INIT, tools: ['Bash'] }, { ...INIT, mcp_servers: [{ name: 'x' }] }]) {
+    const spawn = fakeSpawn(reply(streamLines(init, RESULT)));
+    const outcome = await runText({ account: claude, prompt: 'oi', timeoutMs: 5000, spawnImpl: spawn.impl });
+    assert.equal(outcome.status, 'failed');
+    assert.equal(outcome.text, '');
+  }
+  assert.equal(readClaudeStream(streamLines(INIT, RESULT)).exposedTools, false);
+});
+
+test('Claude stream-json limits and errors are reported', async () => {
+  const claude = account('claude-a', 'claude-code');
+  const rejected = { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 1800000000, rateLimitType: 'seven_day' } };
+  const limited = await runText({ account: claude, prompt: 'oi', timeoutMs: 5000, spawnImpl: fakeSpawn(reply(streamLines(INIT, rejected), 1)).impl });
+  assert.equal(limited.status, 'rate-limited');
+  assert.equal(limited.resetsAt, 1800000000);
+  const failed = await runText({ account: claude, prompt: 'oi', timeoutMs: 5000, spawnImpl: fakeSpawn(reply(streamLines(INIT, { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'falhou feio' }), 1)).impl });
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.error, /falhou feio/u);
+});
+
+test('generate-text records usage and status reports it per account', async () => {
+  const accounts = fakeAccounts([account('claude-a', 'claude-code'), account('gem', 'gemini-cli')]);
+  const usage = { percent: 28, resetsAt: 1794484800, windows: { five_hour: { percent: 9, resetsAt: 1794275400, status: 'allowed' }, seven_day: { percent: 28, resetsAt: 1794484800, status: 'allowed' } } };
+  const runTextImpl = async () => ({ status: 'completed', text: 'ok', error: '', resetsAt: 0, usage, tokens: { input_tokens: 2, output_tokens: 8 } });
+  const sessions = await new IntegrationSessions(join(await tempDir('harness-int-'), 'i.json')).load();
+  const integrations = new IntegrationService({ auth: fakeAuth(), accounts, sessions, runTextImpl, log() {} });
+  await sessions.issue({ client: 'live-rooms' });
+  const entry = sessions.sessions[0];
+  await integrations.generate(entry, { prompt: 'x' });
+  const [claude, gem] = integrations.status(entry).providers;
+  assert.equal(claude.usage.percent, 28);
+  assert.equal(claude.usage.resetsAt, 1794484800);
+  assert.deepEqual(claude.usage.windows, usage.windows);
+  assert.equal(claude.usage.tokens.total, 10);
+  assert.equal(claude.usage.tokens.runs, 1);
+  assert.ok(claude.usage.checkedAt > 0);
+  assert.equal(gem.usage, undefined, 'contas sem modo de texto não expõem uso');
+});
+
 test('providers without a guaranteed no-tools mode are refused', () => {
-  for (const provider of ['gemini-cli', 'antigravity', 'custom']) {
+  for (const provider of ['gemini-cli', 'custom']) {
     assert.equal(textSupport(account('x', provider)).ok, false);
     assert.throws(() => buildTextCommand(account('x', provider)), (error) => error.statusCode === 422);
   }
   assert.equal(textSupport(account('codex', 'codex'), { allowCodex: false }).ok, false);
   assert.throws(() => buildTextCommand(account('codex', 'codex'), { allowCodex: false }), (error) => error.statusCode === 422);
   const codex = buildTextCommand(account('codex-b', 'codex'), { allowCodex: true });
-  assert.deepEqual(codex.args.slice(0, 4), ['exec', '--sandbox', 'read-only', '--skip-git-repo-check']);
+  assert.deepEqual(codex.args.slice(0, 5), ['exec', '--skip-git-repo-check', '--ephemeral', '--ignore-user-config', '--ignore-rules']);
   assert.equal(codex.args.at(-1), '-');
-  assert.ok(codex.args.includes('features.shell_tool=false'));
+  for (const feature of ['apps', 'shell_tool', 'code_mode_host', 'unified_exec', 'plugins', 'multi_agent']) {
+    const at = codex.args.indexOf(feature);
+    assert.ok(at > 0 && codex.args[at - 1] === '--disable', `desliga ${feature}`);
+  }
+  assert.ok(codex.args.includes('--json'));
+  assert.equal(textSupport(account('codex', 'codex'), { allowCodex: true }).ok, true);
 });
 
 test('text runs stop on timeout and on oversized output, and detect limits', async () => {
@@ -274,4 +349,125 @@ test('generate-text allows one run per token and 30 per hour', async () => {
   for (let index = 1; index < 30; index += 1) await integrations.generate(one, { prompt: 'x' });
   await assert.rejects(integrations.generate(one, { prompt: 'x' }), (error) => error.statusCode === 429 && error.retryAfter > 0);
   assert.equal((await integrations.generate(two, { prompt: 'x' })).text, 'ok');
+});
+
+const codexLines = (...events) => `${events.map((event) => JSON.stringify(event)).join('\n')}\n`;
+
+test('Codex --json: resposta do último agent_message, tokens e descarte se usar ferramenta', async () => {
+  const codex = account('codex-b', 'codex');
+  const ok = fakeSpawn(reply(codexLines(
+    { type: 'thread.started' },
+    { type: 'item.completed', item: { type: 'reasoning', text: 'pensando' } },
+    { type: 'item.completed', item: { type: 'agent_message', text: '{"ok":true}' } },
+    { type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 5 } },
+  )));
+  const outcome = await runText({ account: codex, prompt: 'oi', timeoutMs: 5000, spawnImpl: ok.impl, allowCodex: true });
+  assert.equal(outcome.status, 'completed');
+  assert.equal(outcome.text, '{"ok":true}');
+  assert.deepEqual(outcome.tokens, { input_tokens: 10, output_tokens: 5 });
+  assert.equal(ok.calls[0].input, 'oi');
+
+  for (const tool of ['command_execution', 'mcp_tool_call', 'file_change', 'web_search']) {
+    const used = fakeSpawn(reply(codexLines(
+      { type: 'item.started', item: { type: tool } },
+      { type: 'item.completed', item: { type: 'agent_message', text: 'segredo' } },
+    )));
+    const refused = await runText({ account: codex, prompt: 'oi', timeoutMs: 5000, spawnImpl: used.impl, allowCodex: true });
+    assert.equal(refused.status, 'failed', tool);
+    assert.equal(refused.text, '');
+  }
+
+  const limited = fakeSpawn(reply(codexLines({ type: 'turn.failed', error: { message: 'You have hit your usage limit. Try again later.' } }), 1));
+  assert.equal((await runText({ account: codex, prompt: 'oi', timeoutMs: 5000, spawnImpl: limited.impl, allowCodex: true })).status, 'rate-limited');
+  assert.equal(readCodexStream(codexLines({ type: 'item.completed', item: { type: 'error', message: 'code-mode host is disabled' } })).usedTools.length, 0, 'tentativa recusada não conta');
+});
+
+test('Antigravity roda só dentro da gaiola: só login da conta, pasta vazia e prompt por argumento', async () => {
+  const agy = account('google-1', 'antigravity');
+  assert.equal(textSupport(agy, { allowAgy: false }).ok, false);
+  assert.equal(textSupport(agy, { allowAgy: true }).ok, true);
+  const command = buildTextCommand(agy, { allowAgy: true, workDir: '/tmp/harness-text-x' });
+  assert.equal(command.bin, 'sudo');
+  const args = command.args;
+  const bound = (flag, target) => args.some((value, index) => value === flag && args[index + 2] === target);
+  assert.ok(bound('--bind', '/home/agy') && args[args.indexOf('/home/agy') - 1] === agy.dir, 'só a pasta de login desta conta');
+  assert.ok(bound('--bind', '/work') && args[args.indexOf('/work') - 1] === '/tmp/harness-text-x');
+  assert.ok(args.includes('--clearenv') && args.includes('--no-new-privs') && args.includes('--die-with-parent'));
+  assert.ok(!args.some((value) => /\.codex(\/|$)|auth\.json/.test(value) && value !== agy.dir), 'nenhum outro login montado');
+  assert.equal(args.at(-1), '-p');
+  assert.equal(command.promptArg, true);
+
+  const spawn = fakeSpawn(reply('{"ok":true}\n'));
+  const outcome = await runText({ account: agy, prompt: 'Gere JSON', timeoutMs: 5000, spawnImpl: spawn.impl, allowAgy: true });
+  assert.equal(outcome.status, 'completed');
+  assert.equal(outcome.text, '{"ok":true}');
+  const call = spawn.calls[0];
+  assert.equal(call.args.at(-1), 'Gere JSON');
+  assert.equal(call.args[call.args.indexOf('/work') - 1], call.options.cwd, 'a pasta de trabalho é a temporária vazia');
+});
+
+test('consumo velho não bloqueia a geração e pode ser relido sob demanda', async () => {
+  const accounts = fakeAccounts([account('claude-a', 'claude-code')]);
+  const state = accounts.registry.stateOf('claude-a');
+  Object.assign(state, { percent: 97, resetsAt: Math.floor(Date.now() / 1000) + 3600, percentAt: Date.now() - 10 * 60 * 1000 });
+  assert.equal(accounts.availability(account('claude-a', 'claude-code')).ok, false, 'rodízio do chat segue bloqueando');
+  const usage = { percent: 4, resetsAt: Math.floor(Date.now() / 1000) + 18000, windows: { five_hour: { percent: 4, resetsAt: Math.floor(Date.now() / 1000) + 18000, status: 'allowed' } } };
+  const prompts = [];
+  const runTextImpl = async ({ prompt }) => { prompts.push(prompt); return { status: 'completed', text: 'ok', error: '', resetsAt: 0, usage }; };
+  const sessions = await new IntegrationSessions(join(await tempDir('harness-int-'), 'i.json')).load();
+  const integrations = new IntegrationService({ auth: fakeAuth(), accounts, sessions, runTextImpl, log() {} });
+  await sessions.issue({ client: 'live-rooms' });
+  const entry = sessions.sessions[0];
+  assert.equal(integrations.status(entry).providers[0].available, true, 'a integração ignora o percentual guardado');
+  const refreshed = await integrations.refreshUsage(entry, {});
+  assert.equal(refreshed.providers[0].usage.percent, 4);
+  assert.deepEqual(prompts, ['Responda apenas: ok']);
+  await integrations.refreshUsage(entry, {});
+  assert.equal(prompts.length, 1, 'no máximo uma releitura a cada 2 minutos');
+  assert.equal(accounts.busy.size, 0);
+});
+
+test('geração com keepalive: espaços enquanto espera e resultado ou erro no corpo', async () => {
+  const chunks = [];
+  const res = { status: 0, writeHead(status) { this.status = status; }, write(chunk) { chunks.push(chunk); }, end(chunk) { chunks.push(chunk); this.ended = true; } };
+  let release;
+  const integrations = { generate: () => new Promise((resolvePromise) => { release = () => resolvePromise({ text: 'ok', provider: 'claude-code', ms: 5 }); }) };
+  const pending = keepAliveGenerate(integrations, {}, {}, res, 5);
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 30));
+  release();
+  await pending;
+  assert.equal(res.status, 200);
+  assert.ok(chunks.filter((chunk) => chunk === ' ').length >= 2, 'mandou espaços enquanto esperava');
+  assert.deepEqual(JSON.parse(chunks.join('')), { text: 'ok', provider: 'claude-code', ms: 5 });
+
+  const failed = [];
+  const res2 = { writeHead() {}, write(chunk) { failed.push(chunk); }, end(chunk) { failed.push(chunk); } };
+  await keepAliveGenerate({ generate: async () => { throw Object.assign(new Error('limite'), { statusCode: 429, retryAfter: 60 }); } }, {}, {}, res2, 5);
+  assert.deepEqual(JSON.parse(failed.join('')), { error: 'limite', statusCode: 429, retryAfter: 60 });
+});
+
+test('modelo e esforço por geração, catálogo e tokens na resposta', async () => {
+  const claude = account('claude-a', 'claude-code', { model: 'opus', effort: 'medium' });
+  const command = buildTextCommand(claude, { model: 'haiku', effort: 'low' });
+  assert.deepEqual(command.args.slice(-4), ['--model', 'haiku', '--effort', 'low']);
+  const codex = buildTextCommand(account('codex-b', 'codex'), { allowCodex: true, model: 'luna-6', effort: 'low' });
+  assert.ok(codex.args.includes('model_reasoning_effort="low"') && codex.args.includes('luna-6'));
+  assert.ok(!buildTextCommand(claude, { effort: 'turbo' }).args.includes('turbo'), 'esforço desconhecido é ignorado');
+
+  const accounts = fakeAccounts([claude]);
+  const seen = [];
+  const runTextImpl = async (input) => { seen.push({ model: input.model, effort: input.effort }); return { status: 'completed', text: 'ok', error: '', resetsAt: 0, tokens: { input_tokens: 7, output_tokens: 3 } }; };
+  const modelCatalogImpl = async () => ({ models: [{ id: 'opus', label: 'Opus', efforts: ['low', 'medium', 'turbo'] }] });
+  const sessions = await new IntegrationSessions(join(await tempDir('harness-int-'), 'i.json')).load();
+  const integrations = new IntegrationService({ auth: fakeAuth(), accounts, sessions, runTextImpl, modelCatalogImpl, log() {} });
+  await sessions.issue({ client: 'live-rooms' });
+  const entry = sessions.sessions[0];
+  const result = await integrations.generate(entry, { prompt: 'x', provider: 'claude-a', model: 'opus', effort: 'low' });
+  assert.deepEqual(seen[0], { model: 'opus', effort: 'low' });
+  assert.equal(result.tokens.totalTokens, 10);
+  assert.equal(result.effort, 'low');
+  await assert.rejects(integrations.generate(entry, { prompt: 'x', provider: 'claude-a', effort: 'turbo' }), (error) => error.statusCode === 400);
+  const catalog = await integrations.models(entry);
+  assert.deepEqual(catalog.providers[0].models[0].efforts, ['low', 'medium']);
+  assert.deepEqual(catalog.providers[0].current, { model: 'opus', effort: 'medium' });
 });

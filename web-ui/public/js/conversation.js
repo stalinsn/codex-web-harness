@@ -8,18 +8,24 @@ import { loadContextUsage, updateThreadHeader } from './inspector.js';
 import { closeSidebar } from './layout.js';
 import { addApproval, renderTurnHistory } from './messages.js';
 import { setChatAccount } from './models.js';
-import { projectForThread, selectProject, updateWorkingDirectory } from './projects.js';
+import { projectForThread, revealProjectThread, selectProject, updateWorkingDirectory } from './projects.js';
 import { refreshQueue, renderQueue } from './queue.js';
 import { responderFor, setProviderClass } from './responders.js';
 import { runtime, state } from './state.js';
 import { renderThreads } from './thread-list.js';
+import { canonicalThreadId } from './thread-identity.js';
 
 function updateRunningClock() {
   if (!state.busy) return;
   const elapsed = state.turnStartedAtMs ? Date.now() - state.turnStartedAtMs : 0;
+  const quietFor = Math.max(0, Date.now() - state.lastExecutionEventAt);
   const who = responderFor(state.activeTurnId);
   setProviderClass($('#runningIndicator'), who.provider);
-  $('#runningText').textContent = elapsed > 0 ? `${who.label} trabalhando há ${formatDuration(elapsed)}` : `${who.label} está trabalhando…`;
+  const elapsedLabel = elapsed > 0 ? `${who.label} trabalhando há ${formatDuration(elapsed)}` : `${who.label} está trabalhando…`;
+  const activity = state.lastExecutionActivity ? ` · etapa: ${state.lastExecutionActivity}` : '';
+  const quietLabel = quietFor >= 60_000 ? ` · sem atualização há ${formatDuration(quietFor)}` : '';
+  $('#runningText').textContent = `${elapsedLabel}${activity}${quietLabel}`;
+  $('#runningIndicator').title = `Último evento recebido ${quietFor < 1000 ? 'agora' : `há ${formatDuration(quietFor)}`}`;
   for (const group of state.turnIntermediates.values()) {
     if (group.turnId === (state.activeTurnId || 'active') && group.durationMs == null) updateTurnIntermediateTitle(group);
   }
@@ -35,9 +41,15 @@ export function setBusy(busy, detail = '') {
   if (detail) $('#runningText').textContent = detail;
   if (state.busy) {
     if (!state.turnStartedAtMs) state.turnStartedAtMs = Date.now();
+    if (changed) {
+      state.lastExecutionEventAt = Date.now();
+      state.lastExecutionActivity = detail || 'Iniciando execução';
+      state.lastExecutionThreadId = state.selectedThreadId || '';
+    }
     updateRunningClock();
     if (!state.turnTimer) state.turnTimer = setInterval(updateRunningClock, 1000);
   } else {
+    if (changed) state.lastExecutionThreadId = '';
     state.turnStartedAtMs = null;
     clearInterval(state.turnTimer);
     state.turnTimer = null;
@@ -80,6 +92,12 @@ function executionFromHistory(data) {
   return { active, turn: active ? latest : null };
 }
 
+function executionActivity(turn) {
+  const labels = { commandExecution: 'Comandos', fileChange: 'Alterações de arquivos', webSearch: 'Pesquisa na web', reasoning: 'Análise', agentMessage: 'Resposta do agente', mcpToolCall: 'Integração', collabToolCall: 'Agentes auxiliares', userMessage: 'Mensagem recebida' };
+  const item = [...(turn?.items || [])].reverse().find((candidate) => labels[candidate.type]);
+  return item ? labels[item.type] : 'Iniciando execução';
+}
+
 export async function syncExecutionState() {
   const threadId = state.selectedThreadId;
   if (!threadId || state.loadingThreadId || runtime.executionSyncRequest) return;
@@ -104,6 +122,7 @@ export async function loadThreadHistory(threadId, { background = false } = {}) {
     state.agentThreads.clear();
   }
   state.selectedThreadId = threadId;
+  if (!state.accessModeUpdating || state.accessModeUpdatingThreadId !== threadId) state.accessMode = data.accessMode || state.defaultAccessMode;
   const row = state.threads.find((item) => item.id === threadId);
   const thread = data.thread || { id: threadId };
   if (!thread.name && !thread.preview && row) Object.assign(thread, { name: row.name, preview: row.preview });
@@ -112,6 +131,11 @@ export async function loadThreadHistory(threadId, { background = false } = {}) {
   const execution = executionFromHistory(data);
   const active = execution.active;
   state.activeTurnId = execution.turn?.id || null;
+  if (active && state.lastExecutionThreadId !== threadId) {
+    state.lastExecutionThreadId = threadId;
+    state.lastExecutionEventAt = Date.now();
+    state.lastExecutionActivity = executionActivity(execution.turn);
+  }
   for (const turn of incomingTurns) if (['completed', 'failed', 'interrupted'].includes(turnStatus(turn))) rememberCompletedTurn(turn.id);
   // Background syncs usually return what is already on screen; rebuilding the whole
   // conversation then only costs layout and collapses details the user opened.
@@ -126,7 +150,7 @@ export async function loadThreadHistory(threadId, { background = false } = {}) {
   renderThreads(state.threads, $('#threadSearch').value.trim());
   const activeTurn = execution.turn;
   state.turnStartedAtMs = activeTurn?.startedAt ? Number(activeTurn.startedAt) * 1000 : (active ? state.turnStartedAtMs || Date.now() : null);
-  setBusy(active);
+  setBusy(active, active ? executionActivity(activeTurn) : '');
   refreshQueue(threadId).catch((error) => toast(error.message, 'error'));
   if (!unchanged) state.pendingApprovals.forEach((request) => { if (request.params?.threadId === threadId) addApproval(request); });
   if (!background && window.innerWidth <= 680) closeSidebar();
@@ -199,6 +223,7 @@ function showThreadLoadError(threadId, error) {
 }
 
 export async function openThread(threadId) {
+  threadId = canonicalThreadId(threadId, state.threads);
   if (!threadId || state.loadingThreadId === threadId) return;
   if (state.historyThreadId && state.historyThreadId !== threadId) {
     state.historyThreadId = '';
@@ -237,6 +262,11 @@ export async function openThread(threadId) {
       }
     }
     state.activeThreadProjectId = project?.id || '';
+    if (!project) {
+      state.unassignedExpanded = true;
+      localStorage.setItem('codex-unassigned-expanded', 'true');
+    }
+    revealProjectThread(threadId);
     const cwd = project?.cwd || thread?.cwd || thread?.workingDirectory || thread?.workspace?.cwd || state.defaultCwd;
     selectProject(project?.id || '', { folderPath: cwd, updateActiveThread: true });
   } catch (error) {
@@ -255,6 +285,7 @@ export function newChat() {
   state.draftQueueGroupId = randomKey();
   localStorage.setItem('codex-draft-queue-group', state.draftQueueGroupId);
   state.selectedThreadId = null;
+  state.accessMode = state.defaultAccessMode;
   state.selectedThread = null;
   state.activeThreadProjectId = '';
   state.loadingThreadId = null;

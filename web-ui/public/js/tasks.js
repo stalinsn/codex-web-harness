@@ -122,7 +122,7 @@ async function continueElsewhere() {
   const button = $('#continueElsewhere');
   button.disabled = true;
   try {
-    const { task } = await api('/api/tasks', { method: 'POST', body: JSON.stringify({ fromThreadId: threadId }) });
+    const { task } = await api('/api/tasks', { method: 'POST', body: JSON.stringify({ fromThreadId: threadId, accessMode: state.accessMode }) });
     toast('Continuando em outra conta. Acompanhe em Execuções contínuas.');
     await openTaskDetail(task.id);
   } catch (error) { toast(error.message, 'error'); }

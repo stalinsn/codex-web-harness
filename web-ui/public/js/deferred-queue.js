@@ -77,7 +77,7 @@ export async function updateDeferredQueueItems(items) {
   renderRateLimitNotice();
 }
 
-export async function queueDraftForRateLimit(text, files, threadId, block = getRateLimitBlock()) {
+export async function queueDraftForRateLimit(text, files, threadId, block = getRateLimitBlock(), { preserveComposer = false, focusComposer = true } = {}) {
   const textarea = $('#messageInput');
   const wasSending = state.sending;
   state.sending = true;
@@ -90,6 +90,7 @@ export async function queueDraftForRateLimit(text, files, threadId, block = getR
       files: files.map((file) => ({ name: file.name, isImage: Boolean(file.isImage), size: Number(file.size) || 0, mime: file.mime || 'application/octet-stream', data: file.data || String(file.dataUrl || '').split(',')[1] || '', dataUrl: file.dataUrl || '' })),
       model: state.modelId,
       effort: state.effort,
+      accessMode: state.accessMode,
       cwd: state.cwd,
       draftQueueGroupId: threadId ? '' : state.draftQueueGroupId,
       createdAt: Date.now(),
@@ -101,8 +102,8 @@ export async function queueDraftForRateLimit(text, files, threadId, block = getR
       lastError: '',
     };
     await putDeferredQueueItem(item);
-    if (textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
-    if (files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
+    if (!preserveComposer && textarea.value.trim() === text) { textarea.value = ''; textarea.style.height = 'auto'; }
+    if (!preserveComposer && files.length === state.files.length && files.every((file, index) => state.files[index] === file)) { state.files = []; renderAttachments(); }
     const wait = block && block.resetAt ? ' Libera ' + formatCountdown(block.resetAt) + '.' : '';
     toast('Limite de uso atingido. Mensagem guardada na fila.' + wait);
     textarea.dispatchEvent(new Event('input'));
@@ -113,7 +114,7 @@ export async function queueDraftForRateLimit(text, files, threadId, block = getR
   } finally {
     state.sending = wasSending;
     updateComposerControls();
-    if (!touchComposer()) textarea.focus();
+    if (focusComposer && !touchComposer()) textarea.focus();
   }
 }
 
@@ -136,6 +137,7 @@ export async function sendDeferredQueueItem(item, { manual = false } = {}) {
         text: item.text,
         model: item.model,
         effort: item.effort,
+        ...(item.accessMode ? { accessMode: item.accessMode } : {}),
         cwd: item.cwd,
         ...attachmentPayload(item.files || []),
       }),

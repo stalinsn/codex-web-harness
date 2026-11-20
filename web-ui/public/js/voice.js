@@ -1,5 +1,6 @@
 // Voice recording, preview, upload and local transcription flow.
 import { api } from './api.js';
+import { audioMime, createAudioRecorder } from './audio-recording.js';
 import { blobDataUrl, renderAttachments, submitMessage, updateComposerControls } from './composer.js';
 import { $, icons, toast } from './dom.js';
 import { state, voice } from './state.js';
@@ -13,7 +14,7 @@ export function renderVoice(error = '') {
   $('#composerForm').classList.toggle('has-voice', voice.phase !== 'idle');
   const recording = voice.phase === 'recording';
   const hasPreview = Boolean(voice.blob) && !recording;
-  panel.hidden = voice.phase === 'idle';
+  panel.hidden = voice.phase === 'idle' && !error;
   panel.classList.toggle('is-recording', recording);
   panel.classList.toggle('is-transcribing', voice.phase === 'transcribing');
   $('#voiceStatus').textContent = ({ requesting: 'Liberando microfone…', recording: 'Gravando · toque em Concluir para ouvir', preparing: 'Preparando prévia do áudio…', transcribing: 'Transcrevendo o áudio…' })[voice.phase]
@@ -77,32 +78,9 @@ function showRecordedAudio(blob) {
 }
 
 export async function prepareVoicePreview(blob) {
-  const generation = voice.generation;
-  voice.phase = 'preparing'; renderVoice();
-  try {
-    const OfflineContext = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-    if (!OfflineContext) throw new Error('Decoder indisponível');
-    const decoder = new OfflineContext(1, 1, 16000);
-    const decoded = await decoder.decodeAudioData(await blob.arrayBuffer());
-    if (generation !== voice.generation) return;
-    if (decoded.duration > 181) { showRecordedAudio(blob); renderVoice('O limite para transcrição é 3 minutos. Você pode ouvir ou salvar o arquivo.'); return; }
-    const samples = decoded.length;
-    const buffer = new ArrayBuffer(44 + samples * 2);
-    const view = new DataView(buffer);
-    const write = (offset, value) => { for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)); };
-    write(0, 'RIFF'); view.setUint32(4, 36 + samples * 2, true); write(8, 'WAVE'); write(12, 'fmt ');
-    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, decoded.sampleRate, true);
-    view.setUint32(28, decoded.sampleRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true); write(36, 'data'); view.setUint32(40, samples * 2, true);
-    const channels = Array.from({ length: decoded.numberOfChannels }, (_, i) => decoded.getChannelData(i));
-    for (let i = 0; i < samples; i++) {
-      const sample = Math.max(-1, Math.min(1, channels.reduce((sum, channel) => sum + channel[i], 0) / channels.length));
-      view.setInt16(44 + i * 2, sample < 0 ? sample * 32768 : sample * 32767, true);
-    }
-    voice.seconds = Math.round(decoded.duration);
-    showRecordedAudio(new Blob([buffer], { type: 'audio/wav' }));
-  } catch {
-    if (generation === voice.generation) showRecordedAudio(blob);
-  }
+  // Preserve the original compressed recording. Decoding and creating WAV here
+  // delayed playback, increased uploads and depended on a second browser codec.
+  showRecordedAudio(blob);
 }
 
 export async function sendVoiceRecording() {
@@ -151,13 +129,18 @@ export async function transcribeRecordedAudio() {
       const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('Não consegui ler a gravação.')); reader.readAsDataURL(voice.blob);
     });
     if (signal.aborted) return;
-    const job = await api('/api/voice/transcriptions', { method: 'POST', signal, body: JSON.stringify({ mime: voice.blob.type, data: String(dataUrl).split(',')[1] }) });
+    const job = await api('/api/voice/transcriptions', { method: 'POST', signal, body: JSON.stringify({ mime: audioMime(voice.blob.type), data: String(dataUrl).split(',')[1] }) });
     voice.jobId = job.id;
     const deadline = Date.now() + 330_000;
     while (!signal.aborted && Date.now() < deadline) {
-      const result = await api(`/api/voice/transcriptions/${job.id}`, { signal });
-      if (result.status === 'failed' || result.status === 'cancelled') throw new Error(result.error || 'Transcrição cancelada.');
-      if (result.status === 'completed') {
+      let result;
+      try { result = await api(`/api/voice/transcriptions/${job.id}`, { signal }); }
+      catch (error) {
+        // A temporary gateway limit must not cancel a transcription already running.
+        if (error.status !== 429 && error.status !== 503) throw error;
+      }
+      if (result?.status === 'failed' || result?.status === 'cancelled') throw new Error(result.error || 'Transcrição cancelada.');
+      if (result?.status === 'completed') {
         if (!result.text?.trim()) throw new Error('Não identifiquei fala neste áudio. Tente gravar novamente.');
         if (generation !== voice.generation) return;
         if (targetThreadId !== state.selectedThreadId) throw new Error('A conversa mudou. O áudio foi preservado; escolha onde deseja enviá-lo e tente novamente.');
@@ -173,7 +156,7 @@ export async function transcribeRecordedAudio() {
       }
       await new Promise((resolve, reject) => {
         const cancel = () => { clearTimeout(timer); reject(new DOMException('Cancelado', 'AbortError')); };
-        const timer = setTimeout(() => { signal.removeEventListener('abort', cancel); resolve(); }, 1500);
+        const timer = setTimeout(() => { signal.removeEventListener('abort', cancel); resolve(); }, 4000);
         signal.addEventListener('abort', cancel, { once: true });
       });
     }
@@ -195,18 +178,15 @@ export async function startVoiceRecording() {
   const generation = ++voice.generation;
   renderVoice();
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false }); }
+    catch (error) {
+      if (error.name !== 'OverconstrainedError' && error.name !== 'NotSupportedError') throw error;
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    }
     if (voice.cancelled || generation !== voice.generation) { stream.getTracks().forEach((track) => track.stop()); return; }
     voice.stream = stream;
-    const playableRecorderTypes = [
-      { type: 'audio/mp4', playback: 'audio/mp4' },
-      { type: 'audio/webm;codecs=opus', playback: 'audio/webm' },
-      { type: 'audio/webm', playback: 'audio/webm' },
-      { type: 'audio/ogg;codecs=opus', playback: 'audio/ogg' },
-    ];
-    const mimeType = playableRecorderTypes.find(({ type, playback }) => MediaRecorder.isTypeSupported(type) && $('#voicePlayer').canPlayType(playback))?.type
-      || playableRecorderTypes.find(({ type }) => MediaRecorder.isTypeSupported(type))?.type;
-    const recorder = new MediaRecorder(stream, { ...(mimeType ? { mimeType } : {}), audioBitsPerSecond: 64000 });
+    const recorder = createAudioRecorder(stream);
     voice.recorder = recorder; voice.chunks = [];
     recorder.ondataavailable = (event) => { if (event.data.size && generation === voice.generation) voice.chunks.push(event.data); };
     recorder.onstop = () => {
@@ -216,7 +196,14 @@ export async function startVoiceRecording() {
       const blob = new Blob(voice.chunks, { type: recorder.mimeType || voice.chunks[0]?.type || 'audio/webm' });
       prepareVoicePreview(blob);
     };
-    recorder.onerror = () => { clearRecordedAudio(); toast('A gravação foi interrompida pelo navegador. Tente novamente.', 'error'); };
+    recorder.onerror = () => {
+      if (generation !== voice.generation) return;
+      if (voice.chunks.length) {
+        releaseMicrophone(); voice.recorder = null;
+        showRecordedAudio(new Blob(voice.chunks, { type: recorder.mimeType || voice.chunks[0]?.type || 'audio/webm' }));
+        renderVoice('O navegador interrompeu a gravação. O trecho já gravado foi preservado.');
+      } else { clearRecordedAudio(); renderVoice('O navegador interrompeu a gravação. Tente novamente ou anexe um áudio.'); }
+    };
     recorder.start(500); voice.startedAt = Date.now(); voice.seconds = 0; voice.phase = 'recording';
     voice.timer = setInterval(() => {
       voice.seconds = Math.floor((Date.now() - voice.startedAt) / 1000);
@@ -228,6 +215,7 @@ export async function startVoiceRecording() {
     if (AudioContextClass) {
       try {
         voice.context = new AudioContextClass();
+        voice.context.resume().catch(() => {});
         voice.meterSource = voice.context.createMediaStreamSource(stream);
         const analyser = voice.context.createAnalyser(); analyser.fftSize = 256;
         voice.meterSource.connect(analyser);
@@ -238,7 +226,7 @@ export async function startVoiceRecording() {
           const level = Math.sqrt(data.reduce((sum, value) => sum + ((value - 128) / 128) ** 2, 0) / data.length);
           voice.hasSignal ||= level > .01;
           $('#voicePanel').style.setProperty('--voice-level', `${Math.min(100, Math.max(4, level * 600))}%`);
-          if (voice.seconds >= 5 && !voice.hasSignal) $('#voiceStatus').textContent = 'Som muito baixo. Confira seu microfone';
+          if (voice.context?.state === 'running' && voice.seconds >= 5 && !voice.hasSignal) $('#voiceStatus').textContent = 'Som muito baixo. Confira seu microfone';
           else $('#voiceStatus').textContent = 'Gravando sua mensagem';
           voice.meterFrame = requestAnimationFrame(draw);
         };
@@ -247,7 +235,10 @@ export async function startVoiceRecording() {
     }
   } catch (error) {
     clearRecordedAudio();
-    toast(error.name === 'NotAllowedError' ? 'Permita o microfone nas configurações do navegador ou escolha um arquivo de áudio.' : 'Não consegui acessar o microfone. Você pode escolher um arquivo de áudio.', 'error');
+    renderVoice(error.name === 'NotAllowedError'
+      ? 'Microfone bloqueado. No Samsung Internet, abra as permissões deste site pelo cadeado e permita o microfone. Confira também a permissão do aplicativo nas configurações do Android.'
+      : error.name === 'NotReadableError' ? 'O microfone está ocupado por outro aplicativo. Feche a outra gravação e tente novamente.'
+        : 'Não consegui iniciar o microfone. Tente novamente ou use Anexar para escolher um áudio.');
   }
 }
 

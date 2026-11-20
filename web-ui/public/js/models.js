@@ -9,6 +9,7 @@ import { state } from './state.js';
 
 const chatCatalogs = new Map();
 const catalogRequests = new Map();
+const CHAT_CATALOG_TTL_MS = 55_000;
 
 const isExternalChat = () => state.chatAccountId && state.chatAccountId !== 'codex';
 const chatModelKey = (accountId) => `codex-chat-model:${accountId}`;
@@ -95,11 +96,12 @@ function applyAccountModelSettings(account, catalog) {
 
   state.chatModels = models;
   state.chatModelAccountId = account.id;
+  const listedIds = new Set((catalog.models || []).map((item) => item.id));
   const savedModel = loadChatPreference(chatModelKey(account.id));
-  const selectedModel = (savedModel && models.some((item) => item.id === savedModel) ? savedModel : '')
-    || (account.model && models.some((item) => item.id === account.model) ? account.model : '')
+  const selectedModel = (savedModel && listedIds.has(savedModel) ? savedModel : '')
     || models.find((item) => item.isDefault)?.id
-    || '';
+    || (account.model && listedIds.has(account.model) ? account.model : '')
+    || (!catalog.models?.length ? account.model || '' : '');
   state.chatModelId = selectedModel;
   const model = models.find((item) => item.id === selectedModel);
   const supported = effortsOf(model);
@@ -142,7 +144,8 @@ function showCatalogLoading(account) {
 }
 
 async function loadExternalCatalog(account) {
-  const cached = chatCatalogs.get(account.id);
+  const cachedEntry = chatCatalogs.get(account.id);
+  const cached = cachedEntry?.expiresAt > Date.now() ? cachedEntry.catalog : null;
   if (cached) {
     if (state.chatModelAccountId !== account.id || !state.chatModels.length) applyAccountModelSettings(account, cached);
     renderExternalModels(account);
@@ -154,7 +157,7 @@ async function loadExternalCatalog(account) {
     const request = api(`/api/accounts/${encodeURIComponent(account.id)}/models`)
       .catch((error) => ({ models: [], note: error.message, source: '' }))
       .then((catalog) => {
-        chatCatalogs.set(account.id, catalog);
+        chatCatalogs.set(account.id, { catalog, expiresAt: Date.now() + CHAT_CATALOG_TTL_MS });
         return catalog;
       })
       .finally(() => catalogRequests.delete(account.id));

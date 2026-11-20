@@ -6,6 +6,40 @@ import { test } from 'node:test';
 import { LocalThreadStore, isLocalThread } from '../src/threads/local-store.mjs';
 import { transcriptOf } from '../src/threads/provider-chat.mjs';
 import { TurnRecorder, toolItem } from '../src/threads/recorder.mjs';
+import { canonicalThreadId } from '../public/js/thread-identity.js';
+import { reconcileCodexSessions } from '../src/threads/codex-sessions.mjs';
+
+test('native sessions and consolidated branches open their canonical conversation', () => {
+  const threads = [
+    { id: 'ext-main', name: 'LMS', internalCodexThreadIds: ['native-original', 'native-new'], mergedThreadIds: ['ext-branch'] },
+    { id: 'unrelated', name: 'LMS' },
+  ];
+  for (const id of ['native-original', 'native-new', 'ext-branch', 'ext-main']) assert.equal(canonicalThreadId(id, threads), 'ext-main');
+  assert.equal(canonicalThreadId('unrelated', threads), 'unrelated');
+  assert.equal(canonicalThreadId(null, threads), null);
+});
+
+test('recovery links interrupted Codex sessions without claiming unrelated conversations', () => {
+  const record = {
+    thread: { id: 'ext-main', name: 'LMS', cwd: '/projects/lms' },
+    turns: [
+      { startedAt: 1000.1, account: { provider: 'codex' } },
+      { startedAt: 2000.1, account: { provider: 'codex' } },
+    ],
+  };
+  const sessions = [
+    { id: 'first', createdAt: 1000120, title: 'LMS', cwd: '/projects/lms' },
+    { id: 'latest', createdAt: 2000120, title: 'LMS', cwd: '/projects/lms', model: 'gpt-6-luna' },
+    { id: 'different-folder', createdAt: 2000120, title: 'LMS', cwd: '/projects/other' },
+    { id: 'later-chat', createdAt: 3000120, title: 'LMS', cwd: '/projects/lms' },
+    { id: 'subagent', createdAt: 2000120, title: 'LMS', cwd: '/projects/lms', isSubagent: true },
+  ];
+  assert.equal(reconcileCodexSessions(record, sessions), true);
+  assert.deepEqual(record.thread.internalCodexThreadIds, ['first', 'latest']);
+  assert.equal(record.sessions.codex, 'latest');
+  assert.equal(record.sessionTurnCounts.codex, 2);
+  assert.equal(reconcileCodexSessions(record, sessions), false);
+});
 
 test('provider tools map to Codex item types', () => {
   assert.equal(toolItem({ name: 'Bash', input: { command: 'ls' } }, 'i').type, 'commandExecution');

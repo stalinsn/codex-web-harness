@@ -1,13 +1,45 @@
 // Minimal, escape-first Markdown renderer for assistant messages.
 import { escapeHtml } from './dom.js';
+import { PREFIX } from './config.js';
+
+const copyCodeIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg>';
+
+function localFilePath(destination) {
+  if (destination.startsWith('file://')) {
+    try {
+      const url = new URL(destination);
+      if (url.protocol !== 'file:' || (url.hostname && url.hostname !== 'localhost')) return '';
+      destination = decodeURIComponent(url.pathname);
+    } catch { return ''; }
+  }
+  return destination.startsWith('/home/') ? destination : '';
+}
+
+function localFileAnchor(label, destination) {
+  const path = localFilePath(destination);
+  if (!path) return '';
+  const href = `${PREFIX}/api/local-files?path=${encodeURIComponent(path)}`;
+  return `<a class="local-file-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" title="Abrir arquivo do projeto">${escapeHtml(label)}</a>`;
+}
 
 export function markdown(text) {
   const blocks = [];
-  let safe = escapeHtml(text);
-  safe = safe.replace(/```([\w.+-]*)\n?([\s\S]*?)```/g, (_, language, code) => {
-    const index = blocks.push(`<pre><code${language ? ` class="language-${escapeHtml(language)}"` : ''}>${code.replace(/\n$/, '')}</code></pre>`) - 1;
+  const localLinks = [];
+  let source = String(text ?? '');
+  source = source.replace(/```([\w.+-]*)\n?([\s\S]*?)```/g, (_, language, code) => {
+    const index = blocks.push(`<div class="code-block"><button type="button" class="code-copy-button" data-copy-code title="Copiar código" aria-label="Copiar bloco de código">${copyCodeIcon}</button><pre><code${language ? ` class="language-${escapeHtml(language)}"` : ''}>${escapeHtml(code.replace(/\n$/, ''))}</code></pre></div>`) - 1;
     return `\u0000${index}\u0000`;
   });
+  const stashLocalLink = (_, label, destination) => {
+    const html = localFileAnchor(label, destination);
+    if (!html) return _;
+    const index = localLinks.push(html) - 1;
+    return `\u0001local-file-${index}\u0001`;
+  };
+  source = source
+    .replace(/\[([^\]]+)\]\(\s*<((?:file:\/\/\/|\/home\/)[^>\n]+)>\s*\)/g, stashLocalLink)
+    .replace(/\[([^\]]+)\]\(\s*(file:\/\/\/[^\s)]+|\/home\/[^\s)]+)\s*\)/g, stashLocalLink);
+  const safe = escapeHtml(source);
   const inline = (line) => line
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
@@ -96,5 +128,5 @@ export function markdown(text) {
     paragraph.push(line);
   }
   flushParagraph(); flushList(); flushQuote();
-  return output.join('');
+  return output.join('').replace(/\u0001local-file-(\d+)\u0001/g, (_, index) => localLinks[Number(index)] || '');
 }

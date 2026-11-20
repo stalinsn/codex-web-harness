@@ -1,13 +1,16 @@
 // Entry point: bootstraps data, binds UI events and starts authentication.
 import { bindAccountEvents, refreshAccounts } from './accounts.js';
 import { api } from './api.js';
+import { bindAttachmentEvents } from './attachments.js';
+import { bindCodeCopy } from './code-copy.js';
 import { initializeAuthentication } from './auth.js';
-import { addFiles, steerMessage, submitMessage, updateComposerControls } from './composer.js';
+import { addFiles, steerMessage, submitDecisionAnswer, submitMessage, updateComposerControls } from './composer.js';
 import { PREFIX } from './config.js';
 import { newChat, openThread } from './conversation.js';
 import { loadDeferredQueue, maybeDrainDeferredQueue } from './deferred-queue.js';
 import { $, $$, debounce, randomKey, toast } from './dom.js';
 import { bindInspectorLayout } from './inspector-layout.js';
+import { bindServerTerminal } from './server-terminal.js';
 import { bindIntegrationEvents } from './integrations.js';
 import { refreshUsage, refreshVpsHealth, renderUsage } from './inspector.js';
 import { closeSidebar, openSidebar, setConnection, setupComposerViewport, setupInspectorResize, showInspector } from './layout.js';
@@ -22,6 +25,56 @@ import { bindTaskEvents, refreshTasks } from './tasks.js';
 import { closeThreadMenus, refreshThreadList, renderThreads } from './thread-list.js';
 import { clearRecordedAudio, prepareVoicePreview, renderVoice, startVoiceRecording, touchComposer, transcribeRecordedAudio, voiceTime } from './voice.js';
 import { bindWizardEvents } from './wizard.js';
+
+function closeComposerOptions() {
+  const options = $('#composerOptions');
+  const toggle = $('#composerOptionsToggle');
+  if (!options || !toggle) return;
+  options.open = false;
+  toggle.classList.remove('is-open');
+  toggle.setAttribute('aria-expanded', 'false');
+}
+
+function positionComposerOptions() {
+  const options = $('#composerOptions');
+  const panel = $('#composerOptionsPanel');
+  const toggle = $('#composerOptionsToggle');
+  if (!options?.open || !panel || !toggle) return;
+  const anchor = toggle.getBoundingClientRect();
+  const visible = window.visualViewport;
+  const viewportLeft = visible?.offsetLeft || 0;
+  const viewportTop = visible?.offsetTop || 0;
+  const viewportWidth = visible?.width || document.documentElement.clientWidth || window.innerWidth;
+  const viewportHeight = visible?.height || document.documentElement.clientHeight || window.innerHeight;
+  if (window.innerWidth <= 680) {
+    const layoutBottom = window.innerHeight;
+    const visibleBottom = viewportTop + viewportHeight;
+    const keyboardInset = Math.max(0, layoutBottom - visibleBottom);
+    const width = Math.max(1, Math.min(460, viewportWidth - 24));
+    panel.style.width = `${width}px`;
+    panel.style.left = `${Math.max(viewportLeft + 12, viewportLeft + (viewportWidth - width) / 2)}px`;
+    panel.style.right = 'auto';
+    panel.style.top = 'auto';
+    panel.style.bottom = `${keyboardInset + 12}px`;
+    panel.style.maxHeight = `${Math.max(120, Math.min(470, viewportHeight - 24))}px`;
+    return;
+  }
+  const width = Math.min(window.innerWidth <= 680 ? 460 : 470, viewportWidth - 24);
+  panel.style.width = `${width}px`;
+  panel.style.maxHeight = `${Math.max(120, Math.min(520, viewportHeight * .66, viewportHeight - 24))}px`;
+  const left = Math.max(viewportLeft + 12, Math.min(anchor.right - width, viewportLeft + viewportWidth - width - 12));
+  const height = panel.getBoundingClientRect().height;
+  const minTop = viewportTop + 12;
+  const maxTop = Math.max(minTop, viewportTop + viewportHeight - height - 12);
+  const above = anchor.top - height - 8;
+  const below = anchor.bottom + 8;
+  const preferredTop = above >= minTop ? above : below;
+  const top = Math.max(minTop, Math.min(preferredTop, maxTop));
+  panel.style.left = `${left}px`;
+  panel.style.right = 'auto';
+  panel.style.top = `${top}px`;
+  panel.style.bottom = 'auto';
+}
 
 export async function bootstrap() {
   try {
@@ -76,12 +129,15 @@ async function loadBootstrap() {
 }
 
 export function bindEvents() {
+  bindAttachmentEvents();
+  bindCodeCopy();
   enhanceComposerSelects();
   bindAccountEvents();
   bindIntegrationEvents();
   bindTaskEvents();
   bindWizardEvents();
   bindInspectorLayout();
+  bindServerTerminal();
   setupInspectorResize();
   setupComposerViewport();
   $('#closeImagePreview').addEventListener('click', () => $('#imagePreviewDialog').close());
@@ -100,7 +156,48 @@ export function bindEvents() {
     try { await api('/api/auth/logout', { method: 'POST', body: '{}' }); location.reload(); }
     catch (error) { button.disabled = false; toast(error.message, 'error'); }
   });
-  $('#composerForm').addEventListener('submit', submitMessage);
+  $('#composerForm').addEventListener('submit', (event) => { closeComposerOptions(); submitMessage(event); });
+  window.addEventListener('harness:decision-answer', async (event) => {
+    const answer = event.detail;
+    const sent = await submitDecisionAnswer(answer?.text || '');
+    if (sent) answer?.accepted?.();
+    else answer?.failed?.();
+  });
+  $('#composerOptions').addEventListener('toggle', () => {
+    const options = $('#composerOptions');
+    const toggle = $('#composerOptionsToggle');
+    toggle.classList.toggle('is-open', options.open);
+    toggle.setAttribute('aria-expanded', String(options.open));
+    if (options.open) requestAnimationFrame(positionComposerOptions);
+  });
+  document.addEventListener('pointerdown', (event) => {
+    const options = $('#composerOptions');
+    if (options.open && !options.contains(event.target)) closeComposerOptions();
+  }, true);
+  $('#accessModeSelect').addEventListener('change', async (event) => {
+    const mode = event.target.value;
+    if (!['manual', 'automatic'].includes(mode) || mode === state.accessMode) return;
+    const threadId = state.selectedThreadId;
+    state.accessModeUpdating = true;
+    state.accessModeUpdatingThreadId = threadId || '';
+    updateComposerControls();
+    try {
+      const result = threadId
+        ? await api(`/api/threads/${encodeURIComponent(threadId)}/access-mode`, { method: 'POST', body: JSON.stringify({ mode }) })
+        : { mode, active: false };
+      state.defaultAccessMode = result.mode;
+      localStorage.setItem('codex-access-mode', result.mode);
+      if (state.selectedThreadId === threadId || !state.selectedThreadId) state.accessMode = result.mode;
+      toast(result.active
+        ? result.mode === 'automatic' ? 'Automático ativado. Aprovações de comandos pendentes serão liberadas; acesso completo no próximo turno.' : 'Aprovações manuais ativadas para os próximos pedidos. O turno atual conserva suas permissões.'
+        : result.mode === 'automatic' ? 'Desenvolvimento automático ativado para esta conversa.' : 'Aprovações manuais ativadas para esta conversa.');
+    } catch (error) { toast(error.message || 'Não consegui alterar o modo de desenvolvimento.', 'error'); }
+    finally {
+      state.accessModeUpdating = false;
+      state.accessModeUpdatingThreadId = '';
+      updateComposerControls();
+    }
+  });
   $('#voiceInput').addEventListener('click', startVoiceRecording);
   $('#discardAudio').addEventListener('click', clearRecordedAudio);
   $('#transcribeAudio').addEventListener('click', () => transcribeRecordedAudio());
@@ -138,7 +235,7 @@ export function bindEvents() {
   $('#modelSelect').addEventListener('change', () => setComposerModel($('#modelSelect').value));
   $('#accountSelect').addEventListener('change', () => { setChatAccount($('#accountSelect').value); updateComposerControls(); });
   $('#effortSelect').addEventListener('change', () => setComposerEffort($('#effortSelect').value));
-  $('#cwdControl').addEventListener('click', () => { $('#cwdInput').value = state.cwd; $('#pathDialog').showModal(); });
+  $('#cwdControl').addEventListener('click', () => { closeComposerOptions(); $('#cwdInput').value = state.cwd; $('#pathDialog').showModal(); });
   $('#pathForm').addEventListener('submit', (event) => {
     if (event.submitter?.value === 'cancel') return;
     event.preventDefault();
@@ -150,8 +247,6 @@ export function bindEvents() {
     $('#pathDialog').close();
   });
   $$('.quick-paths button').forEach((button) => button.addEventListener('click', () => { $('#cwdInput').value = button.dataset.path; }));
-  $('#attachImage').addEventListener('click', () => $('#imageInput').click());
-  $('#imageInput').addEventListener('change', async (event) => { await addFiles(event.target.files); event.target.value = ''; });
   $('#refreshThreads').addEventListener('click', () => refreshThreadList($('#threadSearch').value.trim()).catch((error) => toast(error.message, 'error')));
   $('#toggleArchived').addEventListener('click', async () => {
     if (state.archivedView) return;
@@ -170,8 +265,17 @@ export function bindEvents() {
     refreshThreadList('').catch((error) => toast(error.message, 'error'));
   });
   $('#threadSearchScope').addEventListener('change', () => renderThreads());
-  $('#threadList').addEventListener('scroll', closeThreadMenus, { passive: true });
-  window.addEventListener('resize', closeThreadMenus);
+  $('#sidebarNavigation').addEventListener('scroll', closeThreadMenus, { passive: true });
+  window.addEventListener('resize', () => {
+    closeThreadMenus();
+    if ($('#composerOptions').open) requestAnimationFrame(positionComposerOptions);
+  });
+  window.visualViewport?.addEventListener('resize', () => {
+    if ($('#composerOptions').open) requestAnimationFrame(positionComposerOptions);
+  });
+  window.visualViewport?.addEventListener('scroll', () => {
+    if ($('#composerOptions').open) requestAnimationFrame(positionComposerOptions);
+  }, { passive: true });
   $('#threadSearch').addEventListener('input', debounce(() => refreshThreadList($('#threadSearch').value.trim()).catch((error) => toast(error.message, 'error')), 250));
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') syncLabelColors().catch(() => {});
@@ -210,7 +314,7 @@ export function bindEvents() {
   document.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); newChat(); }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); openSidebar(); $('#threadSearch').focus(); }
-    if (event.key === 'Escape') { closeSidebar(); showInspector(false); }
+    if (event.key === 'Escape') { closeComposerOptions(); closeSidebar(); showInspector(false); }
   });
   $('#cwdLabel').textContent = state.cwd; $('#inspectorCwd').textContent = state.cwd;
   updateComposerControls();

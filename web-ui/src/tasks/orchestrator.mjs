@@ -6,6 +6,7 @@ import { appendFile, mkdir, readdir, readFile, rename, stat, writeFile } from 'n
 import { join } from 'node:path';
 import { config } from '../config.mjs';
 import { HANDOFF_FILE } from '../accounts/codex-usage.mjs';
+import { ACCESS_MODES } from '../codex/access-mode.mjs';
 import { httpError } from '../http/respond.mjs';
 import { validateCwd } from '../projects.mjs';
 import { TurnRecorder } from '../threads/recorder.mjs';
@@ -13,6 +14,7 @@ import { fitPrompt, goalFromThread, outcomeMarker } from './prompt.mjs';
 
 const TASK_ID = /^[a-f0-9-]{36}$/;
 const ACTIVE = new Set(['queued', 'running', 'waiting']);
+const TERMINAL = new Set(['completed', 'failed', 'blocked', 'stopped']);
 const MAX_NUDGES = 2;
 const MAX_LOG_BYTES = 20 * 1024 * 1024;
 const RECENT_EVENTS = 200;
@@ -73,6 +75,9 @@ export class TaskOrchestrator {
         this.tasks.set(id, task);
       } catch { /* skip unreadable task */ }
     }
+    for (const task of this.tasks.values()) {
+      if (TERMINAL.has(task.status)) await this.#releaseThread(task).catch((error) => console.error('Não foi possível liberar uma conversa encerrada:', error.message));
+    }
     for (const task of this.tasks.values()) if (ACTIVE.has(task.status)) this.#schedule(task, 2000);
     return this;
   }
@@ -86,10 +91,11 @@ export class TaskOrchestrator {
     return { ...this.#summary(task), goal: task.goal, segments: task.segments, events: this.recent.get(id) || await this.#tailLog(id), handoff: await readText(join(task.cwd, HANDOFF_FILE), 60_000) };
   }
 
-  async create({ goal, cwd, title, order, fromThreadId }) {
+  async create({ goal, cwd, title, order, fromThreadId, accessMode = '' }) {
     let text = typeof goal === 'string' ? goal.trim() : '';
     let workdir = cwd;
     let sourceTitle = '';
+    let threadAccessMode = ACCESS_MODES.has(accessMode) ? accessMode : '';
     if (fromThreadId) {
       if (!/^[a-zA-Z0-9_-]{1,100}$/.test(fromThreadId)) throw httpError('Conversa inválida.', 400);
       const read = await this.primaryCodex.rpc('thread/read', { threadId: fromThreadId });
@@ -98,6 +104,7 @@ export class TaskOrchestrator {
       text = text ? `${derived}\n\nOrientação adicional:\n${text}` : derived;
       workdir ||= read.thread?.cwd;
       sourceTitle = read.thread?.name || read.thread?.preview || '';
+      threadAccessMode ||= this.primaryCodex.accessModeForThread(fromThreadId);
     }
     if (!text || text.length > 50_000) throw httpError('Descreva o objetivo da tarefa (até 50 mil caracteres).', 400);
     const canonical = await validateCwd(workdir || config.defaultCwd);
@@ -115,6 +122,7 @@ export class TaskOrchestrator {
       createdAt: now,
       updatedAt: now,
       currentAccountId: '',
+      accessMode: ACCESS_MODES.has(threadAccessMode) ? threadAccessMode : '',
       nextAttemptAt: 0,
       nudges: 0,
       note: '',
@@ -124,7 +132,7 @@ export class TaskOrchestrator {
     await mkdir(join(tasksDir(), task.id), { recursive: true, mode: 0o700 });
     // The whole task reads as one conversation in the chat, whichever account runs it.
     if (this.localThreads) {
-      const record = await this.localThreads.create({ cwd: canonical, accountId: '', provider: '', name: `Contínua · ${task.title}`, taskId: task.id });
+      const record = await this.localThreads.create({ cwd: canonical, accountId: '', provider: '', name: `Contínua · ${task.title}`, taskId: task.id, accessMode: task.accessMode });
       task.threadId = record.thread.id;
       this.emit('thread-created', { thread: record.thread });
     }
@@ -141,6 +149,7 @@ export class TaskOrchestrator {
     task.note = 'Parada pelo usuário.';
     this.controllers.get(id)?.abort();
     await this.#save(task);
+    if (!this.running.has(id)) await this.#releaseThread(task);
     return this.#summary(task);
   }
 
@@ -149,6 +158,7 @@ export class TaskOrchestrator {
     if (this.running.has(id)) throw httpError('A tarefa já está em execução.', 409);
     if (note) task.goal = `${task.goal}\n\nOrientação adicional (${new Date().toLocaleString('pt-BR')}):\n${String(note).slice(0, 10_000)}`;
     Object.assign(task, { status: 'queued', note: '', error: '', nudges: 0 });
+    await this.#bindThread(task);
     await this.#save(task);
     this.#schedule(task, 0);
     return this.#summary(task);
@@ -190,6 +200,37 @@ export class TaskOrchestrator {
     task.status = 'failed';
     task.error = error?.message || String(error);
     await this.#save(task).catch(() => {});
+    await this.#releaseThread(task).catch(() => {});
+  }
+
+  async #bindThread(task) {
+    if (!this.localThreads || !task.threadId) return;
+    const record = await this.localThreads.get(task.threadId);
+    if (!record) return;
+    await this.localThreads.update(task.threadId, (stored) => {
+      stored.thread.taskId = task.id;
+      stored.thread.name = `Contínua · ${task.title}`.slice(0, 120);
+    });
+    await this.localThreads.flush(task.threadId);
+    this.emit('thread-updated', { threadId: task.threadId, thread: record.thread });
+  }
+
+  /** A terminal task stays in the task panel; its conversation becomes a regular Codex chat. */
+  async #releaseThread(task) {
+    if (!this.localThreads || !task.threadId) return;
+    const record = await this.localThreads.get(task.threadId);
+    if (!record || record.thread.taskId !== task.id) return;
+    await this.localThreads.update(task.threadId, (stored) => {
+      stored.thread.taskId = '';
+      stored.thread.name = task.title;
+      stored.thread.accountId = 'codex';
+      stored.thread.provider = 'codex';
+      stored.thread.modelProvider = 'codex';
+      stored.thread.model = 'Codex';
+      stored.thread.accessMode = ACCESS_MODES.has(task.accessMode) ? task.accessMode : 'automatic';
+    });
+    await this.localThreads.flush(task.threadId);
+    this.emit('thread-updated', { threadId: task.threadId, thread: record.thread });
   }
 
   async #save(task) {
@@ -338,6 +379,7 @@ export class TaskOrchestrator {
       this.running.delete(task.id);
       this.controllers.delete(task.id);
       if (task.status === 'running') { task.status = 'queued'; await this.#save(task).catch(() => {}); }
+      if (TERMINAL.has(task.status)) await this.#releaseThread(task).catch((error) => console.error('Não foi possível liberar a conversa da tarefa encerrada:', error.message));
     }
   }
 }
