@@ -27,6 +27,12 @@ private const val TAB_TASKS = 2
 private const val TAB_OVERVIEW = 3
 private val TOOL_TYPES = setOf("commandExecution", "fileChange", "webSearch", "mcpToolCall", "collabToolCall", "subAgentActivity", "plan", "reasoning")
 
+private const val PICK_IMAGES = 41
+private const val PICK_FILES = 42
+private const val ASK_MIC = 43
+
+private data class Attachment(val name: String, val mime: String, val data: String, val image: Boolean, val size: Long)
+
 class MainActivity : Activity() {
     private val worker = Executors.newFixedThreadPool(3)
     private val clock = Handler(Looper.getMainLooper())
@@ -71,6 +77,25 @@ class MainActivity : Activity() {
     private lateinit var queueBox: LinearLayout
     private lateinit var settingsChip: TextView
     private lateinit var composerHint: TextView
+    private lateinit var composerRow: LinearLayout
+    private lateinit var recordingBar: LinearLayout
+    private lateinit var recordingLevel: TextView
+    private lateinit var recordingTime: TextView
+    private lateinit var attachmentStrip: LinearLayout
+    private val attachments = mutableListOf<Attachment>()
+    private val voice by lazy { VoiceRecorder(this) }
+    private val updater by lazy { Updater(this) { runOnUiThread { ui.toast(it) } } }
+    private val meter = object : Runnable {
+        override fun run() {
+            if (!voice.recording || !::recordingLevel.isInitialized) return
+            val level = voice.level()
+            val bars = (1..24).joinToString("") { i -> if (i <= (level * 24 * 1.6f).toInt().coerceAtLeast(1)) "▮" else "▯" }
+            recordingLevel.text = bars
+            val elapsed = System.currentTimeMillis() - voice.startedAt
+            recordingTime.text = "%d:%02d".format(elapsed / 60000, (elapsed / 1000) % 60)
+            if (elapsed >= 180_000) finishRecording(send = true) else clock.postDelayed(this, 120)
+        }
+    }
 
     // Lists
     private var archived = false
@@ -114,7 +139,8 @@ class MainActivity : Activity() {
         if (!updateChecked) { updateChecked = true; checkUpdate(manual = false) }
     }
     override fun onStop() { clock.removeCallbacks(poll); super.onStop() }
-    override fun onDestroy() { worker.shutdownNow(); super.onDestroy() }
+    override fun onDestroy() { voice.stopQuietly(); updater.release(); worker.shutdownNow(); super.onDestroy() }
+    override fun onPause() { if (voice.recording) finishRecording(send = false); super.onPause() }
 
     @Deprecated("Android back callback")
     override fun onBackPressed() {
@@ -324,8 +350,24 @@ class MainActivity : Activity() {
             maxLines = 6; setPadding(dp(4), dp(6), dp(4), dp(6))
             setText(prefs.getString("draft:$threadId", ""))
         }
+        attachmentStrip = ui.row()
+        box.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(attachmentStrip) }, ui.lp(bottom = 2))
         box.addView(composer, ui.lp())
+        recordingBar = ui.row().apply { visibility = View.GONE; setPadding(dp(2), dp(4), dp(2), dp(4)) }
+        recordingBar.addView(ui.text("■", 14f, Color.WHITE, bold = true).apply {
+            gravity = Gravity.CENTER; contentDescription = "Parar e transcrever"
+            background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(C.RED) }
+            setOnClickListener { finishRecording(send = prefs.getBoolean("voiceAutoSend", false)) }
+        }, ui.lp(dp(40), dp(40), end = 10))
+        recordingLevel = ui.text("", 12f, C.LAV).apply { maxLines = 1 }
+        recordingBar.addView(recordingLevel, ui.lp(0, WRAP, 1f))
+        recordingTime = ui.text("0:00", 12.5f, C.TX2, mono = true)
+        recordingBar.addView(recordingTime, ui.lp(WRAP, WRAP, start = 8, end = 8))
+        recordingBar.addView(ui.text("✕", 16f, C.TX3).apply { setPadding(dp(8), dp(6), dp(8), dp(6)); contentDescription = "Descartar gravação"; setOnClickListener { voice.stopQuietly(); showRecording(false); ui.toast("Gravação descartada.") } })
+        box.addView(recordingBar, ui.lp())
         val tools = ui.row()
+        composerRow = tools
+        tools.addView(ui.iconButton(R.drawable.ic_plus, "Anexar") { attachMenu() }, ui.lp(dp(38), dp(38), end = 6))
         settingsChip = ui.text("", 12f, C.TX2).apply {
             background = ui.shape(Color.TRANSPARENT, 11, 1, C.LINE); setPadding(dp(10), dp(7), dp(10), dp(7)); maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
@@ -340,6 +382,7 @@ class MainActivity : Activity() {
             setOnClickListener { steer() }
         }
         tools.addView(steer, ui.lp(WRAP, WRAP, end = 8))
+        tools.addView(ui.iconButton(R.drawable.ic_mic, "Gravar áudio", C.TX2, bordered = false) { startRecording() }, ui.lp(dp(40), dp(40), end = 4))
         tools.addView(ImageButton(this).apply {
             setImageResource(R.drawable.ic_send); setColorFilter(C.LAV_DARK); contentDescription = "Enviar"
             background = ui.shape(C.LAV, 13); setOnClickListener { submit() }
@@ -355,6 +398,7 @@ class MainActivity : Activity() {
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
         })
         updateLive()
+        drawAttachments()
         if (threadId.isNotEmpty()) { readHistory(); readQueue() }
         else history.addView(ui.text("Nova conversa em ${projectName.ifEmpty { "Geral" }}. A conversa também aparece no Web Harness.", 14f, C.TX3).apply { gravity = Gravity.CENTER }, ui.lp(top = 40))
     }
@@ -632,8 +676,13 @@ class MainActivity : Activity() {
 
     private fun submit() {
         val text = composer.text.toString().trim()
-        if (text.isEmpty()) return
+        if (text.isEmpty() && attachments.isEmpty()) return
         val body = obj("text" to text, "accountId" to accountId)
+        val sending = attachments.toList()
+        if (sending.isNotEmpty()) {
+            body.put("images", JSONArray(sending.filter { it.image }.map { obj("name" to it.name, "mime" to it.mime, "data" to it.data) }))
+            body.put("files", JSONArray(sending.filter { !it.image }.map { obj("name" to it.name, "mime" to it.mime, "data" to it.data) }))
+        }
         if (threadId.isNotEmpty()) body.put("threadId", threadId) else if (newCwd.isNotEmpty()) body.put("cwd", newCwd)
         if (model.isNotEmpty()) body.put("model", model)
         if (effort.isNotEmpty()) body.put("effort", effort)
@@ -641,6 +690,7 @@ class MainActivity : Activity() {
         request({ api.call("/api/turn", body) }, onError = { composer.isEnabled = true; ui.toast(it) }) {
             composer.isEnabled = true
             if (composer.text.toString().trim() == text) composer.text.clear()
+            attachments.removeAll(sending); drawAttachments()
             val created = it.str("threadId")
             if (created.isNotBlank() && created != threadId) { threadId = created; newCwd = ""; saveThread() }
             if (it.optBoolean("queued")) ui.toast("Mensagem na fila: entra quando a resposta atual terminar.")
@@ -712,7 +762,166 @@ class MainActivity : Activity() {
                 }
                 catalog.str("note").takeIf { it.isNotBlank() }?.let { modelsBox.addView(ui.text(it, 11.5f, C.TX3), ui.lp(top = 12)) }
             }
+            val auto = ui.row().apply { setPadding(0, dp(14), 0, 0) }
+            val autoTexts = ui.column(); autoTexts.addView(ui.text("Enviar áudio direto", 13.5f)); autoTexts.addView(ui.text("Desligado: o texto transcrito vai para o campo para você revisar", 11.5f, C.TX3))
+            auto.addView(autoTexts, ui.lp(0, WRAP, 1f))
+            auto.addView(Switch(this).apply { isChecked = prefs.getBoolean("voiceAutoSend", false); setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("voiceAutoSend", on).apply() } })
+            body.addView(auto)
             body.addView(ui.action("Pronto", primary = true) { dialog.dismiss() }, ui.lp(MATCH, dp(46), top = 18))
+        }
+    }
+
+    // ───────────────────────── Voice ─────────────────────────
+
+    private fun startRecording() {
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), ASK_MIC); return
+        }
+        runCatching { voice.start() }.onFailure { ui.toast("Não consegui usar o microfone: ${it.message}"); return }
+        showRecording(true)
+        clock.post(meter)
+    }
+
+    private fun showRecording(on: Boolean) {
+        if (!::recordingBar.isInitialized) return
+        recordingBar.visibility = if (on) View.VISIBLE else View.GONE
+        composerRow.visibility = if (on) View.GONE else View.VISIBLE
+        composer.visibility = if (on) View.GONE else View.VISIBLE
+        composerHint.visibility = if (on) View.VISIBLE else if (running()) View.VISIBLE else View.GONE
+        composerHint.text = if (on) "Gravando · toque em ■ para transcrever" else "Em execução · sua próxima mensagem entra na fila"
+        window.decorView.keepScreenOn = on
+    }
+
+    private fun finishRecording(send: Boolean) {
+        clock.removeCallbacks(meter)
+        val file = voice.stop()
+        showRecording(false)
+        if (file == null) { ui.toast("Gravação curta demais."); return }
+        composerHint.visibility = View.VISIBLE; composerHint.text = "Transcrevendo o áudio…"
+        request({
+            val data = android.util.Base64.encodeToString(file.readBytes(), android.util.Base64.NO_WRAP)
+            file.delete()
+            val job = api.call("/api/voice/transcriptions", obj("mime" to "audio/mp4", "data" to data))
+            val id = job.str("id")
+            var result = job
+            val deadline = System.currentTimeMillis() + 180_000
+            while (result.str("status") == "processing" && System.currentTimeMillis() < deadline) {
+                Thread.sleep(900)
+                result = api.call("/api/voice/transcriptions/${enc(id)}")
+            }
+            result
+        }, onError = { composerHint.visibility = View.GONE; ui.toast("Transcrição falhou: $it") }) { result ->
+            composerHint.visibility = if (running()) View.VISIBLE else View.GONE
+            composerHint.text = "Em execução · sua próxima mensagem entra na fila"
+            val text = result.str("text").trim()
+            when {
+                result.str("status") == "failed" -> ui.toast("Transcrição falhou: ${result.str("error")}")
+                text.isEmpty() -> ui.toast("Não entendi o áudio. Tente de novo mais perto do microfone.")
+                else -> {
+                    val current = composer.text.toString().trim()
+                    composer.setText(if (current.isEmpty()) text else "$current $text")
+                    composer.setSelection(composer.text.length)
+                    if (send) submit()
+                }
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == ASK_MIC) {
+            if (grantResults.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED) startRecording()
+            else ui.toast("Sem acesso ao microfone. Libere em Configurações › Apps › Codex Harness.")
+        }
+    }
+
+    // ───────────────────────── Attachments ─────────────────────────
+
+    private fun attachMenu() {
+        AlertDialog.Builder(this).setItems(arrayOf("Fotos", "Arquivo")) { _, i ->
+            val intent = if (i == 0) Intent(Intent.ACTION_GET_CONTENT).setType("image/*").putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            else Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*").addCategory(Intent.CATEGORY_OPENABLE).putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            runCatching { @Suppress("DEPRECATION") startActivityForResult(intent, if (i == 0) PICK_IMAGES else PICK_FILES) }.onFailure { ui.toast("Nenhum app para escolher arquivos.") }
+        }.show()
+    }
+
+    @Deprecated("Activity result callback")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION") super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK || data == null || requestCode !in setOf(PICK_IMAGES, PICK_FILES)) return
+        val uris = data.clipData?.let { clip -> (0 until clip.itemCount).map { clip.getItemAt(it).uri } } ?: listOfNotNull(data.data)
+        worker.execute {
+            val added = mutableListOf<Attachment>(); var problem = ""
+            for (uri in uris) {
+                if (attachments.size + added.size >= 8) { problem = "Máximo de 8 anexos por mensagem."; break }
+                runCatching { readAttachment(uri) }.onSuccess { added += it }.onFailure { problem = it.message ?: "Não consegui ler um arquivo." }
+            }
+            runOnUiThread {
+                val total = (attachments + added).sumOf { it.size }
+                if (total > 24L * 1024 * 1024) ui.toast("O limite é 24 MB por mensagem.")
+                else { attachments += added; drawAttachments() }
+                if (problem.isNotEmpty()) ui.toast(problem)
+            }
+        }
+    }
+
+    private fun readAttachment(uri: Uri): Attachment {
+        var name = "arquivo"; var size = -1L
+        contentResolver.query(uri, null, null, null, null)?.use { c ->
+            if (c.moveToFirst()) {
+                c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let { name = c.getString(it) ?: name }
+                c.getColumnIndex(android.provider.OpenableColumns.SIZE).takeIf { it >= 0 }?.let { size = c.getLong(it) }
+            }
+        }
+        if (size > 20L * 1024 * 1024) error("$name passa de 20 MB.")
+        var mime = contentResolver.getType(uri) ?: "application/octet-stream"
+        var bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: error("Não consegui abrir $name.")
+        val image = mime.startsWith("image/")
+        if (image && (bytes.size > 3 * 1024 * 1024 || mime !in setOf("image/png", "image/jpeg", "image/webp", "image/gif"))) {
+            // Large photos: resize to 2048 px JPEG, as the web composer does.
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            var sample = 1
+            while (bounds.outWidth / sample > 4096 || bounds.outHeight / sample > 4096) sample *= 2
+            val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample }) ?: error("Imagem inválida: $name")
+            val scale = minOf(1f, 2048f / maxOf(decoded.width, decoded.height))
+            val scaled = if (scale < 1f) Bitmap.createScaledBitmap(decoded, (decoded.width * scale).toInt(), (decoded.height * scale).toInt(), true) else decoded
+            bytes = java.io.ByteArrayOutputStream().use { out -> scaled.compress(Bitmap.CompressFormat.JPEG, 86, out); out.toByteArray() }
+            mime = "image/jpeg"; name = name.substringBeforeLast('.') + ".jpg"
+        }
+        return Attachment(name, mime, android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP), image, bytes.size.toLong())
+    }
+
+    private fun drawAttachments() {
+        if (!::attachmentStrip.isInitialized) return
+        attachmentStrip.removeAllViews()
+        for (file in attachments.toList()) {
+            val chip = ui.row().apply { background = ui.shape(C.CARD2, 10, 1, C.LINE2); setPadding(dp(10), dp(6), dp(6), dp(6)) }
+            chip.addView(ui.text((if (file.image) "🖼 " else "📄 ") + file.name.take(26), 12f, C.TX2).apply { maxLines = 1 })
+            chip.addView(ui.text("  ✕", 12f, C.TX3).apply { contentDescription = "Remover ${file.name}"; setOnClickListener { attachments.remove(file); drawAttachments() } })
+            attachmentStrip.addView(chip, ui.lp(WRAP, WRAP, end = 6, top = 4))
+        }
+    }
+
+    // ───────────────────────── In-app update ─────────────────────────
+
+    private fun installUpdate(release: JSONObject) {
+        if (!updater.canInstall()) {
+            AlertDialog.Builder(this).setTitle("Permitir atualizações do app")
+                .setMessage("Para instalar a nova versão sem passar pelo navegador, o Android precisa que você permita que o Codex Harness instale apps. Ative a opção e volte aqui.")
+                .setPositiveButton("Abrir configurações") { _, _ -> updater.openInstallPermission() }
+                .setNegativeButton("Depois", null).show()
+            return
+        }
+        val status = ui.text("Baixando a versão ${release.str("versionName")}… 0%", 14f, C.TX2).apply { setPadding(dp(24), dp(18), dp(24), dp(8)) }
+        val dialog = AlertDialog.Builder(this).setTitle("Atualizando").setView(status).setCancelable(false).show()
+        worker.execute {
+            val result = runCatching { updater.downloadAndInstall(release) { p -> runOnUiThread { status.text = "Baixando a versão ${release.str("versionName")}… $p%" } } }
+            runOnUiThread {
+                dialog.dismiss()
+                result.onSuccess { ui.toast("Confirme a instalação na janela do Android.") }
+                result.onFailure { ui.toast(it.message ?: "A atualização falhou.") }
+            }
         }
     }
 
@@ -1191,7 +1400,8 @@ class MainActivity : Activity() {
                     if (release.optLong("versionCode") <= versionCode) { if (manual) ui.toast("Você já está na versão mais recente."); return@onSuccess }
                     AlertDialog.Builder(this).setTitle("Atualização disponível")
                         .setMessage("Codex Harness ${release.str("versionName")}\n\n${release.str("notes")}")
-                        .setPositiveButton("Abrir download") { _, _ -> openLink("$BASE/android.html") }
+                        .setPositiveButton("Atualizar agora") { _, _ -> installUpdate(release) }
+                        .setNeutralButton("Página") { _, _ -> openLink("$BASE/android.html") }
                         .setNegativeButton("Depois", null).show()
                 }
             }

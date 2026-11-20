@@ -1,4 +1,11 @@
 plugins { id 'com.android.application' version '9.2.0' }
+
+// Release signing stays outside the project (never committed):
+// ~/.config/harness-android/signing.properties, or -PharnessSigning=<file>.
+def signingFile = file(project.findProperty('harnessSigning') ?: "${System.getProperty('user.home')}/.config/harness-android/signing.properties")
+def signing = new Properties()
+if (signingFile.exists()) signingFile.withInputStream { signing.load(it) }
+
 android {
     namespace 'br.com.nyxrooms.harness'
     compileSdk 36
@@ -6,7 +13,23 @@ android {
         applicationId 'br.com.nyxrooms.harness'
         minSdk 26
         targetSdk 34
-        versionCode 5
-        versionName '1.4'
+        versionCode 6
+        versionName '1.5'
+    }
+    signingConfigs {
+        if (signing.storeFile) {
+            release {
+                storeFile file(signing.storeFile)
+                storePassword signing.storePassword
+                keyAlias signing.keyAlias
+                keyPassword signing.keyPassword
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (signing.storeFile) signingConfig signingConfigs.release
+        }
     }
 }
