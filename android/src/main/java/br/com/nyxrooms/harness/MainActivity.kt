@@ -30,6 +30,7 @@ private val TOOL_TYPES = setOf("commandExecution", "fileChange", "webSearch", "m
 private const val PICK_IMAGES = 41
 private const val PICK_FILES = 42
 private const val ASK_MIC = 43
+private const val ASK_NOTIFY = 44
 private const val DICTATE_PHONE = 44
 
 private data class Attachment(val name: String, val mime: String, val data: String, val image: Boolean, val size: Long)
@@ -142,7 +143,12 @@ class MainActivity : Activity() {
             addView(ui.text("Conectando ao Nyxrooms…", 15f, C.TX2))
         })
         request({ api.call("/api/auth/status") }, onError = { login(it) }) {
-            if (it.optBoolean("authenticated")) shell(if (threadId.isNotEmpty()) TAB_CHAT else TAB_PROJECTS) else login()
+            if (it.optBoolean("authenticated")) {
+                val deep = intent?.getStringExtra("openThread").orEmpty()
+                if (deep.isNotEmpty()) { threadId = deep; threadTitle = titleCache(deep); intent?.removeExtra("openThread") }
+                shell(if (threadId.isNotEmpty()) TAB_CHAT else TAB_PROJECTS)
+                if (NotifyService.enabled(this)) runCatching { NotifyService.start(this) }
+            } else login()
         }
     }
 
@@ -167,7 +173,11 @@ class MainActivity : Activity() {
     }
     override fun onStop() { clock.removeCallbacks(poll); super.onStop() }
     override fun onDestroy() { voice.stopQuietly(); updater.release(); worker.shutdownNow(); super.onDestroy() }
-    override fun onPause() { if (voice.recording) finishRecording(send = false); super.onPause() }
+    override fun onPause() {
+        NotifyService.appVisible = false
+        if (voice.recording) finishRecording(send = false)
+        super.onPause()
+    }
 
     @Deprecated("Android back callback")
     override fun onBackPressed() {
@@ -208,7 +218,27 @@ class MainActivity : Activity() {
         return when { s < 60 -> "agora"; s < 3600 -> "há ${s / 60} min"; s < 86400 -> "há ${s / 3600} h"; else -> "há ${s / 86400} d" }
     }
     private fun saveSelection() = prefs.edit().putString("accountId", accountId).putString("model", model).putString("effort", effort).apply()
-    private fun saveThread() = prefs.edit().putString("threadId", threadId).putString("threadTitle", threadTitle).apply()
+    private fun saveThread() {
+        prefs.edit().putString("threadId", threadId).putString("threadTitle", threadTitle).apply()
+        if (threadId.isNotEmpty() && threadTitle.isNotBlank()) rememberTitles(mapOf(threadId to threadTitle))
+        NotifyService.visibleThread = if (tab == TAB_CHAT) threadId else ""
+    }
+    private fun titleCache(id: String) = runCatching { JSONObject(prefs.getString("titles", "{}") ?: "{}").optString(id) }.getOrDefault("").ifBlank { "Conversa" }
+    private fun rememberTitles(titles: Map<String, String>) {
+        val stored = runCatching { JSONObject(prefs.getString("titles", "{}") ?: "{}") }.getOrDefault(JSONObject())
+        titles.forEach { (k, v) -> stored.put(k, v.take(90)) }
+        val keys = stored.keys().asSequence().toList()
+        if (keys.size > 400) keys.take(keys.size - 400).forEach { stored.remove(it) }
+        prefs.edit().putString("titles", stored.toString()).apply()
+    }
+
+    override fun onResume() { super.onResume(); NotifyService.appVisible = true; NotifyService.visibleThread = if (tab == TAB_CHAT) threadId else "" }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val deep = intent.getStringExtra("openThread").orEmpty()
+        if (deep.isNotEmpty() && tab >= 0) openThread(deep, titleCache(deep))
+    }
     private fun loadAccounts(done: () -> Unit = {}) = request({ api.call("/api/accounts") }, onError = {}) {
         accounts = it.optJSONArray("accounts").objects(); rotation = it.optJSONObject("rotation") ?: JSONObject(); loadDefaultModels(); done()
     }
@@ -342,6 +372,7 @@ class MainActivity : Activity() {
 
     private fun show(target: Int) {
         epoch++; tab = target; historyPending = false; pollCount = 0
+        NotifyService.visibleThread = if (target == TAB_CHAT) threadId else ""
         content.removeAllViews()
         drawTabs()
         when (target) {
@@ -366,7 +397,26 @@ class MainActivity : Activity() {
 
     // ───────────────────────── Conversation tab ─────────────────────────
 
+    /** True while the reader is at the end: new content, images and the keyboard keep it pinned there. */
+    private var followLatest = true
+    private var unseenNew = false
+    private lateinit var jumpButton: TextView
+    private fun scrollToLatest(smooth: Boolean = false) {
+        if (!::scroll.isInitialized) return
+        followLatest = true; unseenNew = false; updateJump()
+        scroll.post { val y = (history.height - scroll.height).coerceAtLeast(0); if (smooth) scroll.smoothScrollTo(0, y) else scroll.scrollTo(0, y) }
+    }
+    private fun updateJump() {
+        if (!::jumpButton.isInitialized) return
+        val far = ::scroll.isInitialized && history.height - (scroll.scrollY + scroll.height) > dp(160)
+        jumpButton.visibility = if (far || unseenNew && !followLatest) View.VISIBLE else View.GONE
+        jumpButton.text = if (unseenNew && !followLatest) "↓  Novas mensagens" else "↓"
+        jumpButton.layoutParams = (jumpButton.layoutParams as FrameLayout.LayoutParams).apply { width = if (unseenNew && !followLatest) WRAP else dp(44) }
+        jumpButton.setPadding(if (unseenNew && !followLatest) dp(16) else 0, 0, if (unseenNew && !followLatest) dp(16) else 0, 0)
+    }
+
     private fun openThread(id: String, title: String, cwd: String = "", accountHint: String = "") {
+        followLatest = true; unseenNew = false
         threadId = id; threadTitle = title; threadCwd = cwd
         older = emptyList(); latest = emptyList(); queue = emptyList(); next = ""; rendered = ""; contextSnapshot = null; accessMode = ""; expanded.clear(); collapsed.clear()
         if (accountHint.isNotEmpty() && account(accountHint) != null) accountId = accountHint
@@ -409,13 +459,23 @@ class MainActivity : Activity() {
         scroll = ScrollView(this).apply { isFillViewport = true; addView(history) }
         val historyFrame = FrameLayout(this)
         historyFrame.addView(scroll, FrameLayout.LayoutParams(MATCH, MATCH))
-        val jump = ui.text("↓", 22f, C.TX, bold = true).apply {
-            gravity = Gravity.CENTER; contentDescription = "Ir para o fim da conversa"
-            background = ui.shape(C.CARD2, 22, 1, C.LINE2); visibility = View.GONE
-            setOnClickListener { scroll.smoothScrollTo(0, history.height) }
+        jumpButton = ui.text("↓", 18f, C.TX, bold = true).apply {
+            gravity = Gravity.CENTER; contentDescription = "Ir para as mensagens mais recentes"
+            background = ui.shape(C.CARD2, 22, 1, C.LINE2); visibility = View.GONE; elevation = dp(4).toFloat()
+            setOnClickListener { scrollToLatest(smooth = true) }
         }
-        historyFrame.addView(jump, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.END or Gravity.BOTTOM).apply { setMargins(0, 0, dp(16), dp(12)) })
-        scroll.setOnScrollChangeListener { _, _, y, _, _ -> jump.visibility = if (history.height - (y + scroll.height) > dp(160)) View.VISIBLE else View.GONE }
+        historyFrame.addView(jumpButton, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.END or Gravity.BOTTOM).apply { setMargins(0, 0, dp(16), dp(12)) })
+        var touching = false
+        scroll.setOnTouchListener { _, e -> touching = e.actionMasked == MotionEvent.ACTION_DOWN || e.actionMasked == MotionEvent.ACTION_MOVE; false }
+        scroll.setOnScrollChangeListener { _, _, y, _, _ ->
+            val nearEnd = history.height - (y + scroll.height) < dp(120)
+            if (nearEnd) { followLatest = true; unseenNew = false } else if (touching) followLatest = false
+            updateJump()
+        }
+        // Late layout changes (images loading, cards expanding, keyboard opening) keep the end in view.
+        val keepEnd = View.OnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom -> if (followLatest && (bottom - top) != (oldBottom - oldTop)) scroll.post { scroll.scrollTo(0, (history.height - scroll.height).coerceAtLeast(0)) } }
+        history.addOnLayoutChangeListener(keepEnd)
+        scroll.addOnLayoutChangeListener(keepEnd)
         root.addView(historyFrame, ui.lp(MATCH, 0, 1f))
 
         approvalBox = ui.column()
@@ -685,10 +745,14 @@ class MainActivity : Activity() {
         if (next.isNotEmpty()) history.addView(ui.action("Carregar mensagens anteriores") { readHistory(before = next) }, ui.lp(WRAP, dp(40), bottom = 10).apply { gravity = Gravity.CENTER_HORIZONTAL })
         turns.forEachIndexed { index, turn -> drawTurn(turn, index == turns.lastIndex) }
         if (turns.isEmpty()) history.addView(ui.text("Sem mensagens ainda.", 14f, C.TX3), ui.lp(top = 30))
+        if (!prepend && previousHeight > 0 && !atBottom) followLatest = followLatest && atBottom
         scroll.post {
-            if (prepend) scroll.scrollTo(0, previousY + history.height - previousHeight)
-            else if (atBottom || previousHeight == 0) scroll.fullScroll(View.FOCUS_DOWN)
-            else scroll.scrollTo(0, previousY)
+            when {
+                prepend -> scroll.scrollTo(0, previousY + history.height - previousHeight)
+                followLatest || previousHeight == 0 -> { followLatest = true; scroll.scrollTo(0, (history.height - scroll.height).coerceAtLeast(0)) }
+                else -> { scroll.scrollTo(0, previousY); if (history.height > previousHeight) unseenNew = true }
+            }
+            updateJump()
         }
     }
 
@@ -924,6 +988,7 @@ class MainActivity : Activity() {
             if (tab == TAB_CHAT && threadId == sendingThread) {
                 composer.isEnabled = true
                 if (composer.text.toString().trim() == text) composer.text.clear()
+            scrollToLatest()
             }
             attachments.removeAll(sending); if (tab == TAB_CHAT && threadId == sendingThread) drawAttachments()
             val created = it.str("threadId")
@@ -1197,6 +1262,11 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == ASK_NOTIFY) {
+            if (grantResults.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED) setNotifications(true)
+            else { prefs.edit().putBoolean("notifications", false).apply(); ui.toast("Sem permissão de notificações. Libere em Configurações › Apps › Codex Harness.") }
+            return
+        }
         if (requestCode == ASK_MIC) {
             if (grantResults.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED) startRecording()
             else ui.toast("Sem acesso ao microfone. Libere em Configurações › Apps › Codex Harness.")
@@ -1612,6 +1682,7 @@ class MainActivity : Activity() {
         request({ api.call("/api/threads?archived=$archived&search=${enc(query)}").optJSONArray("threads").objects() to api.call("/api/projects").optJSONArray("projects").objects() },
             onError = { list.removeAllViews(); list.addView(ui.text(it, 13.5f, C.RED)) }) { (threads, folders) ->
             projects = folders
+            rememberTitles(threads.associate { it.str("id") to (it.str("name").ifBlank { it.str("preview") }) }.filterValues { it.isNotBlank() })
             list.removeAllViews()
             if (threads.isEmpty() && folders.isEmpty()) list.addView(ui.text(if (query.isEmpty()) "Nenhuma conversa ainda." else "Nada encontrado para \"$query\".", 14f, C.TX3), ui.lp(top = 20))
             val used = mutableSetOf<String>()
@@ -1820,8 +1891,10 @@ class MainActivity : Activity() {
         root.addView(header("Visão geral", "Uso e ambiente", ui.iconButton(R.drawable.ic_refresh, "Atualizar") { show(TAB_OVERVIEW) }, ui.iconButton(R.drawable.ic_more, "Menu") { appMenu() }))
         val list = ui.column().apply { setPadding(dp(14), 0, dp(14), dp(20)) }
         root.addView(ScrollView(this).apply { addView(list) }, ui.lp(MATCH, 0, 1f))
-        val health = ui.action("Saúde da VPS  ›") { serverHealthSheet() }
-        root.addView(health, 1, ui.lp(MATCH, dp(46), start = 14, end = 14, bottom = 10))
+        val tools = ui.row()
+        tools.addView(ui.action("Saúde da VPS  ›") { serverHealthSheet() }, ui.lp(0, dp(46), 1f, end = 8))
+        tools.addView(ui.action("Terminal  ›") { terminalScreen() }, ui.lp(0, dp(46), 1f))
+        root.addView(tools, 1, ui.lp(MATCH, WRAP, start = 14, end = 14, bottom = 10))
         list.addView(ui.text("Carregando contas…", 13.5f, C.TX3))
         request({ api.call("/api/accounts") }, onError = { list.removeAllViews(); list.addView(ui.text(it, 13.5f, C.RED)) }) { data ->
             accounts = data.optJSONArray("accounts").objects(); rotation = data.optJSONObject("rotation") ?: JSONObject()
@@ -1859,10 +1932,9 @@ class MainActivity : Activity() {
             rules.addView(ruleRow("Troca antecipada", "Passa a vez antes de estourar o limite", rotation.optBoolean("proactiveHandoff", false), "proactiveHandoff"))
             list.addView(ui.text("Regras de troca", 14.5f, bold = true), ui.lp(top = 8, bottom = 8))
             list.addView(rules)
-            list.addView(ui.action("+ Conectar nova conta") {
-                AlertDialog.Builder(this).setTitle("Conectar nova conta").setMessage("O login de um provedor roda um terminal no servidor (Claude, Codex, Antigravity). Por enquanto esse fluxo fica no Web Harness.")
-                    .setPositiveButton("Abrir Web Harness") { _, _ -> openLink("$BASE/") }.setNegativeButton("Fechar", null).show()
-            }.apply { background = ui.shape(Color.TRANSPARENT, 14, 1, C.LINE2) }, ui.lp(MATCH, dp(46), top = 14))
+            val providers = data.optJSONArray("providers").objects()
+            list.addView(ui.action("+ Conectar nova conta") { connectAccountSheet(providers) }.apply { background = ui.shape(Color.TRANSPARENT, 14, 1, C.LINE2) }, ui.lp(MATCH, dp(46), top = 14))
+            list.addView(notificationsCard(), ui.lp(top = 14))
             list.addView(ui.text("Codex Harness ${versionName()} · Android", 11.5f, C.TX3).apply { gravity = Gravity.CENTER }, ui.lp(top = 16))
         }
     }
@@ -2047,6 +2119,7 @@ class MainActivity : Activity() {
             body.addView(ui.text("Vale para a conta inteira. Em execução sem tela, pedidos de aprovação são bloqueados e registrados nos erros da conversa.", 11.5f, C.TX3), ui.lp(bottom = 8))
         }
         val actions = ui.row()
+        body.addView(ui.action(if (acc.optBoolean("loggedIn")) "Reconectar conta  ›" else "Conectar conta  ›") { dialog.dismiss(); openConnect(acc.str("id")) }, ui.lp(MATCH, dp(44), top = 4, bottom = 4))
         actions.addView(ui.action("Verificar status") { request({ api.call("/api/accounts/${enc(acc.str("id"))}/check", JSONObject()) }) { dialog.dismiss(); show(TAB_OVERVIEW) } }, ui.lp(0, dp(44), 1f, end = 8))
         actions.addView(ui.action("Usar no chat", primary = true) { accountId = acc.str("id"); model = ""; effort = ""; saveSelection(); dialog.dismiss(); ui.toast("${acc.str("label")} responde as próximas mensagens.") }, ui.lp(0, dp(44), 1f))
         body.addView(actions, ui.lp(top = 8))
@@ -2058,6 +2131,263 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this).setTitle("Codex Harness ${versionName()}").setItems(arrayOf("Verificar atualizações", "Abrir Web Harness", "Sair da conta")) { _, i ->
             when (i) { 0 -> checkUpdate(manual = true); 1 -> openLink("$BASE/"); 2 -> logout() }
         }.show()
+    }
+
+    // ───────────────────────── Notifications ─────────────────────────
+
+    private fun notificationsCard(): View {
+        val card = ui.card(C.CARD, C.LINE, 16, 0)
+        val line = ui.row().apply { setPadding(dp(14), dp(12), dp(12), dp(12)) }
+        val texts = ui.column()
+        texts.addView(ui.text("Notificações", 13.5f))
+        texts.addView(ui.text("Avisa quando uma resposta termina, uma aprovação espera você ou uma execução contínua acaba. Mantém uma conexão leve com o servidor e um aviso discreto fixo.", 11.5f, C.TX3))
+        line.addView(texts, ui.lp(0, WRAP, 1f, end = 8))
+        line.addView(Switch(this).apply {
+            isChecked = NotifyService.enabled(this@MainActivity)
+            setOnCheckedChangeListener { _, on -> setNotifications(on) }
+        })
+        card.addView(line)
+        return card
+    }
+
+    private fun setNotifications(on: Boolean) {
+        prefs.edit().putBoolean("notifications", on).apply()
+        if (!on) { NotifyService.stop(this); ui.toast("Notificações desligadas."); return }
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), ASK_NOTIFY); return
+        }
+        runCatching { NotifyService.start(this) }.onSuccess { ui.toast("Notificações ligadas.") }.onFailure { ui.toast("Não consegui ligar: ${it.message}") }
+    }
+
+    // ───────────────────────── Server terminal ─────────────────────────
+
+    /** The Web Harness shell (30 min sessions on the VPS), with a key row for what the phone keyboard lacks. */
+    private fun terminalScreen() = fullscreen { frame, dialog ->
+        var sessionId = ""
+        var seq = -1
+        var polling = true
+        val column = ui.column()
+        val head = ui.row().apply { setPadding(dp(16), dp(12), dp(56), dp(8)) }
+        val titles = ui.column()
+        titles.addView(ui.text("Terminal do servidor", 15f, bold = true))
+        val status = ui.text("Conectando…", 11.5f, C.TX3)
+        titles.addView(status)
+        head.addView(titles, ui.lp(0, WRAP, 1f))
+        lateinit var startButton: TextView
+        column.addView(head)
+        val output = ui.text("", 12f, 0xffd5dae5.toInt(), mono = true).apply { setTextIsSelectable(true); setPadding(dp(12), dp(8), dp(12), dp(12)) }
+        val outScroll = ScrollView(this).apply { setBackgroundColor(0xff07080a.toInt()); addView(output) }
+        column.addView(outScroll, ui.lp(MATCH, 0, 1f))
+        fun send(data: String) {
+            if (sessionId.isEmpty()) return
+            val id = sessionId
+            worker.execute { runCatching { api.call("/api/server-terminal/${enc(id)}/input", obj("data" to data)) }.onFailure { runOnUiThread { ui.toast(it.message ?: "Falha ao enviar.") } } }
+        }
+        val keys = ui.row().apply { setPadding(dp(8), dp(6), dp(8), dp(4)) }
+        listOf("Ctrl+C" to "\u0003", "Tab" to "\t", "Esc" to "\u001b", "↑" to "\u001b[A", "↓" to "\u001b[B", "←" to "\u001b[D", "→" to "\u001b[C", "Ctrl+D" to "\u0004", "Ctrl+L" to "\u000c", "Ctrl+Z" to "\u001a", "|" to "|", "~" to "~", "/" to "/", "-" to "-").forEach { (label, data) ->
+            keys.addView(ui.text(label, 12.5f, C.TX).apply { background = ui.shape(C.CARD2, 9, 1, C.LINE2); setPadding(dp(11), dp(8), dp(11), dp(8)); setOnClickListener { send(data) } }, ui.lp(WRAP, WRAP, end = 6))
+        }
+        column.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(keys) })
+        val inputRow = ui.row().apply { setPadding(dp(8), dp(4), dp(8), dp(10)) }
+        val input = ui.field("Comando…").apply {
+            typeface = android.graphics.Typeface.MONOSPACE
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+            imeOptions = EditorInfo.IME_ACTION_SEND
+        }
+        fun submitLine() { val line = input.text.toString(); input.text.clear(); send(line + "\r") }
+        input.setOnEditorActionListener { _, _, _ -> submitLine(); true }
+        inputRow.addView(input, ui.lp(0, WRAP, 1f, end = 8))
+        inputRow.addView(ui.action("Enviar", primary = true) { submitLine() }, ui.lp(WRAP, dp(44)))
+        column.addView(inputRow)
+        frame.addView(column, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        fun render(session: JSONObject?) {
+            val running = session?.str("status") == "running"
+            sessionId = if (running) session!!.str("id") else sessionId
+            status.text = when {
+                session == null -> "Sem sessão aberta"
+                running -> "Ativa · ${session.str("cwd")} · encerra sozinha após 30 min"
+                else -> "Encerrada" + session.str("detail").takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+            }
+            startButton.text = if (running) "Encerrar" else "Nova sessão"
+            if (session != null && session.optInt("outputSeq") != seq) {
+                seq = session.optInt("outputSeq")
+                val nearEnd = output.height - (outScroll.scrollY + outScroll.height) < dp(80)
+                output.text = cleanTerminal(session.str("output").takeLast(60_000))
+                if (nearEnd || seq <= 1) outScroll.post { outScroll.fullScroll(View.FOCUS_DOWN) }
+            }
+        }
+        fun start() {
+            val charWidth = android.graphics.Paint().apply { typeface = android.graphics.Typeface.MONOSPACE; textSize = 12f * resources.displayMetrics.scaledDensity }.measureText("M")
+            val cols = ((resources.displayMetrics.widthPixels - dp(24)) / charWidth).toInt().coerceIn(40, 160)
+            status.text = "Abrindo sessão…"
+            worker.execute {
+                val r = runCatching { api.call("/api/server-terminal", obj("cols" to cols, "rows" to 30)).optJSONObject("session") }
+                runOnUiThread { r.onSuccess { seq = -1; render(it) }.onFailure { status.text = it.message ?: "Falha ao abrir." } }
+            }
+        }
+        startButton = ui.action("Nova sessão") {
+            if (startButton.text == "Encerrar" && sessionId.isNotEmpty()) {
+                val id = sessionId
+                worker.execute { val r = runCatching { api.call("/api/server-terminal/${enc(id)}", method = "DELETE").optJSONObject("session") }; runOnUiThread { r.onSuccess { render(it) } } }
+            } else start()
+        }
+        head.addView(startButton, ui.lp(WRAP, dp(38)))
+        val loop = object : Runnable {
+            override fun run() {
+                if (!polling) return
+                worker.execute {
+                    val r = runCatching { if (sessionId.isEmpty()) api.call("/api/server-terminal").optJSONObject("session") else api.call("/api/server-terminal/${enc(sessionId)}").optJSONObject("session") }
+                    runOnUiThread { if (polling) { r.onSuccess { render(it) }; clock.postDelayed(this, if (sessionId.isEmpty()) 2500 else 700) } }
+                }
+            }
+        }
+        dialog.setOnDismissListener { polling = false }
+        worker.execute {
+            val r = runCatching { api.call("/api/server-terminal").optJSONObject("session") }
+            runOnUiThread {
+                r.onSuccess { existing -> if (existing?.str("status") == "running") render(existing) else start() }.onFailure { status.text = it.message ?: "Falha ao conectar." }
+                clock.postDelayed(loop, 700)
+            }
+        }
+    }
+
+    // ───────────────────────── Connect accounts ─────────────────────────
+
+    private fun connectAccountSheet(providers: List<JSONObject>) = ui.sheet("Conectar nova conta") { body, dialog ->
+        body.addView(ui.text("Escolha o provedor. O login roda num terminal na VPS; o app mostra os links e códigos para você concluir pelo celular.", 12.5f, C.TX3), ui.lp(bottom = 12))
+        val names = mapOf("codex" to "Codex", "claude-code" to "Claude", "antigravity" to "Antigravity", "gemini-cli" to "Gemini")
+        val bases = mapOf("codex" to "codex", "claude-code" to "claude", "antigravity" to "google", "gemini-cli" to "gemini")
+        providers.forEach { provider ->
+            val pid = provider.str("id")
+            menuOption(body, names[pid] ?: provider.str("label"), provider.str("label")) {
+                val base = bases[pid] ?: pid
+                val id = (1..99).map { "$base-$it" }.firstOrNull { candidate -> accounts.none { it.str("id") == candidate } } ?: "$base-${System.currentTimeMillis() % 1000}"
+                val label = "${names[pid] ?: provider.str("label")} ${id.substringAfterLast('-')}"
+                request({ api.call("/api/accounts", obj("provider" to pid, "id" to id, "label" to label)) }) { data ->
+                    accounts = data.optJSONArray("accounts").objects()
+                    dialog.dismiss()
+                    openConnect(data.optJSONObject("account")?.str("id") ?: id)
+                }
+            }
+        }
+    }
+
+    /** Same flow as the web wizard: CLI check/install, choose a login flow, follow links/codes, type into the login terminal. */
+    private fun openConnect(accountId: String) = request({ api.call("/api/accounts/${enc(accountId)}/setup") }) { data ->
+        val setup = data.optJSONObject("setup") ?: JSONObject()
+        val label = account(accountId)?.str("label") ?: setup.str("providerLabel")
+        fullscreen { frame, dialog ->
+            var sessionId = ""
+            var polling = true
+            var flowId = setup.optJSONArray("flows").objects().firstOrNull()?.str("id").orEmpty()
+            val list = ui.column().apply { setPadding(dp(16), dp(14), dp(16), dp(30)) }
+            frame.addView(ScrollView(this).apply { addView(list) }, FrameLayout.LayoutParams(MATCH, MATCH))
+            list.addView(ui.text("Conectar · $label", 17f, bold = true).apply { setPadding(0, 0, dp(44), 0) })
+            val installed = setup.str("binPath").isNotBlank()
+            val cli = ui.row()
+            cli.addView(ui.statusPill(if (installed) "ok" else "warn", if (installed) "CLI instalada" else "CLI não encontrada"))
+            if (data.optBoolean("loggedIn")) cli.addView(ui.statusPill("ok", "Conectada"), ui.lp(WRAP, WRAP, start = 6))
+            list.addView(cli, ui.lp(top = 10))
+            list.addView(ui.text(listOf(setup.str("binPath").ifBlank { setup.str("bin") }, setup.str("version")).filter { it.isNotBlank() }.joinToString(" · "), 11.5f, C.TX3, mono = true), ui.lp(top = 4))
+            setup.str("notes").takeIf { it.isNotBlank() }?.let { list.addView(ui.text(it, 12.5f, C.TX2), ui.lp(top = 10)) }
+            val flows = setup.optJSONArray("flows").objects()
+            val steps = ui.column()
+            fun drawSteps() {
+                steps.removeAllViews()
+                flows.firstOrNull { it.str("id") == flowId }?.optJSONArray("steps").strings().forEachIndexed { i, step ->
+                    steps.addView(ui.text("${i + 1}. $step", 12.5f, C.TX2), ui.lp(bottom = 4))
+                }
+            }
+            if (flows.size > 1) {
+                list.addView(ui.caption("Forma de login"), ui.lp(top = 14, bottom = 8))
+                val box = ui.column()
+                fun drawFlows() { box.removeAllViews(); box.addView(ui.flow(flows.map { f -> ui.choice(f.str("label"), f.str("id") == flowId) { flowId = f.str("id"); drawFlows(); drawSteps() } })) }
+                drawFlows(); list.addView(box)
+            }
+            drawSteps(); list.addView(steps, ui.lp(top = 10))
+
+            // Login session panel
+            val panel = ui.card(C.PANEL, C.LINE, 14, 12).apply { visibility = View.GONE }
+            val sessionStatus = ui.text("", 13f, bold = true)
+            val hints = ui.column()
+            val out = ui.text("", 11.5f, 0xffd5dae5.toInt(), mono = true).apply { setTextIsSelectable(true) }
+            val outBox = ScrollView(this).apply { setBackgroundColor(0xff07080a.toInt()); setPadding(dp(8), dp(6), dp(8), dp(6)); addView(out) }
+            panel.addView(sessionStatus)
+            panel.addView(hints, ui.lp(top = 8))
+            panel.addView(outBox, ui.lp(MATCH, dp(220), top = 8))
+            val reply = ui.field("Cole o código ou responda ao terminal").apply { imeOptions = EditorInfo.IME_ACTION_SEND }
+            val replyRow = ui.row()
+            replyRow.addView(reply, ui.lp(0, WRAP, 1f, end = 8))
+            fun sendReply() {
+                val text = reply.text.toString(); if (sessionId.isEmpty()) return
+                reply.text.clear()
+                request({ api.call("/api/login-sessions/${enc(sessionId)}/input", obj("data" to text + "\r")) }) {}
+            }
+            reply.setOnEditorActionListener { _, _, _ -> sendReply(); true }
+            replyRow.addView(ui.action("Enviar", primary = true) { sendReply() }, ui.lp(WRAP, dp(44)))
+            panel.addView(replyRow, ui.lp(top = 8))
+            val keyRow = ui.row()
+            listOf("Enter" to "\r", "↑" to "\u001b[A", "↓" to "\u001b[B", "Esc" to "\u001b", "Ctrl+C" to "\u0003").forEach { (k, v) ->
+                keyRow.addView(ui.text(k, 12f, C.TX).apply { background = ui.shape(C.CARD2, 9, 1, C.LINE2); setPadding(dp(10), dp(7), dp(10), dp(7)); setOnClickListener { if (sessionId.isNotEmpty()) request({ api.call("/api/login-sessions/${enc(sessionId)}/input", obj("data" to v)) }) {} } }, ui.lp(WRAP, WRAP, end = 6))
+            }
+            panel.addView(HorizontalScrollView(this).apply { addView(keyRow) }, ui.lp(top = 6))
+            var shownHints = ""
+            fun renderSession(session: JSONObject) {
+                panel.visibility = View.VISIBLE
+                val st = session.str("status")
+                sessionStatus.text = when (st) { "running" -> "Conectando… siga os passos abaixo"; "success", "completed" -> "Conta conectada"; "failed" -> "Falhou"; "stopped", "cancelled" -> "Cancelado"; "closed" -> "Terminal encerrado"; else -> st } +
+                    session.str("detail").takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+                sessionStatus.setTextColor(when (st) { "running" -> C.LAV; "failed" -> C.RED; else -> C.GREEN })
+                val h = session.optJSONObject("hints")
+                val key = h?.toString().orEmpty()
+                if (key != shownHints) {
+                    shownHints = key; hints.removeAllViews()
+                    h?.optJSONArray("links").strings().forEach { link -> hints.addView(ui.action("Abrir link de login  ↗") { openLink(link) }, ui.lp(MATCH, dp(44), bottom = 6)); hints.addView(ui.text(link, 10.5f, C.TX3).apply { maxLines = 2 }, ui.lp(bottom = 8)) }
+                    h?.optJSONArray("codes").strings().forEach { code -> hints.addView(ui.text("Código: $code  · toque para copiar", 14f, C.TX, bold = true).apply { background = ui.shape(C.SELECT, 10, 1, C.SELECT_LINE); setPadding(dp(12), dp(10), dp(12), dp(10)); setOnClickListener { copyText(code) } }, ui.lp(bottom = 6)) }
+                }
+                val near = out.height - (outBox.scrollY + outBox.height) < dp(60)
+                out.text = cleanTerminal(session.str("output").takeLast(20_000))
+                if (near) outBox.post { outBox.fullScroll(View.FOCUS_DOWN) }
+                if (st != "running") { sessionId = ""; loadAccounts() }
+            }
+            val poll = object : Runnable {
+                override fun run() {
+                    if (!polling || sessionId.isEmpty()) { if (polling) clock.postDelayed(this, 1500); return }
+                    val id = sessionId
+                    worker.execute { val r = runCatching { api.call("/api/login-sessions/${enc(id)}").optJSONObject("session") }; runOnUiThread { if (polling) { r.getOrNull()?.let { renderSession(it) }; clock.postDelayed(this, 1000) } } }
+                }
+            }
+            fun begin(kind: String) {
+                val go = {
+                    request({
+                        if (kind == "login" && data.optBoolean("loggedIn")) api.call("/api/accounts/${enc(accountId)}/logout", JSONObject())
+                        api.call("/api/accounts/${enc(accountId)}/$kind", obj("flowId" to flowId)).optJSONObject("session")
+                    }) { session -> if (session != null) { sessionId = session.str("id"); renderSession(session) } }
+                }
+                if (kind == "login" && data.optBoolean("loggedIn")) AlertDialog.Builder(this).setTitle("Reconectar?").setMessage("Isso apaga o login atual de $label e inicia um novo.").setPositiveButton("Reconectar") { _, _ -> go() }.setNegativeButton("Cancelar", null).show()
+                else go()
+            }
+            if (!installed && setup.str("install").isNotBlank()) list.addView(ui.action("Instalar a CLI na VPS") { begin("install") }, ui.lp(MATCH, dp(46), top = 14))
+            if (installed && flows.isNotEmpty()) list.addView(ui.action(if (data.optBoolean("loggedIn")) "Reconectar" else "Iniciar conexão", primary = true) { begin("login") }, ui.lp(MATCH, dp(48), top = 14))
+            setup.optJSONObject("secret")?.let { secret ->
+                list.addView(ui.caption(secret.str("label")), ui.lp(top = 16, bottom = 6))
+                val value = ui.field(secret.str("placeholder")).apply { inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
+                list.addView(value)
+                list.addView(ui.action("Salvar chave") {
+                    val v = value.text.toString().trim(); if (v.isEmpty()) return@action
+                    request({ api.call("/api/accounts/${enc(accountId)}/secret", obj("value" to v)) }) { r -> value.text.clear(); accounts = r.optJSONArray("accounts").objects(); ui.toast("Chave salva.") }
+                }, ui.lp(MATCH, dp(44), top = 8))
+            }
+            list.addView(panel, ui.lp(top = 16))
+            list.addView(ui.text("O terminal de login fica no servidor. Se o provedor abrir uma página de autorização, conclua no navegador e volte aqui; o status atualiza sozinho.", 11.5f, C.TX3), ui.lp(top = 12))
+            dialog.setOnDismissListener {
+                polling = false
+                if (sessionId.isNotEmpty()) worker.execute { runCatching { api.call("/api/login-sessions/${enc(sessionId)}", method = "DELETE") } }
+                if (tab == TAB_OVERVIEW) show(TAB_OVERVIEW)
+            }
+            clock.postDelayed(poll, 1000)
+        }
     }
 
     // ───────────────────────── Updates ─────────────────────────

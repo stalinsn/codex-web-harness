@@ -48,6 +48,9 @@ class HarnessApi(context: Context) {
     }.getOrDefault("")
 
     /** Cookie string for the in-app WebView preview (same session, never logged). */
+    /** Cookie request header for the background event stream. */
+    fun cookieHeader() = if (cookie.isEmpty()) "" else "$COOKIE=$cookie"
+
     fun sessionCookie() = if (cookie.isEmpty()) "" else "$COOKIE=$cookie; Secure; Path=/codex-agent"
 
     fun clear() {

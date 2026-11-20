@@ -140,3 +140,28 @@ class ZoomImageView(context: Context, private val onTap: () -> Unit) : ImageView
 }
 
 fun View.fadeIn() { alpha = 0f; animate().alpha(1f).setDuration(160).start() }
+
+/**
+ * Terminal output as plain text: drops ANSI/OSC escape sequences, applies backspaces and
+ * carriage returns (a lone \r rewrites the current line, as progress bars do).
+ */
+fun cleanTerminal(raw: String): String {
+    val noEscapes = raw
+        .replace(Regex("\u001B\\][^\u0007\u001B]*(?:\u0007|\u001B\\\\)"), "")
+        .replace(Regex("\u001B\\[[0-?]*[ -/]*[@-~]"), "")
+        .replace(Regex("\u001B[()][A-Za-z0-9]"), "")
+        .replace(Regex("\u001B[=>78MDEHc]"), "")
+        .replace("\r\n", "\n")
+    val out = StringBuilder()
+    var lineStart = 0
+    for (ch in noEscapes) {
+        when (ch) {
+            '\n' -> { out.append('\n'); lineStart = out.length }
+            '\r' -> out.setLength(lineStart)
+            '\b' -> if (out.length > lineStart) out.setLength(out.length - 1)
+            '\u0007' -> {}
+            else -> if (ch >= ' ' || ch == '\t') out.append(ch)
+        }
+    }
+    return out.toString()
+}
