@@ -60,6 +60,8 @@ class HarnessApi(context: Context) {
         conn.instanceFollowRedirects = false
         conn.connectTimeout = 12000
         conn.readTimeout = 25000
+        // Every header must be set before the body is written (that opens the connection).
+        conn.setRequestProperty("Accept", if (path.startsWith("/api/local-files") || path.startsWith("/api/images")) "*/*" else "application/json")
         if (path.startsWith("/api/") && cookie.isNotEmpty()) conn.setRequestProperty("Cookie", "$COOKIE=$cookie")
         if (method != "GET") {
             conn.requestMethod = method
@@ -76,7 +78,6 @@ class HarnessApi(context: Context) {
     fun call(path: String, data: JSONObject? = null, method: String = if (data != null) "POST" else "GET"): JSONObject {
         val conn = open(path, method, data)
         try {
-            conn.setRequestProperty("Accept", "application/json")
             val status = conn.responseCode
             val raw = (if (status in 200..299) conn.inputStream else conn.errorStream)
                 ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
