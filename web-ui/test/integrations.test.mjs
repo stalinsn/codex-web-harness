@@ -409,7 +409,7 @@ test('Antigravity roda só dentro da gaiola: só login da conta, pasta vazia e p
 test('consumo velho não bloqueia a geração e pode ser relido sob demanda', async () => {
   const accounts = fakeAccounts([account('claude-a', 'claude-code')]);
   const state = accounts.registry.stateOf('claude-a');
-  Object.assign(state, { percent: 97, resetsAt: Math.floor(Date.now() / 1000) + 3600, percentAt: Date.now() - 10 * 60 * 1000 });
+  Object.assign(state, { percent: 97, usageWindow: 'five_hour', resetsAt: Math.floor(Date.now() / 1000) + 3600, percentAt: Date.now() - 10 * 60 * 1000 });
   assert.equal(accounts.availability(account('claude-a', 'claude-code')).ok, false, 'rodízio do chat segue bloqueando');
   const usage = { percent: 4, resetsAt: Math.floor(Date.now() / 1000) + 18000, windows: { five_hour: { percent: 4, resetsAt: Math.floor(Date.now() / 1000) + 18000, status: 'allowed' } } };
   const prompts = [];

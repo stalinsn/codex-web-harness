@@ -54,7 +54,6 @@ function usageMeter(account) {
       return `<div><small class="account-usage-note">${label} · ${Math.round(used)}% usado</small><div class="meter-track account-meter" aria-hidden="true"><div class="meter-fill ${tone}" style="width:${used}%"></div></div></div>`;
     }).join('');
   }
-  if (account.percent == null) return account.usageSource === 'reported' || account.usageSource === 'events' ? '' : '<small class="account-usage-note">uso não informado pela CLI</small>';
   if (account.percent == null) {
     if (account.usageSource === 'reported' || account.usageSource === 'events') return '';
     const reported = account.reportedUsage || {};

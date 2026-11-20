@@ -18,8 +18,8 @@ test('provider model catalogs normalize Codex and Antigravity JSON shapes', () =
     { id: 'gemini-pro', displayName: 'duplicate' },
   ] });
   assert.deepEqual(models, [
-    { id: 'gemini-pro', label: 'Gemini Pro', isDefault: true, efforts: ['high', 'low'], defaultEffort: '' },
-    { id: 'gemini-fast', label: 'Gemini Fast', isDefault: false, efforts: [], defaultEffort: '' },
+    { id: 'gemini-pro', label: 'Gemini Pro', isDefault: true, efforts: ['high', 'low'], defaultEffort: '', toolSupport: 'unknown' },
+    { id: 'gemini-fast', label: 'Gemini Fast', isDefault: false, efforts: [], defaultEffort: '', toolSupport: 'unknown' },
   ]);
   assert.deepEqual(normalizeEffortPayload({ result: { availableEfforts: ['low', { name: 'high' }] } }), ['low', 'high']);
   assert.deepEqual(normalizeEffortPayload({ response: 'Effort is adjustable. Available effort tiers: low, medium, high, xhigh.' }), ['low', 'medium', 'high', 'xhigh']);
@@ -28,10 +28,10 @@ test('provider model catalogs normalize Codex and Antigravity JSON shapes', () =
 test('Antigravity CLI tabular model output exposes model variants and their effort choices', () => {
   const models = parseTextModels(`Fetching available models...\ngemini-3.8-flash-high\tGemini 3.8 Flash (High)\ngemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\ngemini-3.8-flash-low\tGemini 3.8 Flash (Low)\nclaude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)`);
   assert.deepEqual(models, [
-    { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)', isDefault: false, efforts: ['low', 'medium', 'high'], defaultEffort: 'high' },
-    { id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)', isDefault: false, efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
-    { id: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)', isDefault: false, efforts: ['low', 'medium', 'high'], defaultEffort: 'low' },
-    { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Thinking)', isDefault: false, efforts: [], defaultEffort: '' },
+    { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)', isDefault: false, efforts: ['low', 'medium', 'high'], defaultEffort: 'high', toolSupport: 'unknown' },
+    { id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)', isDefault: false, efforts: ['low', 'medium', 'high'], defaultEffort: 'medium', toolSupport: 'unknown' },
+    { id: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)', isDefault: false, efforts: ['low', 'medium', 'high'], defaultEffort: 'low', toolSupport: 'unknown' },
+    { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Thinking)', isDefault: false, efforts: [], defaultEffort: '', toolSupport: 'unknown' },
   ]);
 });
 
@@ -41,7 +41,7 @@ test('claude stream-json: session, text, tools, limit and result', () => {
   const assistant = parse(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'oi' }, { type: 'tool_use', name: 'Bash', input: { command: 'ls' } }] } }));
   assert.deepEqual(assistant.map((event) => event.type), ['text', 'tool']);
   assert.equal(parse('{"type":"rate_limit_event","rate_limit_info":{"status":"rate_limited","resetsAt":1800000000}}')[0].resetsAt, 1800000000);
-  assert.equal(parse('{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","utilization":0.91}}')[0].percent, 91);
+  assert.equal(parse('{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"five_hour","utilization":0.91}}')[0].percent, 91);
   const result = parse('{"type":"result","subtype":"success","is_error":true,"result":"Claude AI usage limit reached|1800000000"}');
   assert.equal(result[0].type, 'rate-limit');
   assert.equal(result[0].message, 'Claude AI usage limit reached');

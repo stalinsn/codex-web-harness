@@ -38,12 +38,6 @@ function diagnosticText(value) {
   return String(value);
 }
 
-function percentOf(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return null;
-  return number <= 1 ? Math.round(number * 1000) / 10 : Math.round(number * 10) / 10;
-}
-
 const resultText = (content) => (typeof content === 'string' ? content : Array.isArray(content) ? content.map((part) => (typeof part === 'string' ? part : part?.text || '')).join('\n') : '');
 
 function claudeParser() {

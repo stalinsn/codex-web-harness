@@ -1984,3 +1984,23 @@ input[type="radio"]:disabled { opacity: .5; cursor: not-allowed; }
   .image-preview-dialog { box-shadow: none; }
   .image-preview-dialog::backdrop { backdrop-filter: none; }
 }
+
+/* Inline previews of project files (images and sandboxed HTML). */
+.message-content .local-image { display: inline-flex; flex-direction: column; gap: 6px; max-width: 100%; margin: 6px 8px 6px 0; vertical-align: top; white-space: normal; }
+.local-image-button { display: block; max-width: 100%; padding: 0; overflow: hidden; border: 1px solid #34353a; border-radius: 10px; background: #101113; cursor: zoom-in; }
+.local-image-button:hover { border-color: #5a6390; }
+.local-image-button:focus-visible { outline: 2px solid #a9b4ff; outline-offset: 2px; }
+.local-image-button img { display: block; max-width: min(100%, 520px); max-height: 420px; object-fit: contain; }
+.local-image-caption { color: var(--muted); font-size: 12px; }
+.message-content .local-preview-card { display: block; max-width: 100%; margin: 12px 0; overflow: hidden; border: 1px solid #34353a; border-radius: 11px; background: #15161a; white-space: normal; }
+.local-preview-card.is-open { border-color: #46507e; }
+.local-preview-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
+.local-preview-head > svg { width: 20px; height: 20px; flex: none; fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.local-preview-title { display: flex; flex: 1; min-width: 0; flex-direction: column; }
+.local-preview-title strong { overflow: hidden; color: var(--text); font-size: 13.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.local-preview-title span { overflow: hidden; color: var(--muted-soft); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.local-preview-toggle, .message-content a.local-preview-open { flex: none; padding: 6px 11px; color: #dfe3ff; font: inherit; font-size: 12px; text-decoration: none; border: 1px solid #3b3f52; border-radius: 8px; background: #20222b; cursor: pointer; }
+.local-preview-toggle:hover, .message-content a.local-preview-open:hover { border-color: #636b8a; background: #2a2d39; }
+.local-preview-card.is-open .local-preview-toggle { color: #151735; border-color: var(--accent); background: var(--accent); }
+.local-preview-frame { display: block; width: 100%; height: min(78dvh, 900px); border: 0; border-top: 1px solid #2c2d32; background: #07080a; resize: vertical; }
+@media (max-width: 640px) { .local-preview-title span { display: none; } .local-preview-frame { height: 72dvh; } }

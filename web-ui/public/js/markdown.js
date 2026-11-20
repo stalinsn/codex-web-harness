@@ -15,11 +15,32 @@ function localFilePath(destination) {
   return destination.startsWith('/home/') ? destination : '';
 }
 
+const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg)$/i;
+const HTML_FILE = /\.html?$/i;
+const previewIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01"/></svg>';
+
+function localFileHref(path, preview = false) {
+  return `${PREFIX}/api/local-files?path=${encodeURIComponent(path)}${preview ? '&preview=1' : ''}`;
+}
+
 function localFileAnchor(label, destination) {
   const path = localFilePath(destination);
   if (!path) return '';
-  const href = `${PREFIX}/api/local-files?path=${encodeURIComponent(path)}`;
+  if (HTML_FILE.test(path)) {
+    const href = escapeHtml(localFileHref(path, true));
+    const name = escapeHtml(path.split('/').pop());
+    return `<span class="local-preview-card" data-local-preview="${href}"><span class="local-preview-head">${previewIcon}<span class="local-preview-title"><strong>${escapeHtml(label)}</strong><span>${name}</span></span><button type="button" class="local-preview-toggle" data-toggle-preview aria-expanded="false">Mostrar prévia</button><a class="local-preview-open" href="${href}" target="_blank" rel="noopener noreferrer" title="Abrir em nova aba">Abrir ↗</a></span></span>`;
+  }
+  const href = localFileHref(path, IMAGE_FILE.test(path));
   return `<a class="local-file-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" title="Abrir arquivo do projeto">${escapeHtml(label)}</a>`;
+}
+
+function localImage(alt, destination) {
+  const path = localFilePath(destination);
+  if (!path || !IMAGE_FILE.test(path)) return '';
+  const src = escapeHtml(localFileHref(path, true));
+  const caption = escapeHtml(alt || path.split('/').pop());
+  return `<span class="local-image"><button type="button" class="local-image-button" data-preview-image="${src}" data-caption="${caption}" title="Ampliar imagem"><img src="${src}" alt="${caption}" loading="lazy"></button>${alt ? `<span class="local-image-caption">${caption}</span>` : ''}</span>`;
 }
 
 export function markdown(text) {
@@ -36,7 +57,15 @@ export function markdown(text) {
     const index = localLinks.push(html) - 1;
     return `\u0001local-file-${index}\u0001`;
   };
+  const stashLocalImage = (_, alt, destination) => {
+    const html = localImage(alt, destination);
+    if (!html) return _;
+    const index = localLinks.push(html) - 1;
+    return `\u0001local-file-${index}\u0001`;
+  };
   source = source
+    .replace(/!\[([^\]]*)\]\(\s*<((?:file:\/\/\/|\/home\/)[^>\n]+)>\s*\)/g, stashLocalImage)
+    .replace(/!\[([^\]]*)\]\(\s*(file:\/\/\/[^\s)]+|\/home\/[^\s)]+)\s*\)/g, stashLocalImage)
     .replace(/\[([^\]]+)\]\(\s*<((?:file:\/\/\/|\/home\/)[^>\n]+)>\s*\)/g, stashLocalLink)
     .replace(/\[([^\]]+)\]\(\s*(file:\/\/\/[^\s)]+|\/home\/[^\s)]+)\s*\)/g, stashLocalLink);
   const safe = escapeHtml(source);

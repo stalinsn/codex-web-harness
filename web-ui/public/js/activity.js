@@ -11,7 +11,7 @@ function formatActivityOutput(value) {
     try {
       const parsed = JSON.parse(value);
       if (parsed && typeof parsed === 'object') return JSON.stringify(parsed, null, 2);
-    } catch {}
+    } catch { /* Not JSON: show the raw string. */ }
     return value;
   }
   if (value == null) return '';

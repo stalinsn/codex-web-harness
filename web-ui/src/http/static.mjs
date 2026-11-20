@@ -17,6 +17,7 @@ const brotli = promisify(brotliCompress);
 const gzipAsync = promisify(gzip);
 
 export const MIME_TYPES = {
+  '.apk': 'application/vnd.android.package-archive',
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -109,6 +110,7 @@ export class StaticAssets {
     const pinned = !asset.html && !asset.worker && url.searchParams.get('v') === asset.hash;
     const headers = {
       'Content-Type': asset.type,
+      ...(path.endsWith('.apk') ? { 'Content-Disposition': 'attachment' } : {}),
       'Cache-Control': pinned && !this.dev ? IMMUTABLE : 'no-cache',
       'ETag': etag,
       'X-Content-Type-Options': 'nosniff',
