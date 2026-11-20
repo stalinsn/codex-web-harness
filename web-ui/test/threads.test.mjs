@@ -144,3 +144,29 @@ test('a turn started from the queue keeps the time the message was sent', async 
   assert.ok(queued.startedAt - queued.queuedAt >= 120);
   assert.equal('queuedAt' in direct, false);
 });
+
+
+test('local context usage follows the active account and session without using stale accounts', async () => {
+  const { localContextUsage } = await import('../src/routes/local-threads.mjs');
+  const snapshot = { tokenUsage: { last: { totalTokens: 200 }, modelContextWindow: 1000 } };
+  const accounts = { codex: { id: 'codex', primary: true, provider: 'codex' }, claude: { id: 'claude', provider: 'claude-code' } };
+  const chat = { running: new Map(), accounts: { registry: { get: (id) => accounts[id] }, primaryCodex: { codexHome: '/codex' }, codexServers: new Map([['/codex', { threadContextUsage: new Map([['session', snapshot]]) }]]) } };
+  const record = { lastAccountId: 'codex', sessions: { codex: 'session' } };
+  assert.equal(localContextUsage(record, chat, 'ext'), snapshot);
+  chat.running.set('ext', { accountId: 'claude', sessionId: '' });
+  assert.equal(localContextUsage(record, chat, 'ext'), null);
+  chat.running.set('ext', { accountId: 'codex', sessionId: 'other' });
+  assert.equal(localContextUsage(record, chat, 'ext'), null);
+  chat.running.set('ext', { accountId: 'codex', sessionId: 'session' });
+  assert.equal(localContextUsage(record, chat, 'ext'), snapshot);
+});
+
+test('a recorded turn keeps the model the provider reported', async () => {
+  const store = await new LocalThreadStore({ dir: await mkdtemp(join(tmpdir(), 'harness-threads-')) }).load();
+  const record = await store.create({ cwd: '/tmp', accountId: 'claude-1', provider: 'claude-code' });
+  const recorder = new TurnRecorder({ store, threadId: record.thread.id, emit() {} });
+  await recorder.start({ text: 'Olá' });
+  await recorder.setModel('claude-opus-5-5');
+  await recorder.finish({ status: 'completed', finalText: 'ok' });
+  assert.equal((await store.get(record.thread.id)).turns[0].model, 'claude-opus-5-5');
+});

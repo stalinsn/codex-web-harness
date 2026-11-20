@@ -30,6 +30,7 @@ private val TOOL_TYPES = setOf("commandExecution", "fileChange", "webSearch", "m
 private const val PICK_IMAGES = 41
 private const val PICK_FILES = 42
 private const val ASK_MIC = 43
+private const val DICTATE_PHONE = 44
 
 private data class Attachment(val name: String, val mime: String, val data: String, val image: Boolean, val size: Long)
 
@@ -53,6 +54,9 @@ class MainActivity : Activity() {
     private var threadTitle = ""
     private var threadCwd = ""
     private var newCwd = ""
+    private var newDraftId = java.util.UUID.randomUUID().toString()
+    private var dictationThread = ""
+    private var dictationDraft = ""
     private var accountId = "codex"
     private var model = ""
     private var effort = ""
@@ -75,7 +79,14 @@ class MainActivity : Activity() {
     private lateinit var liveDot: View
     private lateinit var stopButton: TextView
     private lateinit var queueBox: LinearLayout
+    private lateinit var approvalBox: LinearLayout
+    private lateinit var contextBox: LinearLayout
+    private var contextSnapshot: JSONObject? = null
+    private var accessMode = ""
+    private var contextPending = false
+    private var approvalsPending = false
     private lateinit var settingsChip: TextView
+    private lateinit var steerButton: TextView
     private lateinit var composerHint: TextView
     private lateinit var composerRow: LinearLayout
     private lateinit var recordingBar: LinearLayout
@@ -83,6 +94,8 @@ class MainActivity : Activity() {
     private lateinit var recordingTime: TextView
     private lateinit var attachmentStrip: LinearLayout
     private val attachments = mutableListOf<Attachment>()
+    private var transcribingThread: String? = null
+    private var sendingMessage = false
     private val voice by lazy { VoiceRecorder(this) }
     private val updater by lazy { Updater(this) { runOnUiThread { ui.toast(it) } } }
     private val meter = object : Runnable {
@@ -93,7 +106,7 @@ class MainActivity : Activity() {
             recordingLevel.text = bars
             val elapsed = System.currentTimeMillis() - voice.startedAt
             recordingTime.text = "%d:%02d".format(elapsed / 60000, (elapsed / 1000) % 60)
-            if (elapsed >= 180_000) finishRecording(send = true) else clock.postDelayed(this, 120)
+            if (elapsed >= 180_000) finishRecording(send = prefs.getBoolean("voiceAutoSend", false)) else clock.postDelayed(this, 120)
         }
     }
 
@@ -105,7 +118,7 @@ class MainActivity : Activity() {
     private val poll = object : Runnable {
         override fun run() {
             when (tab) {
-                TAB_CHAT -> if (threadId.isNotEmpty()) { readHistory(silent = true); pollCount++; if (isLocal() || running() || queue.isNotEmpty() || pollCount % 4 == 0) readQueue() }
+                TAB_CHAT -> if (threadId.isNotEmpty()) { readHistory(silent = true); pollCount++; if (isLocal() || running() || queue.isNotEmpty() || pollCount % 4 == 0) readQueue(); if (pollCount % 4 == 0) readContext(); if (!isLocal() && running() && pollCount % 2 == 0) readApprovals() }
                 TAB_TASKS -> if (pollCount++ % 3 == 0) tasksTab(refreshOnly = true)
             }
             clock.postDelayed(this, 2500)
@@ -138,6 +151,20 @@ class MainActivity : Activity() {
         clock.post(poll)
         if (!updateChecked) { updateChecked = true; checkUpdate(manual = false) }
     }
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        val active = tab == TAB_CHAT && ::scroll.isInitialized && ::history.isInitialized
+        val oldY = if (active) scroll.scrollY else 0
+        val wasBottom = active && history.height - (oldY + scroll.height) < dp(120)
+        val anchor = if (active) (0 until history.childCount).map { history.getChildAt(it) }.lastOrNull { it.top <= oldY } else null
+        val offset = if (anchor != null) oldY - anchor.top else 0
+        super.onConfigurationChanged(newConfig)
+        if (active) scroll.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
+            override fun onGlobalLayout() {
+                if (scroll.viewTreeObserver.isAlive) scroll.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                if (wasBottom) scroll.fullScroll(View.FOCUS_DOWN) else scroll.scrollTo(0, (anchor?.top ?: oldY) + offset)
+            }
+        })
+    }
     override fun onStop() { clock.removeCallbacks(poll); super.onStop() }
     override fun onDestroy() { voice.stopQuietly(); updater.release(); worker.shutdownNow(); super.onDestroy() }
     override fun onPause() { if (voice.recording) finishRecording(send = false); super.onPause() }
@@ -147,12 +174,12 @@ class MainActivity : Activity() {
         if (tab == TAB_PROJECTS || tab < 0) super.onBackPressed() else show(TAB_PROJECTS)
     }
 
-    private fun <T> request(work: () -> T, onError: (String) -> Unit = { ui.toast(it) }, done: (T) -> Unit) {
+    private fun <T> request(work: () -> T, onError: (String) -> Unit = { ui.toast(it) }, scoped: Boolean = true, done: (T) -> Unit) {
         val token = epoch
         worker.execute {
             val result = runCatching(work)
             runOnUiThread {
-                if (token != epoch || isFinishing || isDestroyed) return@runOnUiThread
+                if ((scoped && token != epoch) || isFinishing || isDestroyed) return@runOnUiThread
                 result.fold(done) { error ->
                     if (error is SessionExpired) login(error.message.orEmpty())
                     else onError(error.message ?: "Falha de conexão.")
@@ -162,11 +189,16 @@ class MainActivity : Activity() {
     }
 
     private fun dp(n: Int) = ui.dp(n)
+    private fun draftKey(id: String = threadId) = if (id.isEmpty()) "draft:new:$newDraftId" else "draft:$id"
     private fun isLocal() = threadId.startsWith("ext-")
     private fun allTurns() = (older + latest).distinctBy { it.str("id") }
     private fun running() = allTurns().lastOrNull()?.str("status") == "inProgress"
     private fun account(id: String = accountId) = accounts.firstOrNull { it.str("id") == id }
-    private fun clockTime(seconds: Double) = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date((seconds * 1000).toLong()))
+    private fun timestamp(seconds: Double, pattern: String): String = SimpleDateFormat(pattern, Locale("pt", "BR")).apply {
+        timeZone = TimeZone.getTimeZone("America/Sao_Paulo")
+    }.format(Date((seconds * 1000).toLong()))
+    private fun clockTime(seconds: Double) = timestamp(seconds, "HH:mm")
+    private fun messageTime(seconds: Double) = timestamp(seconds, "dd/MM/yyyy · HH:mm")
     private fun duration(ms: Long): String {
         val s = (ms / 1000).coerceAtLeast(0)
         return when { s < 60 -> "$s s"; s < 3600 -> "${s / 60} min ${s % 60} s"; else -> "${s / 3600} h ${(s % 3600) / 60} min" }
@@ -178,7 +210,43 @@ class MainActivity : Activity() {
     private fun saveSelection() = prefs.edit().putString("accountId", accountId).putString("model", model).putString("effort", effort).apply()
     private fun saveThread() = prefs.edit().putString("threadId", threadId).putString("threadTitle", threadTitle).apply()
     private fun loadAccounts(done: () -> Unit = {}) = request({ api.call("/api/accounts") }, onError = {}) {
-        accounts = it.optJSONArray("accounts").objects(); rotation = it.optJSONObject("rotation") ?: JSONObject(); done()
+        accounts = it.optJSONArray("accounts").objects(); rotation = it.optJSONObject("rotation") ?: JSONObject(); loadDefaultModels(); done()
+    }
+
+    // Model actually in use: explicit choice › account setting › model the provider reported in this
+    // conversation › default flagged by the account's catalog. Never just "padrão" when it can be known.
+    private val defaultModels = mutableMapOf<String, String>()
+    private fun loadDefaultModels() {
+        for (acc in accounts.filter { it.optBoolean("enabled") && it.str("model").isBlank() && it.str("id") !in defaultModels }) {
+            val id = acc.str("id")
+            defaultModels[id] = ""
+            worker.execute {
+                val found = runCatching { api.call("/api/accounts/${enc(id)}/models").optJSONArray("models").objects().firstOrNull { it.optBoolean("isDefault") }?.let { it.str("label").ifBlank { it.str("id") } } }.getOrNull().orEmpty()
+                runOnUiThread { if (found.isNotEmpty()) { defaultModels[id] = found; updateLive() } }
+            }
+        }
+    }
+    private fun prettyModel(id: String): String {
+        Regex("^claude-(opus|sonnet|haiku|fable)-(\\d+)(?:-(\\d+))?", RegexOption.IGNORE_CASE).find(id)?.let { m ->
+            return m.groupValues[1].replaceFirstChar { it.uppercase() } + " " + m.groupValues[2] + (if (m.groupValues[3].isNotEmpty()) ".${m.groupValues[3]}" else "")
+        }
+        return mapOf("opus" to "Opus", "sonnet" to "Sonnet", "haiku" to "Haiku", "fable" to "Fable", "best" to "Best")[id.lowercase()] ?: id
+    }
+    private fun resolvedModelFor(id: String): String {
+        val acc = account(id)
+        val configured = acc?.str("model").orEmpty()
+        if (configured.isNotEmpty()) return prettyModel(configured)
+        return reportedModel(id).ifEmpty { defaultModels[id].orEmpty() }.let { if (it.isNotEmpty()) prettyModel(it) else "CLI" }
+    }
+    private fun reportedModel(accountId: String) = allTurns().lastOrNull { it.optJSONObject("account")?.str("id") == accountId && it.str("model").isNotBlank() }?.str("model").orEmpty()
+    /** Pair(model name, true when it is the account default rather than a choice). */
+    private fun resolvedModel(acc: JSONObject?): Pair<String, Boolean> {
+        if (model.isNotEmpty()) return prettyModel(model) to false
+        val configured = acc?.str("model").orEmpty()
+        if (configured.isNotEmpty()) return prettyModel(configured) to false
+        val id = acc?.str("id") ?: accountId
+        val reported = reportedModel(id).ifEmpty { defaultModels[id].orEmpty() }
+        return (if (reported.isNotEmpty()) prettyModel(reported) else "padrão da CLI") to true
     }
 
     // ───────────────────────── Login ─────────────────────────
@@ -300,20 +368,21 @@ class MainActivity : Activity() {
 
     private fun openThread(id: String, title: String, cwd: String = "", accountHint: String = "") {
         threadId = id; threadTitle = title; threadCwd = cwd
-        older = emptyList(); latest = emptyList(); queue = emptyList(); next = ""; rendered = ""; expanded.clear(); collapsed.clear()
+        older = emptyList(); latest = emptyList(); queue = emptyList(); next = ""; rendered = ""; contextSnapshot = null; accessMode = ""; expanded.clear(); collapsed.clear()
         if (accountHint.isNotEmpty() && account(accountHint) != null) accountId = accountHint
         saveThread()
         show(TAB_CHAT)
     }
 
     private fun chatTab() {
+        rendered = ""
         val root = page()
         if (threadId.isEmpty() && newCwd.isEmpty() && threadTitle != "Nova conversa") { chatEmpty(root); return }
         val bar = ui.row().apply { setPadding(dp(12), dp(10), dp(12), dp(10)) }
         bar.addView(ui.iconButton(R.drawable.ic_back, "Projetos") { show(TAB_PROJECTS) })
         val titles = ui.column().apply { setPadding(dp(10), 0, dp(6), 0) }
         val projectName = projectFor(threadCwd.ifEmpty { newCwd })
-        titles.addView(ui.text("Codex › ${projectName.ifEmpty { "Sem projeto" }}", 11f, C.TX3).apply { maxLines = 1 })
+        titles.addView(ui.text("Codex › ${projectName.ifEmpty { "Sem projeto" }}", 11f, C.TX3).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
         titles.addView(ui.text(threadTitle.ifBlank { "Nova conversa" }, 15.5f, bold = true).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }, ui.lp(top = 1))
         bar.addView(titles, ui.lp(0, WRAP, 1f))
         bar.addView(ui.iconButton(R.drawable.ic_more, "Opções da conversa") { threadMenu() })
@@ -332,11 +401,25 @@ class MainActivity : Activity() {
         }
         live.addView(stopButton)
         root.addView(live, ui.lp(start = 12, end = 12, top = 10))
+        contextBox = ui.column()
+        root.addView(contextBox, ui.lp(start = 12, end = 12, top = 6))
+        drawContext()
 
         history = ui.column().apply { setPadding(dp(14), dp(10), dp(14), dp(16)) }
         scroll = ScrollView(this).apply { isFillViewport = true; addView(history) }
-        root.addView(scroll, ui.lp(MATCH, 0, 1f))
+        val historyFrame = FrameLayout(this)
+        historyFrame.addView(scroll, FrameLayout.LayoutParams(MATCH, MATCH))
+        val jump = ui.text("↓", 22f, C.TX, bold = true).apply {
+            gravity = Gravity.CENTER; contentDescription = "Ir para o fim da conversa"
+            background = ui.shape(C.CARD2, 22, 1, C.LINE2); visibility = View.GONE
+            setOnClickListener { scroll.smoothScrollTo(0, history.height) }
+        }
+        historyFrame.addView(jump, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.END or Gravity.BOTTOM).apply { setMargins(0, 0, dp(16), dp(12)) })
+        scroll.setOnScrollChangeListener { _, _, y, _, _ -> jump.visibility = if (history.height - (y + scroll.height) > dp(160)) View.VISIBLE else View.GONE }
+        root.addView(historyFrame, ui.lp(MATCH, 0, 1f))
 
+        approvalBox = ui.column()
+        root.addView(approvalBox, ui.lp(start = 10, end = 10))
         queueBox = ui.column()
         root.addView(queueBox, ui.lp(start = 10, end = 10))
 
@@ -348,17 +431,13 @@ class MainActivity : Activity() {
             hint = "Mensagem para o Codex…"; setHintTextColor(C.TX3); setTextColor(C.TX); textSize = 15f; background = null
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
             maxLines = 6; setPadding(dp(4), dp(6), dp(4), dp(6))
-            setText(prefs.getString("draft:$threadId", ""))
+            setText(prefs.getString(draftKey(), ""))
         }
         attachmentStrip = ui.row()
         box.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(attachmentStrip) }, ui.lp(bottom = 2))
         box.addView(composer, ui.lp())
         recordingBar = ui.row().apply { visibility = View.GONE; setPadding(dp(2), dp(4), dp(2), dp(4)) }
-        recordingBar.addView(ui.text("■", 14f, Color.WHITE, bold = true).apply {
-            gravity = Gravity.CENTER; contentDescription = "Parar e transcrever"
-            background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(C.RED) }
-            setOnClickListener { finishRecording(send = prefs.getBoolean("voiceAutoSend", false)) }
-        }, ui.lp(dp(40), dp(40), end = 10))
+        recordingBar.addView(ui.action("■ Parar e transcrever", primary = true) { finishRecording(send = prefs.getBoolean("voiceAutoSend", false)) }.apply { contentDescription = "Parar gravação e transcrever" }, ui.lp(WRAP, dp(48), end = 8))
         recordingLevel = ui.text("", 12f, C.LAV).apply { maxLines = 1 }
         recordingBar.addView(recordingLevel, ui.lp(0, WRAP, 1f))
         recordingTime = ui.text("0:00", 12.5f, C.TX2, mono = true)
@@ -381,8 +460,9 @@ class MainActivity : Activity() {
             background = ui.shape(C.CARD2, 12, 1, C.LINE2); setPadding(dp(12), dp(9), dp(12), dp(9)); visibility = View.GONE
             setOnClickListener { steer() }
         }
+        steerButton = steer
         tools.addView(steer, ui.lp(WRAP, WRAP, end = 8))
-        tools.addView(ui.iconButton(R.drawable.ic_mic, "Gravar áudio", C.TX2, bordered = false) { startRecording() }, ui.lp(dp(40), dp(40), end = 4))
+        tools.addView(ui.iconButton(R.drawable.ic_mic, "Ditado e gravação", C.TX2, bordered = false) { voiceMenu() }, ui.lp(dp(40), dp(40), end = 4))
         tools.addView(ImageButton(this).apply {
             setImageResource(R.drawable.ic_send); setColorFilter(C.LAV_DARK); contentDescription = "Enviar"
             background = ui.shape(C.LAV, 13); setOnClickListener { submit() }
@@ -391,15 +471,15 @@ class MainActivity : Activity() {
         root.addView(box, ui.lp(start = 10, end = 10, top = 6, bottom = 8))
         composer.addTextChangedListener(object : android.text.TextWatcher {
             override fun afterTextChanged(s: android.text.Editable?) {
-                prefs.edit().putString("draft:$threadId", s?.toString() ?: "").apply()
-                steer.visibility = if (running() && !s.isNullOrBlank() && account(currentAnswerer())?.str("provider") == "codex") View.VISIBLE else View.GONE
+                prefs.edit().putString(draftKey(), s?.toString() ?: "").apply()
+                steer.visibility = if (running() && !s.isNullOrBlank() && (account(currentAnswerer())?.str("provider") == "codex" || currentAnswerer() == "codex")) View.VISIBLE else View.GONE
             }
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
         })
         updateLive()
         drawAttachments()
-        if (threadId.isNotEmpty()) { readHistory(); readQueue() }
+        if (threadId.isNotEmpty()) { readHistory(); readQueue(); readContext(); if (!isLocal()) readApprovals() }
         else history.addView(ui.text("Nova conversa em ${projectName.ifEmpty { "Geral" }}. A conversa também aparece no Web Harness.", 14f, C.TX3).apply { gravity = Gravity.CENTER }, ui.lp(top = 40))
     }
 
@@ -419,7 +499,8 @@ class MainActivity : Activity() {
     private fun modelLabel(acc: JSONObject?): String {
         val m = model.ifEmpty { acc?.str("model").orEmpty() }
         val e = effort.ifEmpty { acc?.str("effort").orEmpty() }
-        return listOf(acc?.str("label") ?: accountId, m.ifEmpty { "modelo padrão" }, effortName(e)).filter { it.isNotBlank() }.joinToString(" · ")
+        val (name, isDefault) = if (m.isNotEmpty()) prettyModel(m) to false else resolvedModel(acc)
+        return listOf(acc?.str("label") ?: accountId, if (isDefault && name != "padrão da CLI") "$name (padrão)" else name, effortName(e)).filter { it.isNotBlank() }.joinToString(" · ")
     }
     private fun effortName(e: String) = mapOf("low" to "Baixo", "medium" to "Médio", "high" to "Alto", "xhigh" to "Máx.", "minimal" to "Mínimo", "max" to "Máx.")[e] ?: e
 
@@ -428,14 +509,16 @@ class MainActivity : Activity() {
         val turn = allTurns().lastOrNull()
         val busy = turn?.str("status") == "inProgress"
         val answerer = account(turn?.optJSONObject("account")?.str("id") ?: accountId) ?: account()
-        val who = if (busy) (answerer?.str("label") ?: "Agente") else modelLabel(account())
+        val who = if (busy) listOf(answerer?.str("label") ?: "Agente", turn!!.str("model").takeIf { it.isNotBlank() }?.let { prettyModel(it) }.orEmpty()).filter { it.isNotBlank() }.joinToString(" · ") else modelLabel(account())
         val status = if (busy) " · trabalhando há ${duration(((System.currentTimeMillis() / 1000.0) - turn!!.optDouble("startedAt")).toLong() * 1000)}" else " · pronta"
         liveText.text = who + status
         liveDot.background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(if (busy) C.LAV else C.GREEN) }
         stopButton.visibility = if (busy) View.VISIBLE else View.GONE
         settingsChip.text = modelLabel(account())
-        composerHint.visibility = if (busy) View.VISIBLE else View.GONE
-        composerHint.text = "Em execução · sua próxima mensagem entra na fila"
+        if (::steerButton.isInitialized && ::composer.isInitialized) steerButton.visibility = if (busy && composer.text.isNotBlank() && (account(currentAnswerer())?.str("provider") == "codex" || currentAnswerer() == "codex")) View.VISIBLE else View.GONE
+        val transcribing = transcribingThread == threadId
+        composerHint.visibility = if (busy || transcribing || voice.recording) View.VISIBLE else View.GONE
+        composerHint.text = if (voice.recording) "Gravando · toque em Parar e transcrever ao terminar" else if (transcribing) "Transcrevendo o áudio… aguarde" else "Em execução · Enviar coloca na fila; Orientar altera a execução atual"
     }
 
     private fun readHistory(silent: Boolean = false, before: String = "") {
@@ -446,6 +529,7 @@ class MainActivity : Activity() {
             onError = { historyPending = false; if (!silent) ui.toast(it) }) { data ->
             historyPending = false
             if (id != threadId) return@request
+            accessMode = data.str("accessMode")
             val turns = data.optJSONArray("turns").objects()
             data.optJSONObject("thread")?.let { t ->
                 t.str("cwd").takeIf { it.isNotBlank() }?.let { threadCwd = it }
@@ -462,6 +546,93 @@ class MainActivity : Activity() {
             } else { older = turns + older; next = data.str("nextCursor") }
             drawHistory(before.isNotEmpty())
         }
+    }
+
+    private fun drawContext() {
+        if (!::contextBox.isInitialized || tab != TAB_CHAT) return
+        contextBox.removeAllViews()
+        if (threadId.isEmpty()) return
+        val snapshot = contextSnapshot
+        val usage = snapshot?.optJSONObject("tokenUsage") ?: snapshot
+        val last = usage?.optJSONObject("last") ?: usage?.optJSONObject("lastTokenUsage")
+        val used = if (last?.has("totalTokens") == true) last.optDouble("totalTokens", Double.NaN) else last?.optDouble("inputTokens", Double.NaN) ?: Double.NaN
+        val capacity = usage?.optDouble("modelContextWindow", Double.NaN)?.takeIf { it.isFinite() } ?: usage?.optDouble("model_context_window", Double.NaN) ?: Double.NaN
+        val valid = used.isFinite() && used >= 0 && capacity.isFinite() && capacity > 0
+        val percent = if (valid) (100.0 * used / capacity).coerceIn(0.0, 100.0) else 0.0
+        val row = ui.row()
+        val ringColor = if (percent >= 90) C.RED else if (percent >= 75) C.AMBER else C.LAV
+        val ring = object : View(this) {
+            private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                style = android.graphics.Paint.Style.STROKE; strokeWidth = dp(3).toFloat(); strokeCap = android.graphics.Paint.Cap.ROUND
+            }
+            override fun onDraw(canvas: android.graphics.Canvas) {
+                super.onDraw(canvas)
+                val inset = paint.strokeWidth / 2 + dp(1)
+                val bounds = android.graphics.RectF(inset, inset, width - inset, height - inset)
+                paint.color = C.LINE2; canvas.drawArc(bounds, 0f, 360f, false, paint)
+                if (valid && percent > 0) { paint.color = ringColor; canvas.drawArc(bounds, -90f, (percent * 3.6).toFloat(), false, paint) }
+            }
+        }
+        ring.contentDescription = if (valid) "Contexto: ${String.format(Locale("pt", "BR"), "%.1f", percent)} por cento usado" else "Contexto aguardando leitura"
+        row.addView(ring, ui.lp(dp(24), dp(24), end = 8))
+        row.addView(ui.text("Contexto", 11f, C.TX3), ui.lp(WRAP, WRAP, end = 8))
+        row.addView(ui.text(if (valid) "${String.format(Locale("pt", "BR"), "%.1f", percent)}% usado" else "aguardando leitura", 11f, C.TX2), ui.lp(0, WRAP, 1f))
+        row.addView(ui.text("ⓘ", 13f, C.TX3))
+        contextBox.addView(row)
+        contextBox.setOnClickListener {
+            val fmt = java.text.NumberFormat.getIntegerInstance(Locale("pt", "BR"))
+            val details = if (valid) "${fmt.format(used.toLong())} de ${fmt.format(capacity.toLong())} tokens usados; ${fmt.format((capacity - used).coerceAtLeast(0.0).toLong())} restantes. É uma estimativa do último turno e inclui instruções e ferramentas." else if (isLocal()) "Aguardando uma leitura de contexto da conta que está respondendo. Ela pode não estar disponível para este provedor ou após reiniciar o servidor." else "Aguardando uma leitura de tokens do servidor para esta conversa."
+            AlertDialog.Builder(this).setTitle("Uso do contexto").setMessage(details).setPositiveButton("Entendi", null).show()
+        }
+    }
+
+    private fun readContext() {
+        if (threadId.isEmpty() || contextPending) return
+        val id = threadId; contextPending = true
+        request({ api.call("/api/threads/${enc(id)}/context-usage") }, onError = { contextPending = false }, scoped = false) {
+            contextPending = false
+            if (tab == TAB_CHAT && threadId == id) { contextSnapshot = it.optJSONObject("contextUsage"); drawContext() }
+        }
+    }
+
+    private fun readApprovals() {
+        if (threadId.isEmpty() || isLocal() || approvalsPending) return
+        val id = threadId; approvalsPending = true
+        request({ api.call("/api/bootstrap").optJSONArray("pending").objects() }, onError = { approvalsPending = false }, scoped = false) { requests ->
+            approvalsPending = false
+            if (tab != TAB_CHAT || threadId != id) return@request
+            approvalBox.removeAllViews()
+            requests.filter { it.optJSONObject("params")?.str("threadId") == id }.forEach { approval ->
+                val params = approval.optJSONObject("params") ?: JSONObject()
+                val requestId = approval.str("id")
+                if (requestId.isBlank()) return@forEach
+                val card = ui.card(0xff292116.toInt(), 0xff78582c.toInt(), 14, 12)
+                card.addView(ui.text("Confirmação necessária", 14f, C.TX, bold = true))
+                card.addView(ui.text(params.str("reason").ifBlank { "O Codex precisa da sua decisão para continuar." }, 12.5f, C.TX2), ui.lp(top = 6))
+                val command = params.str("command").ifBlank { params.optJSONArray("commandActions").objects().joinToString("\n") { it.str("command") }.trim() }
+                if (command.isNotBlank()) card.addView(ui.text(command, 12f, C.TX, mono = true).apply { setTextIsSelectable(true) }, ui.lp(top = 6))
+                val actions = ui.column()
+                listOf("Permitir agora" to "accept", "Permitir nesta sessão" to "acceptForSession", "Recusar" to "decline").forEach { (label, decision) ->
+                    actions.addView(ui.action(label) {
+                        request({ api.call("/api/threads/${enc(id)}/approval", obj("requestId" to requestId, "decision" to decision)) }) { ui.toast("Decisão enviada."); readApprovals() }
+                    }, ui.lp(MATCH, dp(40), top = 5))
+                }
+                card.addView(actions); approvalBox.addView(card, ui.lp(bottom = 6))
+            }
+        }
+    }
+
+    private fun changeAccess(mode: String, dialog: android.app.Dialog) {
+        if (mode == accessMode) return
+        val id = threadId
+        val explanation = if (mode == "automatic") "Comandos podem ser executados sem confirmação. Pedidos pendentes podem ser liberados; as permissões completas valem no próximo turno." else "Os próximos pedidos exigirão aprovação quando necessário. O turno atual conserva as permissões com que começou."
+        AlertDialog.Builder(this).setTitle(if (mode == "automatic") "Ativar modo automático?" else "Pedir aprovação?").setMessage(explanation)
+            .setPositiveButton("Confirmar") { _, _ ->
+                request({ api.call("/api/threads/${enc(id)}/access-mode", obj("mode" to mode)) }) { result ->
+                    if (threadId == id) { accessMode = result.str("mode"); dialog.dismiss(); settingsSheet(); readHistory(silent = true) }
+                    ui.toast("Permissões atualizadas.")
+                }
+            }.setNegativeButton("Cancelar", null).show()
     }
 
     private fun readQueue() {
@@ -517,6 +688,7 @@ class MainActivity : Activity() {
         scroll.post {
             if (prepend) scroll.scrollTo(0, previousY + history.height - previousHeight)
             else if (atBottom || previousHeight == 0) scroll.fullScroll(View.FOCUS_DOWN)
+            else scroll.scrollTo(0, previousY)
         }
     }
 
@@ -528,13 +700,15 @@ class MainActivity : Activity() {
         if (user != null) userBubble(user, turn)
         val agents = items.filter { it.str("type") == "agentMessage" && it.str("text").isNotBlank() }
         val final = agents.lastOrNull { it.str("phase") == "final_answer" } ?: if (!busy) agents.lastOrNull() else null
-        val steps = items.filter { it.str("type") in TOOL_TYPES || (it.str("type") == "agentMessage" && it !== final && it.str("text").isNotBlank()) }
+        val steps = items.filter { it.str("type") in TOOL_TYPES || (it.str("type") == "userMessage" && it !== user) || (it.str("type") == "agentMessage" && it !== final && it.str("text").isNotBlank()) }
         if (steps.isNotEmpty() || busy) workCard(turn, steps, busy)
         if (final != null) {
             val acc = turn.optJSONObject("account")
             val box = ui.column()
-            box.addView(ui.text(acc?.str("label")?.ifBlank { null } ?: "Codex", 11.5f, providerColor(acc?.str("provider").orEmpty()), bold = true), ui.lp(bottom = 4))
+            box.addView(ui.text(listOf(acc?.str("label")?.ifBlank { null } ?: "Codex", turn.str("model").takeIf { it.isNotBlank() }?.let { prettyModel(it) }.orEmpty()).filter { it.isNotBlank() }.joinToString(" · "), 11.5f, providerColor(acc?.str("provider").orEmpty()), bold = true), ui.lp(bottom = 4))
             md.render(final.str("text"), box)
+            val completedAt = turn.optDouble("completedAt", 0.0)
+            if (!busy && completedAt.isFinite() && completedAt > 0) box.addView(ui.text("Concluída em ${messageTime(completedAt)}", 11f, C.TX3), ui.lp(top = 4))
             val ms = turn.optLong("durationMs").takeIf { it > 0 } ?: ((turn.optDouble("completedAt") - turn.optDouble("startedAt")) * 1000).toLong()
             if (ms > 0 && !busy) box.addView(ui.pill("⏱ Trabalhou por ${duration(ms)}"), ui.lp(WRAP, WRAP, top = 2))
             history.addView(box, ui.lp(top = 4, bottom = 14))
@@ -560,7 +734,12 @@ class MainActivity : Activity() {
         if (attachments > 0) bubble.addView(ui.text("📎 $attachments anexo(s)", 12f, 0xffaab6dc.toInt()), ui.lp(top = 4))
         val queuedAt = turn.optDouble("queuedAt", 0.0)
         val startedAt = turn.optDouble("startedAt", 0.0)
-        if (queuedAt > 0 && startedAt - queuedAt >= 5) bubble.addView(ui.text("Enviada às ${clockTime(queuedAt)} · esperou ${duration(((startedAt - queuedAt) * 1000).toLong())} na fila", 11.5f, 0xffaab6dc.toInt()).apply { gravity = Gravity.END }, ui.lp(top = 6))
+        val stamp = if (queuedAt.isFinite() && queuedAt > 0) queuedAt else startedAt
+        if (stamp.isFinite() && stamp > 0) {
+            val prefix = if (queuedAt > 0) "Enviada" else "Início do turno"
+            val waited = if (queuedAt > 0 && startedAt - queuedAt >= 5) " · esperou ${duration(((startedAt - queuedAt) * 1000).toLong())} na fila" else ""
+            bubble.addView(ui.text("$prefix: ${messageTime(stamp)}$waited", 11f, 0xffaab6dc.toInt()).apply { gravity = Gravity.END }, ui.lp(top = 6))
+        }
         history.addView(bubble, ui.lp(WRAP, WRAP, top = 6, bottom = 10, start = 40).apply { gravity = Gravity.END })
     }
     private fun dp(f: Float) = f * resources.displayMetrics.density
@@ -568,7 +747,8 @@ class MainActivity : Activity() {
     /** "Trabalhando" card: every tool call of the turn, collapsible, newest state on top. */
     private fun workCard(turn: JSONObject, steps: List<JSONObject>, busy: Boolean) {
         val id = turn.str("id")
-        val open = if (busy) id !in collapsed else id in expanded
+        val keepConversationVisible = steps.any { it.str("type") == "userMessage" || it.str("type") == "agentMessage" }
+        val open = if (busy || keepConversationVisible) id !in collapsed else id in expanded
         val card = ui.card(C.PANEL, C.LINE, 16, 0)
         val head = ui.row().apply { setPadding(dp(12), dp(10), dp(12), dp(10)) }
         head.addView(ui.dot(if (busy) C.LAV else C.GREEN))
@@ -579,14 +759,13 @@ class MainActivity : Activity() {
         head.addView(ui.space(), ui.lp(0, 1, 1f))
         head.addView(ui.text("${steps.size} etapa${if (steps.size == 1) "" else "s"} ${if (open) "▴" else "▾"}", 12f, C.TX3))
         head.setOnClickListener {
-            if (busy) { if (!collapsed.remove(id)) collapsed += id } else { if (!expanded.remove(id)) expanded += id }
+            if (busy || keepConversationVisible) { if (!collapsed.remove(id)) collapsed += id } else { if (!expanded.remove(id)) expanded += id }
             rendered = ""; drawHistory(false)
         }
         card.addView(head)
         if (open) {
             card.addView(View(this).apply { setBackgroundColor(C.LINE) }, ui.lp(MATCH, 1))
-            val list = if (steps.size > 14) steps.takeLast(14) else steps
-            if (steps.size > list.size) card.addView(ui.text("+ ${steps.size - list.size} etapas anteriores", 11.5f, C.TX3).apply { setPadding(dp(12), dp(8), dp(12), 0) })
+            val list = steps
             list.forEachIndexed { index, step -> card.addView(stepRow(step, busy && index == list.lastIndex)) }
             if (busy && steps.isEmpty()) card.addView(ui.text("Preparando…", 12.5f, C.TX3).apply { setPadding(dp(12), dp(10), dp(12), dp(12)) })
         }
@@ -595,8 +774,24 @@ class MainActivity : Activity() {
 
     private fun stepRow(item: JSONObject, current: Boolean): View {
         val type = item.str("type")
+        if (type == "userMessage") {
+            val text = item.optJSONArray("content").objects().filter { it.str("type") == "text" }.joinToString("\n") { it.str("text") }
+            val wrap = ui.column().apply { setPadding(dp(12), dp(6), dp(12), dp(6)) }
+            val bubble = ui.card(C.BLUE, C.BLUE_LINE, 12, 10)
+            bubble.addView(ui.text("Sua orientação", 11.5f, 0xffb5c7ff.toInt(), bold = true), ui.lp(bottom = 5))
+            bubble.addView(ui.text(text.ifBlank { "Orientação com anexo" }, 14f, C.TX).apply { setTextIsSelectable(true) })
+            wrap.addView(bubble); return wrap
+        }
+        if (type == "agentMessage") {
+            val wrap = ui.column().apply { setPadding(dp(12), dp(6), dp(12), dp(6)) }
+            val card = ui.card(0xff1c2030.toInt(), 0xff303956.toInt(), 12, 10)
+            card.addView(ui.text("Atualização do assistente", 11.5f, C.LAV, bold = true), ui.lp(bottom = 5))
+            md.render(item.str("text"), card)
+            wrap.addView(card); return wrap
+        }
         val failed = item.str("status") in setOf("failed", "declined") || (item.has("exitCode") && item.optInt("exitCode", 0) != 0)
         val (title, detail, output) = when (type) {
+            "userMessage" -> Triple("Sua orientação", item.optJSONArray("content").objects().filter { it.str("type") == "text" }.joinToString("\n") { it.str("text") }, null)
             "commandExecution" -> Triple("Executou comando", item.str("command"), item.opt("aggregatedOutput"))
             "fileChange" -> Triple("Alterou arquivos", item.optJSONArray("changes").objects().joinToString(", ") { it.str("path").substringAfterLast('/') }, item.opt("changes"))
             "webSearch" -> Triple("Pesquisou na web", item.str("query"), null)
@@ -613,17 +808,20 @@ class MainActivity : Activity() {
         }, ui.lp(dp(22), dp(22), end = 10))
         val texts = ui.column()
         texts.addView(ui.text(title, 13f, if (current) C.TX else C.TX))
-        if (detail.isNotBlank()) texts.addView(ui.text(detail, 11.5f, 0xffc9cfdb.toInt(), mono = type == "commandExecution").apply {
-            maxLines = 3; ellipsize = android.text.TextUtils.TruncateAt.END
+        val detailView = if (detail.isNotBlank()) ui.text(detail, 11.5f, 0xffc9cfdb.toInt(), mono = type == "commandExecution").apply {
+            maxLines = if (type == "commandExecution") 1 else 3; ellipsize = android.text.TextUtils.TruncateAt.END
             if (type == "commandExecution") { background = ui.shape(0xff1d2128.toInt(), 6); setPadding(dp(6), dp(2), dp(6), dp(2)) }
-        }, ui.lp(WRAP, WRAP, top = 3))
+        } else null
+        if (detailView != null) texts.addView(detailView, ui.lp(WRAP, WRAP, top = 3))
         val outputText = when (output) { null, JSONObject.NULL -> ""; is JSONObject -> output.toString(2); is JSONArray -> output.toString(2); else -> output.toString() }.take(6000)
         if (outputText.isNotBlank()) {
             val out = ui.text(outputText, 11.5f, C.TX2, mono = true).apply {
                 visibility = View.GONE; setTextIsSelectable(true); background = ui.shape(0xff101113.toInt(), 8); setPadding(dp(8), dp(6), dp(8), dp(6))
             }
             texts.addView(out, ui.lp(top = 6))
-            box.setOnClickListener { out.visibility = if (out.visibility == View.VISIBLE) View.GONE else View.VISIBLE }
+            box.setOnClickListener { out.visibility = if (out.visibility == View.VISIBLE) View.GONE else View.VISIBLE; if (type == "commandExecution") { detailView?.maxLines = if (out.visibility == View.VISIBLE) Int.MAX_VALUE else 1; detailView?.ellipsize = if (out.visibility == View.VISIBLE) null else android.text.TextUtils.TruncateAt.END } }
+        } else if (type == "commandExecution" && detailView != null) {
+            box.setOnClickListener { val expanded = detailView.maxLines == 1; detailView.maxLines = if (expanded) Int.MAX_VALUE else 1; detailView.ellipsize = if (expanded) null else android.text.TextUtils.TruncateAt.END }
         }
         box.addView(texts, ui.lp(0, WRAP, 1f))
         return box
@@ -675,6 +873,7 @@ class MainActivity : Activity() {
     }
 
     private fun submit() {
+        if (sendingMessage) { ui.toast("Aguarde o envio terminar."); return }
         val text = composer.text.toString().trim()
         if (text.isEmpty() && attachments.isEmpty()) return
         val body = obj("text" to text, "accountId" to accountId)
@@ -686,15 +885,22 @@ class MainActivity : Activity() {
         if (threadId.isNotEmpty()) body.put("threadId", threadId) else if (newCwd.isNotEmpty()) body.put("cwd", newCwd)
         if (model.isNotEmpty()) body.put("model", model)
         if (effort.isNotEmpty()) body.put("effort", effort)
+        val sendingThread = threadId
+        val draftKey = draftKey(sendingThread)
         composer.isEnabled = false
-        request({ api.call("/api/turn", body) }, onError = { composer.isEnabled = true; ui.toast(it) }) {
-            composer.isEnabled = true
-            if (composer.text.toString().trim() == text) composer.text.clear()
-            attachments.removeAll(sending); drawAttachments()
+        sendingMessage = true
+        request({ api.call("/api/turn", body) }, onError = { sendingMessage = false; if (tab == TAB_CHAT && threadId == sendingThread) composer.isEnabled = true; ui.toast(it) }, scoped = false) {
+            sendingMessage = false
+            if (prefs.getString(draftKey, "")?.trim() == text) prefs.edit().remove(draftKey).apply()
+            if (tab == TAB_CHAT && threadId == sendingThread) {
+                composer.isEnabled = true
+                if (composer.text.toString().trim() == text) composer.text.clear()
+            }
+            attachments.removeAll(sending); if (tab == TAB_CHAT && threadId == sendingThread) drawAttachments()
             val created = it.str("threadId")
-            if (created.isNotBlank() && created != threadId) { threadId = created; newCwd = ""; saveThread() }
+            if (created.isNotBlank() && threadId == sendingThread && created != threadId) { threadId = created; newCwd = ""; saveThread() }
             if (it.optBoolean("queued")) ui.toast("Mensagem na fila: entra quando a resposta atual terminar.")
-            readHistory(); readQueue()
+            if (tab == TAB_CHAT && (threadId == sendingThread || threadId == created)) { readHistory(); readQueue() }
         }
     }
 
@@ -711,17 +917,28 @@ class MainActivity : Activity() {
             .setNegativeButton("Continuar", null).show()
     }
 
+    private fun menuOption(body: LinearLayout, title: String, note: String, action: () -> Unit) {
+        val card = ui.card(C.CARD, C.LINE, 14, 12)
+        card.addView(ui.text(title, 14f, C.TX, bold = true))
+        card.addView(ui.text(note, 12f, C.TX3), ui.lp(top = 3))
+        card.setOnClickListener { action() }
+        body.addView(card, ui.lp(bottom = 8))
+    }
+
     private fun threadMenu() {
         if (threadId.isEmpty()) return
-        val items = arrayOf("Renomear", "Arquivar", "Atualizar", "Abrir no Web Harness")
-        AlertDialog.Builder(this).setItems(items) { _, i ->
-            when (i) {
-                0 -> renameThread(threadId, threadTitle) { threadTitle = it; saveThread(); show(TAB_CHAT) }
-                1 -> request({ api.call("/api/threads/${enc(threadId)}/archive", JSONObject()) }) { ui.toast("Conversa arquivada."); threadId = ""; threadTitle = ""; saveThread(); show(TAB_PROJECTS) }
-                2 -> { rendered = ""; readHistory(); readQueue() }
-                3 -> openLink("$BASE/#thread=$threadId")
+        val id = threadId
+        ui.sheet("Opções da conversa") { body, dialog ->
+            menuOption(body, "Renomear", "Alterar o título desta conversa") { dialog.dismiss(); renameThread(id, threadTitle) { threadTitle = it; saveThread(); show(TAB_CHAT) } }
+            menuOption(body, "Atualizar", "Recarregar mensagens e fila") { dialog.dismiss(); rendered = ""; readHistory(); readQueue(); readContext() }
+            menuOption(body, "Abrir no Web Harness", "Continuar esta conversa no navegador") { dialog.dismiss(); openLink("$BASE/#thread=$id") }
+            menuOption(body, "Arquivar", "Retirar da lista de conversas recentes") {
+                dialog.dismiss()
+                AlertDialog.Builder(this).setTitle("Arquivar conversa?").setMessage("Você poderá encontrá-la em conversas arquivadas.")
+                    .setPositiveButton("Arquivar") { _, _ -> request({ api.call("/api/threads/${enc(id)}/archive", JSONObject()) }) { ui.toast("Conversa arquivada."); if (threadId == id) { threadId = ""; threadTitle = ""; saveThread(); show(TAB_PROJECTS) } } }
+                    .setNegativeButton("Cancelar", null).show()
             }
-        }.show()
+        }
     }
 
     private fun renameThread(id: String, current: String, done: (String) -> Unit) {
@@ -737,43 +954,107 @@ class MainActivity : Activity() {
     private fun settingsSheet() {
         if (accounts.isEmpty()) { loadAccounts { settingsSheet() }; return }
         ui.sheet("Ajustes da mensagem") { body, dialog ->
-            body.addView(ui.caption("Conta"), ui.lp(top = 6, bottom = 8))
-            val usable = accounts.filter { it.optBoolean("enabled") }
-            body.addView(ui.flow(usable.map { acc ->
-                val label = acc.str("label") + if (!acc.optBoolean("available")) " · ${acc.str("unavailableReason").ifBlank { "indisponível" }}" else ""
-                ui.choice(label, acc.str("id") == accountId) { accountId = acc.str("id"); model = ""; effort = ""; saveSelection(); dialog.dismiss(); settingsSheet(); updateLive() }
-            }))
+            val accountBox = ui.column()
             val modelsBox = ui.column()
+            if (threadId.isNotEmpty() && !isLocal()) {
+                body.addView(ui.caption("Permissões nesta conversa"), ui.lp(top = 6, bottom = 8))
+                val accessChoices = ui.column(); body.addView(accessChoices)
+                fun renderAccess() {
+                    accessChoices.removeAllViews()
+                    accessChoices.addView(ui.flow(listOf(
+                        ui.choice("Pedir aprovação", accessMode == "manual") { changeAccess("manual", dialog) },
+                        ui.choice("Automático", accessMode == "automatic") { changeAccess("automatic", dialog) }
+                    )))
+                    accessChoices.addView(ui.text((if (accessMode.isEmpty()) "O servidor não informou o modo atual." else "Modo atual: ${if (accessMode == "automatic") "Automático" else "Pedir aprovação"}") + if (isLocal()) "\nPara contas secundárias, pedidos interativos podem ser recusados pelo servidor." else "", 11.5f, C.TX3), ui.lp(top = 4))
+                }
+                renderAccess()
+            }
+            body.addView(ui.caption("Conta"), ui.lp(top = 12, bottom = 8))
+            body.addView(accountBox)
             body.addView(ui.caption("Modelo"), ui.lp(top = 16, bottom = 8))
             body.addView(modelsBox)
-            modelsBox.addView(ui.text("Carregando modelos…", 13f, C.TX3))
-            request({ api.call("/api/accounts/${enc(accountId)}/models") }, onError = { modelsBox.removeAllViews(); modelsBox.addView(ui.text("Não consegui listar os modelos: $it", 12.5f, C.TX3)) }) { catalog ->
-                modelsBox.removeAllViews()
-                val models = catalog.optJSONArray("models").objects()
-                val current = model.ifEmpty { account()?.str("model").orEmpty() }
-                val chips = mutableListOf<View>(ui.choice("Padrão da conta", model.isEmpty()) { model = ""; effort = ""; saveSelection(); dialog.dismiss(); settingsSheet(); updateLive() })
-                models.forEach { m -> chips += ui.choice(m.str("label").ifBlank { m.str("id") }, model.isNotEmpty() && m.str("id") == current) { model = m.str("id"); effort = m.str("defaultEffort"); saveSelection(); dialog.dismiss(); settingsSheet(); updateLive() } }
-                modelsBox.addView(ui.flow(chips))
-                val selected = models.firstOrNull { it.str("id") == current }
-                val efforts = selected?.optJSONArray("efforts").strings().ifEmpty { if (account()?.str("provider") == "codex") listOf("low", "medium", "high", "xhigh") else emptyList() }
-                if (efforts.isNotEmpty()) {
-                    modelsBox.addView(ui.caption("Esforço"), ui.lp(top = 16, bottom = 8))
-                    modelsBox.addView(ui.flow(efforts.map { e -> ui.choice(effortName(e), e == effort.ifEmpty { account()?.str("effort").orEmpty() }) { effort = e; saveSelection(); dialog.dismiss(); settingsSheet(); updateLive() } }))
-                }
-                catalog.str("note").takeIf { it.isNotBlank() }?.let { modelsBox.addView(ui.text(it, 11.5f, C.TX3), ui.lp(top = 12)) }
+            var catalogVersion = 0
+            lateinit var refreshAccounts: () -> Unit
+            lateinit var loadModels: () -> Unit
+            refreshAccounts = {
+                accountBox.removeAllViews()
+                accountBox.addView(ui.flow(accounts.filter { it.optBoolean("enabled") }.map { acc ->
+                    val label = acc.str("label") + if (!acc.optBoolean("available")) " · ${acc.str("unavailableReason").ifBlank { "indisponível" }}" else ""
+                    ui.choice(label, acc.str("id") == accountId) {
+                        if (accountId != acc.str("id")) { accountId = acc.str("id"); model = ""; effort = ""; saveSelection(); refreshAccounts(); loadModels(); updateLive() }
+                    }
+                }))
             }
+            loadModels = {
+                val requestedAccount = accountId
+                val version = ++catalogVersion
+                modelsBox.removeAllViews(); modelsBox.addView(ui.text("Carregando modelos…", 13f, C.TX3))
+                request({ api.call("/api/accounts/${enc(requestedAccount)}/models") }, onError = { if (version == catalogVersion && dialog.isShowing) { modelsBox.removeAllViews(); modelsBox.addView(ui.text("Não consegui listar os modelos: $it", 12.5f, C.TX3)) } }) { catalog ->
+                    if (version == catalogVersion && dialog.isShowing) {
+                        val models = catalog.optJSONArray("models").objects()
+                        lateinit var renderModels: () -> Unit
+                        renderModels = {
+                            modelsBox.removeAllViews()
+                            val current = model.ifEmpty { account()?.str("model").orEmpty() }
+                            val chips = mutableListOf<View>(ui.choice(resolvedModelFor(requestedAccount).let { "Padrão da conta · $it" }, model.isEmpty()) { model = ""; effort = ""; saveSelection(); renderModels(); updateLive() })
+                            models.forEach { m -> chips += ui.choice(m.str("label").ifBlank { m.str("id") }, model.isNotEmpty() && m.str("id") == current) { model = m.str("id"); effort = m.str("defaultEffort"); saveSelection(); renderModels(); updateLive() } }
+                            modelsBox.addView(ui.flow(chips))
+                            val selected = models.firstOrNull { it.str("id") == current }
+                            val efforts = selected?.optJSONArray("efforts").strings().ifEmpty { if (account()?.str("provider") == "codex") listOf("low", "medium", "high", "xhigh") else emptyList() }
+                            if (efforts.isNotEmpty()) {
+                                modelsBox.addView(ui.caption("Esforço"), ui.lp(top = 16, bottom = 8))
+                                modelsBox.addView(ui.flow(efforts.map { e -> ui.choice(effortName(e), e == effort.ifEmpty { account()?.str("effort").orEmpty() }) { effort = e; saveSelection(); renderModels(); updateLive() } }))
+                            }
+                            catalog.str("note").takeIf { it.isNotBlank() }?.let { modelsBox.addView(ui.text(it, 11.5f, C.TX3), ui.lp(top = 12)) }
+                        }
+                        renderModels()
+                    }
+                }
+            }
+            refreshAccounts(); loadModels()
             val auto = ui.row().apply { setPadding(0, dp(14), 0, 0) }
-            val autoTexts = ui.column(); autoTexts.addView(ui.text("Enviar áudio direto", 13.5f)); autoTexts.addView(ui.text("Desligado: o texto transcrito vai para o campo para você revisar", 11.5f, C.TX3))
+            val autoTexts = ui.column(); autoTexts.addView(ui.text("Enviar áudio direto", 13.5f))
+            val description = ui.text("", 11.5f, C.TX3); autoTexts.addView(description)
             auto.addView(autoTexts, ui.lp(0, WRAP, 1f))
-            auto.addView(Switch(this).apply { isChecked = prefs.getBoolean("voiceAutoSend", false); setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("voiceAutoSend", on).apply() } })
-            body.addView(auto)
+            val toggle = Switch(this).apply { isChecked = prefs.getBoolean("voiceAutoSend", false); contentDescription = "Enviar áudio direto" }
+            fun updateDescription(on: Boolean) { description.text = if (on) "Ligado: envia o texto após a transcrição" else "Desligado: revise o texto transcrito antes de enviar" }
+            updateDescription(toggle.isChecked)
+            toggle.setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("voiceAutoSend", on).apply(); updateDescription(on) }
+            autoTexts.setOnClickListener { toggle.isChecked = !toggle.isChecked }
+            auto.addView(toggle); body.addView(auto)
             body.addView(ui.action("Pronto", primary = true) { dialog.dismiss() }, ui.lp(MATCH, dp(46), top = 18))
         }
     }
 
     // ───────────────────────── Voice ─────────────────────────
 
+    private fun voiceMenu() {
+        if (transcribingThread != null) { ui.toast("Aguarde a transcrição terminar."); return }
+        ui.sheet("Mensagem por voz") { body, dialog ->
+            val saved = java.io.File(prefs.getString("pendingVoicePath", "").orEmpty())
+            if (saved.isFile && saved.parentFile == cacheDir) menuOption(body, "Retomar áudio pendente", "Tentar novamente a transcrição da gravação preservada") {
+                dialog.dismiss(); transcribeRecording(saved, prefs.getBoolean("pendingVoiceSend", false), prefs.getString("pendingVoiceThread", "").orEmpty(), prefs.getString("pendingVoiceDraft", "").orEmpty())
+            }
+            menuOption(body, "Ditado do celular", "Usa o serviço de voz configurado no Android; pode usar internet") { dialog.dismiss(); startPhoneDictation() }
+            menuOption(body, "Gravar e transcrever no servidor", "Grave até 3 minutos; o texto será processado na VPS") { dialog.dismiss(); startRecording() }
+        }
+    }
+
+    private fun startPhoneDictation() {
+        val intent = Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, "pt-BR")
+            putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "Fale sua mensagem")
+        }
+        dictationThread = threadId; dictationDraft = draftKey()
+        runCatching { @Suppress("DEPRECATION") startActivityForResult(intent, DICTATE_PHONE) }
+            .onFailure { ui.toast("Ditado indisponível. Use a gravação no servidor ou o microfone do teclado.") }
+    }
+
     private fun startRecording() {
+        val pending = java.io.File(prefs.getString("pendingVoicePath", "").orEmpty())
+        if (pending.isFile && pending.parentFile == cacheDir) { ui.toast("Retome ou descarte o áudio pendente antes de gravar outro."); return }
+        if (transcribingThread != null) { ui.toast("Aguarde a transcrição terminar."); return }
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), ASK_MIC); return
         }
@@ -788,7 +1069,7 @@ class MainActivity : Activity() {
         composerRow.visibility = if (on) View.GONE else View.VISIBLE
         composer.visibility = if (on) View.GONE else View.VISIBLE
         composerHint.visibility = if (on) View.VISIBLE else if (running()) View.VISIBLE else View.GONE
-        composerHint.text = if (on) "Gravando · toque em ■ para transcrever" else "Em execução · sua próxima mensagem entra na fila"
+        composerHint.text = if (on) "Gravando · toque em Parar e transcrever ao terminar" else "Em execução · Enviar coloca na fila; Orientar altera a execução atual"
         window.decorView.keepScreenOn = on
     }
 
@@ -796,32 +1077,56 @@ class MainActivity : Activity() {
         clock.removeCallbacks(meter)
         val file = voice.stop()
         showRecording(false)
-        if (file == null) { ui.toast("Gravação curta demais."); return }
-        composerHint.visibility = View.VISIBLE; composerHint.text = "Transcrevendo o áudio…"
-        request({
-            val data = android.util.Base64.encodeToString(file.readBytes(), android.util.Base64.NO_WRAP)
-            file.delete()
-            val job = api.call("/api/voice/transcriptions", obj("mime" to "audio/mp4", "data" to data))
-            val id = job.str("id")
-            var result = job
-            val deadline = System.currentTimeMillis() + 180_000
-            while (result.str("status") == "processing" && System.currentTimeMillis() < deadline) {
-                Thread.sleep(900)
-                result = api.call("/api/voice/transcriptions/${enc(id)}")
+        if (file == null) { ui.toast("Gravação curta demais. Tente novamente."); return }
+        transcribeRecording(file, send, threadId, draftKey())
+    }
+
+    private fun transcribeRecording(file: java.io.File, send: Boolean, voiceThread: String, voiceDraft: String) {
+        transcribingThread = voiceThread
+        prefs.edit().putString("pendingVoicePath", file.absolutePath).putString("pendingVoiceThread", voiceThread).putString("pendingVoiceDraft", voiceDraft).putBoolean("pendingVoiceSend", send).apply()
+        val waitView = ui.column().apply { setPadding(dp(24), dp(16), dp(24), dp(20)); gravity = Gravity.CENTER_HORIZONTAL }
+        waitView.addView(ProgressBar(this@MainActivity), ui.lp(dp(48), dp(48), bottom = 14))
+        waitView.addView(ui.text("Transcrevendo áudio…", 16f, C.TX, bold = true))
+        waitView.addView(ui.text("Aguarde. O tempo depende da duração do áudio e do servidor.", 12.5f, C.TX2).apply { gravity = Gravity.CENTER }, ui.lp(top = 8))
+        val waiting = AlertDialog.Builder(this).setView(waitView).setCancelable(false).create()
+        waiting.setCanceledOnTouchOutside(false); waiting.show()
+        worker.execute {
+            val result = runCatching {
+                val data = android.util.Base64.encodeToString(file.readBytes(), android.util.Base64.NO_WRAP)
+                val job = api.call("/api/voice/transcriptions", obj("mime" to "audio/mp4", "data" to data))
+                val id = job.str("id"); var answer = job
+                val deadline = System.currentTimeMillis() + 310_000
+                while (answer.str("status") == "processing" && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(900); answer = api.call("/api/voice/transcriptions/${enc(id)}")
+                }
+                if (answer.str("status") == "processing") error("A transcrição ainda não terminou. Tente novamente mais tarde.")
+                if (answer.str("status") != "completed") error(answer.str("error").ifBlank { "Não consegui transcrever o áudio." })
+                answer.str("text").trim().ifEmpty { error("Não identifiquei fala no áudio.") }
             }
-            result
-        }, onError = { composerHint.visibility = View.GONE; ui.toast("Transcrição falhou: $it") }) { result ->
-            composerHint.visibility = if (running()) View.VISIBLE else View.GONE
-            composerHint.text = "Em execução · sua próxima mensagem entra na fila"
-            val text = result.str("text").trim()
-            when {
-                result.str("status") == "failed" -> ui.toast("Transcrição falhou: ${result.str("error")}")
-                text.isEmpty() -> ui.toast("Não entendi o áudio. Tente de novo mais perto do microfone.")
-                else -> {
-                    val current = composer.text.toString().trim()
-                    composer.setText(if (current.isEmpty()) text else "$current $text")
-                    composer.setSelection(composer.text.length)
-                    if (send) submit()
+            runOnUiThread {
+                transcribingThread = null
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                waiting.dismiss()
+                result.onSuccess { text ->
+                    file.delete(); prefs.edit().remove("pendingVoicePath").remove("pendingVoiceThread").remove("pendingVoiceDraft").remove("pendingVoiceSend").apply()
+                    if (tab == TAB_CHAT && threadId == voiceThread && draftKey() == voiceDraft) {
+                        val current = composer.text.toString().trim()
+                        composer.setText(listOf(current, text).filter { it.isNotEmpty() }.joinToString(" ")); composer.setSelection(composer.text.length)
+                        updateLive(); if (send) submit()
+                    } else {
+                        val old = prefs.getString(voiceDraft, "").orEmpty().trim()
+                        prefs.edit().putString(voiceDraft, listOf(old, text).filter { it.isNotEmpty() }.joinToString(" ")).apply()
+                        if (voiceThread.isEmpty()) {
+                            AlertDialog.Builder(this).setTitle("Transcrição concluída").setMessage(text)
+                                .setPositiveButton("Copiar texto") { _, _ -> (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("Transcrição", text)); ui.toast("Texto copiado.") }
+                                .setNegativeButton("Fechar", null).show()
+                        } else ui.toast("Transcrição salva no rascunho da conversa.")
+                    }
+                }.onFailure { error ->
+                    if (error is SessionExpired) { login(error.message.orEmpty()); ui.toast("O áudio ficou guardado no cache do app.") }
+                    else AlertDialog.Builder(this).setTitle("Não consegui transcrever").setMessage("${error.message ?: "Falha de conexão."}\n\nA gravação está preservada neste aparelho.")
+                        .setPositiveButton("Tentar novamente") { _, _ -> transcribeRecording(file, send, voiceThread, voiceDraft) }
+                        .setNegativeButton("Descartar áudio") { _, _ -> file.delete(); prefs.edit().remove("pendingVoicePath").remove("pendingVoiceThread").remove("pendingVoiceDraft").remove("pendingVoiceSend").apply() }.setCancelable(false).show()
                 }
             }
         }
@@ -838,16 +1143,34 @@ class MainActivity : Activity() {
     // ───────────────────────── Attachments ─────────────────────────
 
     private fun attachMenu() {
-        AlertDialog.Builder(this).setItems(arrayOf("Fotos", "Arquivo")) { _, i ->
-            val intent = if (i == 0) Intent(Intent.ACTION_GET_CONTENT).setType("image/*").putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-            else Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*").addCategory(Intent.CATEGORY_OPENABLE).putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-            runCatching { @Suppress("DEPRECATION") startActivityForResult(intent, if (i == 0) PICK_IMAGES else PICK_FILES) }.onFailure { ui.toast("Nenhum app para escolher arquivos.") }
-        }.show()
+        ui.sheet("Adicionar à mensagem") { body, dialog ->
+            body.addView(ui.text("Escolha até 8 fotos ou arquivos, com 24 MB no total.", 12.5f, C.TX2), ui.lp(bottom = 12))
+            fun choose(images: Boolean) {
+                dialog.dismiss()
+                val intent = if (images) Intent(Intent.ACTION_GET_CONTENT).setType("image/*").putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                else Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*").addCategory(Intent.CATEGORY_OPENABLE).putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                runCatching { @Suppress("DEPRECATION") startActivityForResult(intent, if (images) PICK_IMAGES else PICK_FILES) }.onFailure { ui.toast("Nenhum app para escolher arquivos.") }
+            }
+            menuOption(body, "Fotos e imagens", "Escolher imagens da galeria ou de arquivos") { choose(true) }
+            menuOption(body, "Arquivos", "Escolher documentos e outros arquivos") { choose(false) }
+        }
     }
 
     @Deprecated("Activity result callback")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION") super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == DICTATE_PHONE) {
+            if (resultCode != RESULT_OK || data == null) return
+            val text = data.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.trim().orEmpty()
+            if (text.isEmpty()) { ui.toast("Não identifiquei fala. Tente novamente."); return }
+            if (tab == TAB_CHAT && threadId == dictationThread && draftKey() == dictationDraft) {
+                val current = composer.text.toString().trim(); composer.setText(listOf(current, text).filter { it.isNotEmpty() }.joinToString(" ")); composer.setSelection(composer.text.length)
+                if (prefs.getBoolean("voiceAutoSend", false)) submit()
+            } else {
+                val old = prefs.getString(dictationDraft, "").orEmpty().trim(); prefs.edit().putString(dictationDraft, listOf(old, text).filter { it.isNotEmpty() }.joinToString(" ")).apply(); ui.toast("Ditado salvo no rascunho da conversa.")
+            }
+            return
+        }
         if (resultCode != RESULT_OK || data == null || requestCode !in setOf(PICK_IMAGES, PICK_FILES)) return
         val uris = data.clipData?.let { clip -> (0 until clip.itemCount).map { clip.getItemAt(it).uri } } ?: listOfNotNull(data.data)
         worker.execute {
@@ -925,20 +1248,22 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun newConversationSheet() {
+    private fun newConversationSheet(initialCwd: String = "") {
         val start = {
             ui.sheet("Nova conversa") { body, dialog ->
-                var cwd = ""
+                var cwd = initialCwd
+                body.addView(ui.text("A conversa começa sem mensagens anteriores. As instruções globais do servidor continuam valendo.", 12f, C.TX2), ui.lp(bottom = 10))
                 body.addView(ui.caption("Projeto"), ui.lp(top = 6, bottom = 8))
                 val projectBox = ui.column()
                 fun drawProjects() {
                     projectBox.removeAllViews()
-                    val chips = mutableListOf<View>(ui.choice("Geral", cwd.isEmpty()) { cwd = ""; drawProjects() })
+                    val chips = mutableListOf<View>(ui.choice("Sem projeto", cwd.isEmpty()) { cwd = ""; drawProjects() })
                     projects.forEach { p -> chips += ui.choice(p.str("name").ifBlank { p.str("cwd").substringAfterLast('/') }, cwd == p.str("cwd")) { cwd = p.str("cwd"); drawProjects() } }
                     projectBox.addView(ui.flow(chips))
                 }
                 drawProjects()
                 body.addView(projectBox)
+                body.addView(ui.action("+ Criar projeto") { dialog.dismiss(); createProjectSheet() }, ui.lp(MATCH, dp(44), top = 8))
                 body.addView(ui.caption("Conta"), ui.lp(top = 16, bottom = 8))
                 val accountBox = ui.column()
                 fun drawAccounts() {
@@ -951,7 +1276,7 @@ class MainActivity : Activity() {
                 body.addView(accountBox)
                 body.addView(ui.action("Começar conversa", primary = true) {
                     dialog.dismiss()
-                    threadId = ""; threadTitle = "Nova conversa"; threadCwd = cwd; newCwd = cwd.ifEmpty { "" }
+                    threadId = ""; threadTitle = "Nova conversa"; threadCwd = cwd; newCwd = cwd; newDraftId = java.util.UUID.randomUUID().toString(); contextSnapshot = null; accessMode = ""
                     older = emptyList(); latest = emptyList(); queue = emptyList(); next = ""; rendered = ""
                     saveThread(); show(TAB_CHAT)
                     composer.requestFocus()
@@ -961,6 +1286,34 @@ class MainActivity : Activity() {
         if (projects.isEmpty() || accounts.isEmpty()) request({ api.call("/api/projects").optJSONArray("projects").objects() to api.call("/api/accounts") }) { (p, a) ->
             projects = p; accounts = a.optJSONArray("accounts").objects(); rotation = a.optJSONObject("rotation") ?: JSONObject(); start()
         } else start()
+    }
+
+    private fun createProjectSheet() {
+        request({ api.call("/api/bootstrap").str("projectsRoot") }) { root ->
+            if (!root.startsWith("/")) { ui.toast("Não consegui descobrir a pasta de projetos."); return@request }
+            ui.sheet("Criar projeto") { body, dialog ->
+                body.addView(ui.text("Uma pasta nova será criada no servidor em $root.", 12.5f, C.TX2), ui.lp(bottom = 10))
+                body.addView(ui.caption("Nome do projeto"), ui.lp(bottom = 6))
+                val name = ui.field("Ex.: Meu projeto"); body.addView(name)
+                body.addView(ui.caption("Nome da pasta"), ui.lp(top = 12, bottom = 6))
+                val folder = ui.field("Ex.: meu-projeto"); body.addView(folder)
+                body.addView(ui.text("Use letras minúsculas, números e hífens.", 11.5f, C.TX3), ui.lp(top = 5))
+                lateinit var save: TextView
+                save = ui.action("Criar e iniciar conversa", primary = true) {
+                    if (!save.isEnabled) return@action
+                    val label = name.text.toString().trim(); val slug = folder.text.toString().trim()
+                    if (label.isBlank() || (slug.length > 63 || !slug.matches(Regex("[a-z0-9]+(?:-[a-z0-9]+)*")))) { ui.toast("Informe o nome e uma pasta válida."); return@action }
+                    save.isEnabled = false
+                    request({ api.call("/api/projects", obj("name" to label, "cwd" to "$root/$slug", "createDirectory" to true)) }, onError = { save.isEnabled = true; ui.toast(it) }) { data ->
+                        save.isEnabled = true
+                        projects = data.optJSONArray("projects").objects()
+                        val created = data.optJSONObject("project")?.str("cwd").orEmpty()
+                        dialog.dismiss(); if (created.isNotEmpty()) newConversationSheet(created) else ui.toast("Projeto criado. Escolha-o na lista.")
+                    }
+                }
+                body.addView(save, ui.lp(MATCH, dp(48), top = 18))
+            }
+        }
     }
 
     private fun projectFor(cwd: String): String {
@@ -1026,20 +1379,45 @@ class MainActivity : Activity() {
 
     private fun showPreview(path: String, label: String) = showWeb(BASE + localUrl(path), label)
 
-    /** In-app WebView with the Harness session; HTML previews keep the server's sandbox CSP. */
-    private fun showWeb(url: String, title: String) = fullscreen { frame, _ ->
+    /** The server's preview CSP continues to isolate HTML from the Harness session. */
+    private fun showWeb(url: String, title: String) {
         CookieManager.getInstance().apply { setAcceptCookie(true); api.sessionCookie().takeIf { it.isNotEmpty() }?.let { setCookie(ORIGIN, it) }; flush() }
+        val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
         val web = WebView(this).apply {
             @Suppress("SetJavaScriptEnabled")
             settings.javaScriptEnabled = true
-            settings.useWideViewPort = true; settings.loadWithOverviewMode = true; settings.builtInZoomControls = true; settings.displayZoomControls = false
+            settings.useWideViewPort = true; settings.loadWithOverviewMode = false
+            settings.builtInZoomControls = true; settings.displayZoomControls = false
+            settings.allowFileAccess = false; settings.allowContentAccess = false
+            setInitialScale(100)
             setBackgroundColor(C.BG)
-            loadUrl(url)
+            webViewClient = object : android.webkit.WebViewClient() {
+                override fun shouldOverrideUrlLoading(view: WebView, request: android.webkit.WebResourceRequest): Boolean {
+                    val target = request.url
+                    if (target.scheme == "https" && target.host == Uri.parse(ORIGIN).host) return false
+                    if (target.scheme == "https" || target.scheme == "http") openLink(target.toString())
+                    return true
+                }
+            }
         }
-        val column = ui.column()
-        column.addView(ui.text(title, 14f, C.TX, bold = true).apply { setPadding(dp(16), dp(14), dp(60), dp(10)); maxLines = 1 })
+        val column = ui.column().apply { setBackgroundColor(C.BG) }
+        val toolbar = ui.row().apply { setPadding(dp(8), dp(6), dp(8), dp(6)) }
+        toolbar.addView(ui.iconButton(R.drawable.ic_back, "Voltar na prévia") { if (web.canGoBack()) web.goBack() else dialog.dismiss() }, ui.lp(dp(42), dp(42)))
+        toolbar.addView(ui.text(title, 14f, C.TX, bold = true).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; setPadding(dp(8), 0, dp(8), 0) }, ui.lp(0, WRAP, 1f))
+        toolbar.addView(ui.iconButton(R.drawable.ic_refresh, "Recarregar prévia") { web.reload() }, ui.lp(dp(42), dp(42)))
+        toolbar.addView(ui.text("✕", 20f, C.TX).apply { gravity = Gravity.CENTER; contentDescription = "Fechar prévia"; setOnClickListener { dialog.dismiss() } }, ui.lp(dp(42), dp(42)))
+        column.addView(toolbar)
         column.addView(web, ui.lp(MATCH, 0, 1f))
-        frame.addView(column, FrameLayout.LayoutParams(MATCH, MATCH))
+        dialog.setContentView(column)
+        dialog.setOnKeyListener { _, keyCode, event ->
+            if (keyCode == android.view.KeyEvent.KEYCODE_BACK && event.action == android.view.KeyEvent.ACTION_UP) {
+                if (web.canGoBack()) web.goBack() else dialog.dismiss()
+                true
+            } else keyCode == android.view.KeyEvent.KEYCODE_BACK
+        }
+        dialog.setOnDismissListener { web.stopLoading(); (web.parent as? android.view.ViewGroup)?.removeView(web); web.destroy() }
+        dialog.show()
+        web.loadUrl(url)
     }
 
     // ───────────────────────── Projects tab ─────────────────────────
@@ -1054,6 +1432,10 @@ class MainActivity : Activity() {
             compoundDrawablesRelative[0]?.setTint(C.TX3)
             setOnEditorActionListener { _, _, _ -> query = text.toString().trim(); show(TAB_PROJECTS); true }
         }
+        val newActions = ui.row()
+        newActions.addView(ui.action("+ Nova conversa") { newConversationSheet() }, ui.lp(0, dp(44), 1f, end = 6))
+        newActions.addView(ui.action("+ Novo projeto") { createProjectSheet() }, ui.lp(0, dp(44), 1f))
+        tools.addView(newActions, ui.lp(bottom = 10))
         tools.addView(search)
         tools.addView(ui.segmented(listOf("Recentes", "Arquivadas"), if (archived) 1 else 0) { archived = it == 1; show(TAB_PROJECTS) }, ui.lp(top = 10))
         root.addView(tools)
@@ -1064,19 +1446,19 @@ class MainActivity : Activity() {
             onError = { list.removeAllViews(); list.addView(ui.text(it, 13.5f, C.RED)) }) { (threads, folders) ->
             projects = folders
             list.removeAllViews()
-            if (threads.isEmpty()) { list.addView(ui.text(if (query.isEmpty()) "Nenhuma conversa ainda." else "Nada encontrado para \"$query\".", 14f, C.TX3), ui.lp(top = 20)); return@request }
+            if (threads.isEmpty() && folders.isEmpty()) list.addView(ui.text(if (query.isEmpty()) "Nenhuma conversa ainda." else "Nada encontrado para \"$query\".", 14f, C.TX3), ui.lp(top = 20))
             val used = mutableSetOf<String>()
             val groups = folders.mapNotNull { p ->
                 val ids = p.optJSONArray("threadIds").strings().toSet()
                 val inside = threads.filter { it.str("id") in ids || (it.str("cwd").isNotBlank() && it.str("cwd") == p.str("cwd")) }.filter { used.add(it.str("id")) }
-                if (inside.isEmpty()) null else p to inside
-            }.sortedByDescending { (_, t) -> t.maxOf { it.optDouble("updatedAt", 0.0) } }
+                if (inside.isEmpty() && (archived || query.isNotBlank())) null else p to inside
+            }.sortedByDescending { (_, t) -> t.maxOfOrNull { it.optDouble("updatedAt", 0.0) } ?: 0.0 }
             val loose = threads.filter { it.str("id") !in used }
             if (threadId.isNotEmpty() && !archived) threads.firstOrNull { it.str("id") == threadId }?.let { current ->
                 list.addView(ui.caption("Aberta"), ui.lp(top = 4, bottom = 6))
                 list.addView(threadRow(current, highlight = true).apply { background = ui.shape(0xff161a26.toInt(), 14, 1, 0xff33406a.toInt()) }, ui.lp(bottom = 12))
             }
-            for ((project, inside) in groups) projectCard(list, project.str("name").ifBlank { project.str("cwd").substringAfterLast('/') }, inside)
+            for ((project, inside) in groups) projectCard(list, project.str("name").ifBlank { project.str("cwd").substringAfterLast('/') }, inside, project.str("cwd"))
             if (loose.isNotEmpty()) projectCard(list, "Sem projeto", loose)
             val footer = ui.card(C.CARD, C.LINE, 16, 10).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
             footer.addView(ui.text("C", 14f, Color.WHITE, bold = true).apply { gravity = Gravity.CENTER; background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0xff4b3fb5.toInt()) } }, ui.lp(dp(32), dp(32), end = 10))
@@ -1088,7 +1470,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun projectCard(list: LinearLayout, name: String, threads: List<JSONObject>) {
+    private fun projectCard(list: LinearLayout, name: String, threads: List<JSONObject>, cwd: String = "") {
         val key = "open:$name"
         var open = prefs.getBoolean(key, threads.size <= 4 || name == projectFor(threadCwd))
         val card = ui.card(C.CARD, C.LINE, 16, 0)
@@ -1105,6 +1487,7 @@ class MainActivity : Activity() {
             rows.addView(View(this).apply { setBackgroundColor(C.LINE) }, ui.lp(MATCH, 1, start = 12, end = 12))
             rows.addView(threadRow(t))
         }
+        if (cwd.isNotEmpty() && !archived) rows.addView(ui.action("+ Conversa neste projeto") { newConversationSheet(cwd) }, ui.lp(MATCH, dp(42), start = 10, end = 10, bottom = 8, top = 8))
         rows.visibility = if (open) View.VISIBLE else View.GONE
         card.addView(rows)
         head.setOnClickListener { open = !open; prefs.edit().putBoolean(key, open).apply(); rows.visibility = if (open) View.VISIBLE else View.GONE; arrow.text = if (open) "⌃" else "⌄" }
@@ -1238,7 +1621,7 @@ class MainActivity : Activity() {
                 val box = ui.column()
                 fun draw() {
                     box.removeAllViews()
-                    val chips = mutableListOf<View>(ui.choice("Geral", cwd.isEmpty()) { cwd = ""; draw() })
+                    val chips = mutableListOf<View>(ui.choice("Sem projeto", cwd.isEmpty()) { cwd = ""; draw() })
                     projects.forEach { p -> chips += ui.choice(p.str("name").ifBlank { p.str("cwd").substringAfterLast('/') }, cwd == p.str("cwd")) { cwd = p.str("cwd"); draw() } }
                     box.addView(ui.flow(chips))
                 }
@@ -1261,6 +1644,8 @@ class MainActivity : Activity() {
         root.addView(header("Visão geral", "Uso e ambiente", ui.iconButton(R.drawable.ic_refresh, "Atualizar") { show(TAB_OVERVIEW) }, ui.iconButton(R.drawable.ic_more, "Menu") { appMenu() }))
         val list = ui.column().apply { setPadding(dp(14), 0, dp(14), dp(20)) }
         root.addView(ScrollView(this).apply { addView(list) }, ui.lp(MATCH, 0, 1f))
+        val health = ui.action("Saúde da VPS  ›") { serverHealthSheet() }
+        root.addView(health, 1, ui.lp(MATCH, dp(46), start = 14, end = 14, bottom = 10))
         list.addView(ui.text("Carregando contas…", 13.5f, C.TX3))
         request({ api.call("/api/accounts") }, onError = { list.removeAllViews(); list.addView(ui.text(it, 13.5f, C.RED)) }) { data ->
             accounts = data.optJSONArray("accounts").objects(); rotation = data.optJSONObject("rotation") ?: JSONObject()
@@ -1303,6 +1688,121 @@ class MainActivity : Activity() {
                     .setPositiveButton("Abrir Web Harness") { _, _ -> openLink("$BASE/") }.setNegativeButton("Fechar", null).show()
             }.apply { background = ui.shape(Color.TRANSPARENT, 14, 1, C.LINE2) }, ui.lp(MATCH, dp(46), top = 14))
             list.addView(ui.text("Codex Harness ${versionName()} · Android", 11.5f, C.TX3).apply { gravity = Gravity.CENTER }, ui.lp(top = 16))
+        }
+    }
+
+    private fun bytesLabel(bytes: Double): String {
+        if (!bytes.isFinite() || bytes < 0) return "—"
+        var n = bytes; var i = 0
+        val units = arrayOf("B", "KiB", "MiB", "GiB", "TiB")
+        while (n >= 1024 && i < units.lastIndex) { n /= 1024; i++ }
+        return if (i == 0) "${n.toLong()} B" else "${String.format(Locale("pt", "BR"), "%.1f", n)} ${units[i]}"
+    }
+
+    private fun serverHealthSheet() {
+        ui.sheet("Saúde da VPS") { body, dialog ->
+            val controls = ui.row()
+            val updated = ui.text("Lendo métricas…", 11.5f, C.TX3)
+            controls.addView(updated, ui.lp(0, WRAP, 1f))
+            val refresh = ui.action("Atualizar") {}
+            controls.addView(refresh, ui.lp(WRAP, dp(40)))
+            body.addView(controls, ui.lp(bottom = 10))
+            val content = ui.column(); body.addView(content)
+            var loading = false
+            lateinit var load: (Boolean) -> Unit
+            val pollHealth = object : Runnable {
+                override fun run() {
+                    if (!dialog.isShowing) return
+                    load(false)
+                    clock.postDelayed(this, 60_000)
+                }
+            }
+            fun render(data: JSONObject) {
+                content.removeAllViews()
+                val host = data.optJSONObject("host")
+                val docker = data.optJSONObject("docker")
+                if (host == null) { content.addView(ui.text("Métricas do servidor indisponíveis.", 13f, C.RED)); return }
+                val cpu = host.optJSONObject("cpu") ?: JSONObject()
+                val memory = host.optJSONObject("memory") ?: JSONObject()
+                val disk = host.optJSONObject("disk")
+                fun metric(name: String, value: String, detail: String, percent: Double?) {
+                    val card = ui.card(C.CARD, C.LINE, 14, 11)
+                    val head = ui.row(); head.addView(ui.text(name, 13f, C.TX2), ui.lp(0, WRAP, 1f)); head.addView(ui.text(value, 13f, C.TX, bold = true)); card.addView(head)
+                    if (percent != null && percent.isFinite()) card.addView(ui.progress(percent, if (percent >= 90) C.RED else if (percent >= 75) C.AMBER else C.LAV), ui.lp(MATCH, dp(5), top = 8))
+                    card.addView(ui.text(detail, 11.5f, C.TX3), ui.lp(top = 6)); content.addView(card, ui.lp(bottom = 7))
+                }
+                val cpuPct = cpu.optDouble("percent", Double.NaN)
+                metric("CPU", if (cpuPct.isFinite()) "${String.format(Locale("pt", "BR"), "%.1f", cpuPct)}%" else "—", "${cpu.optInt("cores")} vCPU · amostra de uso", cpuPct)
+                val total = memory.optDouble("totalBytes", 0.0); val used = memory.optDouble("usedBytes", 0.0)
+                metric("Memória", "${bytesLabel(memory.optDouble("availableBytes", Double.NaN))} disponíveis", "${bytesLabel(used)} usados de ${bytesLabel(total)}", if (total > 0) 100.0 * used / total else null)
+                if (disk != null) metric("Disco raiz", "${bytesLabel(disk.optDouble("availableBytes", Double.NaN))} livres", "${bytesLabel(disk.optDouble("usedBytes", Double.NaN))} usados de ${bytesLabel(disk.optDouble("totalBytes", Double.NaN))}", disk.optDouble("usedPercent", Double.NaN))
+                content.addView(ui.text("Projetos e serviços", 15f, C.TX, bold = true), ui.lp(top = 12, bottom = 8))
+                host.optJSONArray("services").objects().forEach { service ->
+                    val card = ui.card(C.CARD, C.LINE, 14, 11)
+                    card.addView(ui.text(service.str("name"), 13.5f, C.TX, bold = true))
+                    card.addView(ui.text("${service.str("status")} · CPU ${String.format(Locale("pt", "BR"), "%.1f", service.optDouble("cpuPercent", 0.0))}% · RAM ${bytesLabel(service.optDouble("memoryBytes", Double.NaN))}", 11.5f, C.TX3), ui.lp(top = 4)); content.addView(card, ui.lp(bottom = 7))
+                }
+                if (docker?.optBoolean("available") != true) content.addView(ui.text(docker?.str("error")?.ifBlank { null } ?: "Docker indisponível.", 13f, C.RED))
+                else {
+                    content.addView(ui.text("${docker.optInt("runningCount")} containers ativos · ${docker.optInt("stoppedCount")} parados", 12f, C.TX2), ui.lp(bottom = 8))
+                    val containers = docker.optJSONArray("containers").objects()
+                    val volumes = data.optJSONArray("dockerVolumes").objects()
+                    docker.optJSONArray("projects").objects().forEach { project ->
+                        val name = project.str("name"); val card = ui.card(C.CARD, C.LINE, 14, 11)
+                        val state = if (project.optBoolean("unhealthy")) "Com falha" else if (project.optInt("stopped") > 0) "${project.optInt("running")}/${project.optInt("containers")} ativos" else "Em execução"
+                        card.addView(ui.text(name, 14f, C.TX, bold = true))
+                        card.addView(ui.text("${project.optInt("containers")} containers · $state · CPU ${String.format(Locale("pt", "BR"), "%.1f", project.optDouble("cpuPercent", 0.0))}%", 11.5f, C.TX2), ui.lp(top = 4))
+                        card.addView(ui.text("RAM ${bytesLabel(project.optDouble("memoryBytes", Double.NaN))} · disco ${bytesLabel(project.optDouble("storageBytes", Double.NaN))}  ▾", 11.5f, C.TX3), ui.lp(top = 4))
+                        val details = ui.column().apply { visibility = View.GONE }
+                        containers.filter { it.str("project") == name }.forEach { c ->
+                            val stateText = if (c.optBoolean("running")) "CPU ${String.format(Locale("pt", "BR"), "%.1f", c.optDouble("cpuPercent", 0.0))}% · RAM ${bytesLabel(c.optDouble("memoryBytes", Double.NaN))}" else c.str("status")
+                            details.addView(ui.text("${c.str("name")} · $stateText · disco ${bytesLabel(c.optDouble("storageBytes", Double.NaN))}", 11.5f, C.TX2), ui.lp(top = 7))
+                        }
+                        if (project.str("sourcePath").isNotBlank()) details.addView(ui.text("Código: ${project.str("sourcePath")} · ${bytesLabel(project.optDouble("sourceBytes", Double.NaN))}", 11.5f, C.TX3), ui.lp(top = 7))
+                        volumes.filter { it.str("project") == name }.forEach { v -> details.addView(ui.text("Volume: ${v.str("name")} · ${v.str("size")}", 11.5f, C.TX3), ui.lp(top = 6)) }
+                        card.addView(details); card.setOnClickListener { details.visibility = if (details.visibility == View.VISIBLE) View.GONE else View.VISIBLE }
+                        content.addView(card, ui.lp(bottom = 7))
+                    }
+                }
+                content.addView(ui.text("Armazenamento Docker", 15f, C.TX, bold = true), ui.lp(top = 12, bottom = 8))
+                val names = mapOf("Images" to "Imagens", "Containers" to "Containers", "Local Volumes" to "Volumes", "Build Cache" to "Cache de build")
+                val storage = data.optJSONArray("dockerStorage").objects()
+                if (storage.isEmpty()) content.addView(ui.text("Resumo indisponível.", 12f, C.TX3))
+                storage.forEach { item ->
+                    val reclaimable = item.str("reclaimable").takeIf { it.isNotBlank() }?.let { " · $it reclamável" }.orEmpty()
+                    content.addView(ui.text("${names[item.str("type")] ?: item.str("type")}: ${item.str("size")}$reclaimable", 12.5f, C.TX2), ui.lp(bottom = 5))
+                }
+                val allVolumes = data.optJSONArray("dockerVolumes").objects()
+                val locations = data.optJSONArray("storageLocations").objects()
+                val directories = data.optJSONArray("projectDirectories").objects()
+                val storageDetails = ui.column().apply { visibility = View.GONE }
+                if (allVolumes.isNotEmpty()) {
+                    storageDetails.addView(ui.text("Volumes", 12.5f, C.TX, bold = true), ui.lp(top = 8, bottom = 4))
+                    allVolumes.forEach { v -> storageDetails.addView(ui.text("${v.str("name")} · ${v.str("size")} · ${v.str("project").ifBlank { "sem projeto atribuído" }}", 11.5f, C.TX2), ui.lp(bottom = 5)) }
+                }
+                if (locations.isNotEmpty() || directories.isNotEmpty()) {
+                    storageDetails.addView(ui.text("Pastas principais", 12.5f, C.TX, bold = true), ui.lp(top = 8, bottom = 4))
+                    locations.forEach { location -> storageDetails.addView(ui.text("${location.str("name")} · ${location.str("path")} · ${bytesLabel(location.optDouble("bytes", Double.NaN))}", 11.5f, C.TX2), ui.lp(bottom = 5)) }
+                    directories.forEach { location -> storageDetails.addView(ui.text("Código · ${location.str("project")} · ${location.str("path")} · ${bytesLabel(location.optDouble("bytes", Double.NaN))}", 11.5f, C.TX2), ui.lp(bottom = 5)) }
+                }
+                content.addView(ui.action("Volumes e pastas  ▾") { storageDetails.visibility = if (storageDetails.visibility == View.VISIBLE) View.GONE else View.VISIBLE }, ui.lp(MATCH, dp(42), top = 8))
+                content.addView(storageDetails)
+                content.addView(ui.text("CPU é uma amostra. Limites configurados não são recursos reservados. Os totais de pastas e volumes podem se sobrepor.", 11f, C.TX3), ui.lp(top = 10))
+                val checked = runCatching { java.time.Instant.parse(data.str("checkedAt")).epochSecond.toDouble() }.getOrNull()
+                updated.text = if (checked != null) "Atualizado ${clockTime(checked)} · São Paulo" else "Leitura atualizada"
+            }
+            load = { force ->
+                if (!loading) {
+                    loading = true; refresh.isEnabled = false
+                    request({ api.call("/api/server-health" + if (force) "?refresh=true" else "") }, onError = { loading = false; refresh.isEnabled = true; updated.text = "Atualização indisponível"; if (dialog.isShowing) ui.toast(it) }, scoped = false) { data ->
+                        loading = false; refresh.isEnabled = true
+                        if (dialog.isShowing) render(data)
+                    }
+                }
+            }
+            refresh.setOnClickListener { load(true) }
+            dialog.setOnDismissListener { clock.removeCallbacks(pollHealth) }
+            clock.post { if (dialog.isShowing) { load(false); clock.postDelayed(pollHealth, 60_000) } }
         }
     }
 

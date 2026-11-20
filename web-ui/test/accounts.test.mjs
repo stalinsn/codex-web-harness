@@ -120,3 +120,9 @@ test('CLI runner: pre-aborted runs do not start, deltas join without separators'
   assert.match(outcome.text, /HARNESS_STATUS: DONE/);
   assert.deepEqual(events.filter((event) => event.type === 'text').map((event) => event.key), ['msg:0', 'msg:0']);
 });
+
+test('claude init event reports the model the CLI resolved', () => {
+  const parse = getParser('claude');
+  assert.deepEqual(parse('{"type":"system","subtype":"init","session_id":"s1","model":"claude-opus-5-5"}'), [{ type: 'session', sessionId: 's1', model: 'claude-opus-5-5' }]);
+  assert.deepEqual(parse('{"type":"system","subtype":"init","session_id":"s2"}'), [{ type: 'session', sessionId: 's2' }]);
+});

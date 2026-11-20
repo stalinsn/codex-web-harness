@@ -50,7 +50,8 @@ function claudeParser() {
     if (!event || typeof event !== 'object') return [];
     switch (event.type) {
       case 'system':
-        return event.session_id ? [{ type: 'session', sessionId: event.session_id }] : [];
+        // The init event names the model the CLI actually resolved (its default included).
+        return event.session_id ? [{ type: 'session', sessionId: event.session_id, ...(typeof event.model === 'string' && event.model ? { model: event.model } : {}) }] : [];
       case 'stream_event': {
         const inner = event.event || {};
         if (inner.type === 'message_start' && inner.message?.id) messageId = inner.message.id;
@@ -167,7 +168,8 @@ function genericParser() {
       }
       return out;
     }
-    if (sessionId && (kind === 'init' || kind === 'system' || kind === 'result' || !kind)) out.push({ type: 'session', sessionId });
+    const reportedModel = typeof event.model === 'string' ? event.model : '';
+    if (sessionId && (kind === 'init' || kind === 'system' || kind === 'result' || !kind)) out.push({ type: 'session', sessionId, ...(reportedModel ? { model: reportedModel } : {}) });
     const isTool = /tool/.test(kind);
     const errorValue = event.error ?? resultPayload?.error;
     const errorText = typeof errorValue === 'string' ? errorValue : errorValue?.message || (kind === 'error' ? pickText(event) : '');

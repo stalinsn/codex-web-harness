@@ -18,16 +18,20 @@ class VoiceRecorder(private val context: Context) {
         val target = File(context.cacheDir, "voz-${System.currentTimeMillis()}.m4a")
         @Suppress("DEPRECATION")
         val r = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(context) else MediaRecorder()
-        r.setAudioSource(MediaRecorder.AudioSource.MIC)
-        r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-        r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-        r.setAudioChannels(1)
-        r.setAudioSamplingRate(44100)
-        r.setAudioEncodingBitRate(64000)
-        r.setMaxDuration(180_000)
-        r.setOutputFile(target.absolutePath)
-        r.prepare()
-        r.start()
+        try {
+            r.setAudioSource(MediaRecorder.AudioSource.MIC)
+            r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            r.setAudioChannels(1)
+            r.setAudioSamplingRate(44100)
+            r.setAudioEncodingBitRate(64000)
+            r.setMaxDuration(180_000)
+            r.setOutputFile(target.absolutePath)
+            r.prepare()
+            r.start()
+        } catch (failure: Exception) {
+            r.release(); target.delete(); throw failure
+        }
         recorder = r; file = target; startedAt = System.currentTimeMillis()
     }
 

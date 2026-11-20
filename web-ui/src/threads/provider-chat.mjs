@@ -283,6 +283,7 @@ export class ProviderChat {
     let eventRecording = Promise.resolve();
     try {
       const { prompt, sessionId } = await this.#prompt(record, account, text, { handoff });
+      if (account.model) await recorder.setModel(account.model);
       outcome = await this.accounts.runSegment(account, {
         taskId: `chat:${threadId}`, prompt, cwd: record.thread.cwd, sessionId, title: record.thread.name || record.thread.preview || 'Conversa', signal: controller.signal, accessMode,
         // Codex accounts are mirrored item by item (onCodexMessage); CLIs go through the parser events.
@@ -291,6 +292,9 @@ export class ProviderChat {
             execution.sessionId = event.sessionId || execution.sessionId;
             execution.turnId = event.turnId || execution.turnId;
             return;
+          }
+          if (event.type === 'session' && event.model) {
+            eventRecording = eventRecording.then(() => recorder.setModel(event.model)).catch((error) => console.error('Falha ao registrar o modelo do turno:', error.message));
           }
           if (event.type === 'session' && account.primary && event.sessionId) {
             execution.sessionId = event.sessionId;

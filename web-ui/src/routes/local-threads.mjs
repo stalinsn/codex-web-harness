@@ -14,6 +14,21 @@ const LOCAL = '(ext-[a-f0-9-]{36})';
 const route = (suffix) => new RegExp(`^/api/threads/${LOCAL}/${suffix}$`);
 const PAGE = 20;
 
+// Only use the Codex session belonging to the active or last account. Never reuse a
+// previous account's reading after a handoff, and do not start a server just to read it.
+export function localContextUsage(record, chat, threadId) {
+  const running = chat.running.get(threadId);
+  const accountId = running?.accountId || record.lastAccountId;
+  if (!accountId) return null;
+  const account = chat.accounts.registry.get(accountId);
+  if (!account || account.provider !== 'codex') return null;
+  const sessionId = running ? running.sessionId : record.sessions?.[accountId];
+  if (!sessionId) return null;
+  const home = account.primary ? chat.accounts.primaryCodex.codexHome : account.dir;
+  const server = chat.accounts.codexServers.get(home);
+  return server?.threadContextUsage.get(sessionId) || null;
+}
+
 export function registerLocalThreadRoutes(router, { localThreads: store, providerChat: chat, codex }) {
   const load = async (id) => {
     const record = await store.get(id);
@@ -28,7 +43,7 @@ export function registerLocalThreadRoutes(router, { localThreads: store, provide
     const start = Math.max(0, end - PAGE);
     return json(res, 200, { thread: record.thread, turns: record.turns.slice(start, end), nextCursor: start > 0 ? String(start) : null, accessMode: record.thread.accessMode || '' });
   });
-  router.get(route('context-usage'), ({ res }) => json(res, 200, { contextUsage: null }));
+  router.get(route('context-usage'), async ({ res, params: [id] }) => json(res, 200, { contextUsage: localContextUsage(await load(id), chat, id) }));
 
   router.post(route('access-mode'), async ({ req, res, params: [id] }) => {
     const body = await readBody(req);

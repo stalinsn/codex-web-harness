@@ -59,7 +59,7 @@ class HarnessApi(context: Context) {
         val conn = URL(BASE + path).openConnection() as javax.net.ssl.HttpsURLConnection
         conn.instanceFollowRedirects = false
         conn.connectTimeout = 12000
-        conn.readTimeout = 25000
+        conn.readTimeout = if (path.startsWith("/api/server-health")) 65000 else 25000
         // Every header must be set before the body is written (that opens the connection).
         conn.setRequestProperty("Accept", if (path.startsWith("/api/local-files") || path.startsWith("/api/images")) "*/*" else "application/json")
         if (path.startsWith("/api/") && cookie.isNotEmpty()) conn.setRequestProperty("Cookie", "$COOKIE=$cookie")

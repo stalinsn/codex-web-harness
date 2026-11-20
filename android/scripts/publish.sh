@@ -43,10 +43,9 @@ FILE=Codex-Harness-Android-$NAME.apk
 SHA=$(sha256sum "$APK" | cut -d' ' -f1)
 SIZE=$(( $(stat -c %s "$APK") / 1000 ))
 
-# Build guardado fora do código (só o mais recente).
+# Builds guardados fora do código para permitir recuperação.
 mkdir -p "$BUILDS"
 cp "$APK" "$BUILDS/.$FILE.new" && mv "$BUILDS/.$FILE.new" "$BUILDS/$FILE"
-find "$BUILDS" -maxdepth 1 -name 'Codex-Harness-Android-*.apk' ! -name "$FILE" -delete
 
 # Arquivos públicos: APK, manifesto e página, gravados de forma atômica.
 cp "$APK" "$PUBLIC/.$FILE.new" && mv "$PUBLIC/.$FILE.new" "$PUBLIC/$FILE"
@@ -93,5 +92,9 @@ curl -fsS https://nyxrooms.com/codex-agent/android.html | grep -q "Versão $NAME
 echo "$NAME ($CODE) publicado; manifesto, página e APK conferidos por HTTPS (sha256 $SHA)."
 EOF
 echo "$(date -u +%FT%TZ) Publicando $NAME ($CODE), sha256 $SHA, certificado $CERT." >> "$STATUS"
+if [ "${HARNESS_PUBLISH_SKIP_RESTART:-0}" = 1 ]; then
+  echo "Publicação preparada para uma troca de release coordenada."
+  exit 0
+fi
 sudo -n systemd-run --quiet --unit="harness-publish-$CODE-$(date +%s)" --on-active=5 "$HARNESS/restart-when-idle.sh" "$STATUS" "$CHECK"
 echo "Publicação de $NAME preparada. O harness reinicia quando ficar ocioso; resultado em $STATUS."

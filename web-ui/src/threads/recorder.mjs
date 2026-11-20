@@ -98,6 +98,17 @@ export class TurnRecorder {
   }
 
   /** Feed one normalized provider event (see accounts/parsers.mjs). */
+  /** Model actually used by this turn, as reported by the provider. */
+  async setModel(model) {
+    const value = String(model || '').trim().slice(0, 120);
+    if (!value || value === this.model) return;
+    this.model = value;
+    await this.store.update(this.threadId, (record) => {
+      const turn = record.turns.find((item) => item.id === this.turnId);
+      if (turn) turn.model = value;
+    });
+  }
+
   async handle(event) {
     switch (event.type) {
       case 'text': return this.#text(event);

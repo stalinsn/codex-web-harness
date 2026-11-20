@@ -2,3 +2,4 @@
     <path android:strokeColor="#FFFFFF" android:strokeWidth="1.8" android:strokeLineJoin="round" android:pathData="M2,12Q7,5 12,5Q17,5 22,12Q17,19 12,19Q7,19 2,12Z M15,12A3,3 0,1 1,9 12A3,3 0,1 1,15 12Z"/>
     <path android:strokeColor="#FFFFFF" android:strokeWidth="2" android:strokeLineCap="round" android:pathData="M3,3L21,21"/>
 </vector>
+
