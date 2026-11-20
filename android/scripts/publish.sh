@@ -31,7 +31,7 @@ else
   echo "$CERT" > "$SIGN_DIR/cert.sha256"; chmod 600 "$SIGN_DIR/cert.sha256"
 fi
 
-BADGING=$("$BT/aapt2" dump badging "$APK" | head -1)
+BADGING=$("$BT/aapt2" dump badging "$APK" | awk 'NR==1')
 PKG=$(sed -n "s/.*package: name='\([^']*\)'.*/\1/p" <<<"$BADGING")
 CODE=$(sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" <<<"$BADGING")
 NAME=$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<<"$BADGING")
