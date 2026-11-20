@@ -282,6 +282,7 @@ export function populateAccountSelect() {
 
 /** Show the model controls for the selected provider and load its actual CLI catalog. */
 export function applyChatAccount() {
+  document.dispatchEvent(new Event('harness-usage-account-changed'));
   const account = state.accounts.find((item) => item.id === state.chatAccountId);
   const external = Boolean(account && !account.primary);
   $('.account-wrap')?.classList.toggle('external', external);

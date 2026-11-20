@@ -44,7 +44,21 @@ function setMeter(fill, percent) {
   fill.className = `meter-fill ${tone(value)}`;
 }
 
-function usageWindows() {
+export function usageAccount() {
+  return state.accounts.find((account) => account.id === state.chatAccountId);
+}
+
+export function usageWindows(account = usageAccount()) {
+  if (account && !account.primary) {
+    const labels = { five_hour: '5 horas', seven_day: '7 dias', seven_day_opus: '7 dias · Opus', seven_day_sonnet: '7 dias · Sonnet' };
+    const readings = (account.usageWindows || []).filter((reading) => !reading.resetsAt || reading.resetsAt > Date.now() / 1000);
+    if (readings.length) return readings.sort((a, b) => (a.window === 'five_hour' ? -1 : b.window === 'five_hour' ? 1 : a.window.localeCompare(b.window))).map((reading) => ({
+      usedPercent: reading.percent, resetsAt: reading.resetsAt, label: labels[reading.window] || reading.window,
+    }));
+    if (account.percent == null || (account.resetsAt && account.resetsAt <= Date.now() / 1000)) return [];
+    if (account.provider === 'claude-code' && Date.now() - account.percentAt >= 30 * 60_000) return [];
+    return [{ usedPercent: account.percent, resetsAt: account.resetsAt, label: labels[account.usageWindow] || account.usageWindow || 'última leitura' }];
+  }
   const data = state.rateLimits;
   const buckets = data ? (Array.isArray(data) ? data : Object.values(data)) : [];
   const bucket = buckets[0];
@@ -53,18 +67,20 @@ function usageWindows() {
 
 function renderSummaryNow() {
   const [short, long] = usageWindows();
+  $('#summaryUsageAccount').textContent = usageAccount()?.label || 'Codex';
   if (short) {
     const used = Number(short.usedPercent) || 0;
     $('#summaryUsage').textContent = `${Math.round(used)}%`;
     setMeter($('#summaryUsageFill'), used);
-    const longText = long ? `longa ${Math.round(Number(long.usedPercent) || 0)}%` : '';
-    const reset = used >= 100 && short.resetsAt ? `libera ${formatCountdown(short.resetsAt)}` : 'janela curta';
+    const longText = long ? `${long.label || 'longa'} ${Math.round(Number(long.usedPercent) || 0)}%` : '';
+    const reset = used >= 100 && short.resetsAt ? `libera ${formatCountdown(short.resetsAt)}` : short.label || 'janela curta';
     $('#summaryUsageDetail').textContent = [reset, longText].filter(Boolean).join(' · ');
     setCardSummary('usage', `${Math.round(used)}%${long ? ` · ${Math.round(Number(long.usedPercent) || 0)}%` : ''}`);
   } else {
     $('#summaryUsage').textContent = '—';
     $('#summaryUsageDetail').textContent = 'sem dados de uso';
     setMeter($('#summaryUsageFill'), 0);
+    setCardSummary('usage', '');
   }
 
   const accounts = state.accounts.filter((account) => account.enabled);

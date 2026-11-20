@@ -67,7 +67,11 @@ export function registerAccountRoutes(router, { accounts, logins }) {
     const account = requireAccount(id);
     if (accounts.busy.has(id)) return fail(res, 409, 'A conta está executando uma tarefa. Altere o acesso depois que ela terminar.');
     const body = await readBody(req, 4096);
-    await setAntigravityAccessMode(account, body.mode);
+    if (account.provider === 'claude-code') {
+      if (!['acceptEdits', 'bypassPermissions'].includes(body.mode)) return fail(res, 400, 'Modo de acesso inválido para Claude.');
+    } else {
+      await setAntigravityAccessMode(account, body.mode);
+    }
     await accounts.registry.update(id, { permissionMode: body.mode });
     return json(res, 200, await snapshot());
   });

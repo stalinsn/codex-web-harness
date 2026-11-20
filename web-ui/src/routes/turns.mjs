@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { config } from '../config.mjs';
 import { fail, json, readBody } from '../http/respond.mjs';
-import { attachThreadToProject, validateCwd } from '../projects.mjs';
+import { attachThreadToProject, findProjectForCwd, getProjects, validateCwd } from '../projects.mjs';
 import { isLocalThread } from '../threads/local-store.mjs';
 import { transcriptOf } from '../threads/provider-chat.mjs';
 import { cleanupTurnUploads, saveFiles, saveImages, validateAttachments } from '../uploads.mjs';
@@ -38,7 +38,11 @@ async function sendLocalTurn(res, body, { providerChat, codex }) {
       const turns = await codex.rpc('thread/turns/list', { threadId: body.threadId, limit: 20, sortDirection: 'desc', itemsView: 'full' });
       seed = transcriptOf([...(turns.data || [])].reverse());
       name = `${read.thread?.name || read.thread?.preview || 'Conversa'} (continuação)`.slice(0, 120);
-      cwdHint = read.thread?.cwd || cwdHint;
+      const projects = await getProjects();
+      const sourceCwd = read.thread?.cwd;
+      const cwdProject = findProjectForCwd(projects, sourceCwd);
+      const linkedProject = projects.find((project) => project.threadIds.includes(body.threadId));
+      cwdHint = (cwdProject ? sourceCwd : linkedProject?.cwd || sourceCwd) || cwdHint;
     }
     const cwd = await validateCwd(cwdHint || config.defaultCwd);
     const record = await providerChat.create({ accountId: String(body.accountId || ''), cwd, name, seed });

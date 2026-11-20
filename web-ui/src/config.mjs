@@ -19,6 +19,9 @@ export const config = Object.freeze({
   projectsFile: join(CODEX_HOME, 'web-projects.json'),
   labelsFile: join(CODEX_HOME, 'web-label-colors.json'),
   authFile: join(CODEX_HOME, 'web-auth.json'),
+  integrationsFile: join(CODEX_HOME, 'web-integrations.json'),
+  // Opt-in: let integrations run text on Codex accounts (see src/integrations/text-runner.mjs).
+  integrationCodexText: process.env.CODEX_UI_INTEGRATION_CODEX === '1',
   authOrigin: process.env.CODEX_UI_ORIGIN ? new URL(process.env.CODEX_UI_ORIGIN).origin : null,
   // Header set by the local reverse proxy with the real client address (e.g. x-real-ip,
   // or cf-connecting-ip behind Cloudflare). Only trusted when the peer is loopback.

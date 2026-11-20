@@ -3,7 +3,7 @@ import { api } from './api.js';
 import { maybeDrainDeferredQueue } from './deferred-queue.js';
 import { $, escapeHtml } from './dom.js';
 import { formatBytes, formatCountdown, formatDuration, formatNumber, formatReset } from './format.js';
-import { renderInspectorSummary, setCardSummary } from './inspector-layout.js';
+import { renderInspectorSummary, setCardSummary, usageAccount, usageWindows } from './inspector-layout.js';
 import { renderConversationContext, threadDisplayTitle } from './projects.js';
 import { renderQueue } from './queue.js';
 import { clearResolvedRateLimitFailure, getEffectiveRateLimitBlock, renderRateLimitNotice, updateResetCountdowns } from './rate-limit.js';
@@ -14,7 +14,13 @@ import { renderThreads } from './thread-list.js';
 export function renderUsage() {
   renderInspectorSummary();
   const meters = $('#rateLimitMeters');
-  const data = state.rateLimits;
+  const account = usageAccount();
+  const external = account && !account.primary;
+  $('#usageAccountTitle').textContent = external ? `Uso · ${account.label}` : 'Uso do Codex';
+  $('#usageAccountNote').textContent = external
+    ? 'Última leitura informada pela CLI durante uma execução.'
+    : 'Os limites são os informados pela conta ChatGPT. Tokens são atividade, não valor em dólares.';
+  const data = external ? usageWindows().map((primary) => ({ primary, limitName: account.label })) : state.rateLimits;
   const buckets = data ? (Array.isArray(data) ? data : Object.values(data)) : [];
   if (!buckets.length) {
     meters.innerHTML = '<div class="meter-heading"><span>Limites da conta</span><span>indisponíveis</span></div>';
@@ -24,7 +30,7 @@ export function renderUsage() {
       return primaries.map((window, windowIndex) => {
         const used = Math.min(100, Math.max(0, Number(window.usedPercent) || 0));
         const label = bucket.limitName || (index === 0 ? 'Codex' : bucket.limitId || 'Outro limite');
-        const windowLabel = windowIndex === 0 ? 'janela curta' : 'janela longa';
+        const windowLabel = window.label || (windowIndex === 0 ? 'janela curta' : 'janela longa');
         const reset = formatReset(window.resetsAt);
         const resetAt = Number(window.resetsAt);
         const countdown = Number.isFinite(resetAt) && resetAt > 0 ? `<strong class="meter-countdown" data-reset-at="${Math.floor(resetAt)}">${formatCountdown(resetAt)}</strong>` : '';
@@ -35,7 +41,7 @@ export function renderUsage() {
   const summary = state.usage?.summary || {};
   const daily = state.usage?.dailyUsageBuckets;
   const recent = Array.isArray(daily) && daily.length ? daily[daily.length - 1].tokens : null;
-  const metrics = [
+  const metrics = external ? [] : [
     { label: 'Tokens acumulados', value: summary.lifetimeTokens, format: formatNumber },
     { label: 'Último dia disponível', value: recent, format: formatNumber },
     { label: 'Maior uso diário', value: summary.peakDailyTokens, format: formatNumber },

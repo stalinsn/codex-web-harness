@@ -8,6 +8,7 @@ import { newChat, openThread } from './conversation.js';
 import { loadDeferredQueue, maybeDrainDeferredQueue } from './deferred-queue.js';
 import { $, $$, debounce, randomKey, toast } from './dom.js';
 import { bindInspectorLayout } from './inspector-layout.js';
+import { bindIntegrationEvents } from './integrations.js';
 import { refreshUsage, refreshVpsHealth, renderUsage } from './inspector.js';
 import { closeSidebar, openSidebar, setConnection, setupComposerViewport, setupInspectorResize, showInspector } from './layout.js';
 import { scrollConversation } from './messages.js';
@@ -77,6 +78,7 @@ async function loadBootstrap() {
 export function bindEvents() {
   enhanceComposerSelects();
   bindAccountEvents();
+  bindIntegrationEvents();
   bindTaskEvents();
   bindWizardEvents();
   bindInspectorLayout();
@@ -174,7 +176,8 @@ export function bindEvents() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') syncLabelColors().catch(() => {});
   });
-  $('#refreshUsage').addEventListener('click', () => refreshUsage(true).then(() => toast('Uso atualizado.')).catch((error) => toast(error.message, 'error')));
+  document.addEventListener('harness-usage-account-changed', renderUsage);
+  $('#refreshUsage').addEventListener('click', () => (state.chatAccountId === 'codex' ? refreshUsage(true) : refreshAccounts()).then(() => toast('Painel atualizado.')).catch((error) => toast(error.message, 'error')));
   $('#refreshVpsHealth').addEventListener('click', () => refreshVpsHealth(true));
   $('#toggleUsage').addEventListener('click', () => showInspector(true));
   $('#closeUsage').addEventListener('click', () => showInspector(false));

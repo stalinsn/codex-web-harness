@@ -6,6 +6,41 @@ import { markdown } from './markdown.js';
 import { scrollConversation } from './messages.js';
 import { state } from './state.js';
 
+function formatActivityOutput(value) {
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object') return JSON.stringify(parsed, null, 2);
+    } catch {}
+    return value;
+  }
+  if (value == null) return '';
+  if (typeof value !== 'object') return String(value);
+
+  const stringify = (item) => {
+    try {
+      return JSON.stringify(item, null, 2);
+    } catch {
+      return String(item);
+    }
+  };
+
+  if (typeof value.text === 'string') return formatActivityOutput(value.text);
+  if (typeof value.message === 'string') return formatActivityOutput(value.message);
+
+  if (Array.isArray(value.content)) {
+    const textParts = value.content.map((part) => {
+      if (typeof part === 'string') return formatActivityOutput(part);
+      if (typeof part?.text === 'string') return formatActivityOutput(part.text);
+      if (typeof part?.resource?.text === 'string') return formatActivityOutput(part.resource.text);
+      return '';
+    }).filter(Boolean);
+    if (textParts.length) return textParts.join('\n');
+  }
+
+  return stringify(value.structuredContent ?? value);
+}
+
 export function updateTurnIntermediateTitle(group) {
   const isLive = state.busy && group.turnId === (state.activeTurnId || 'active');
   const elapsed = group.durationMs ?? (isLive && state.turnStartedAtMs ? Date.now() - state.turnStartedAtMs : 0);
@@ -330,7 +365,8 @@ export function renderActivity(item, append = false, turnId = '') {
   } else {
     headingIcon.innerHTML = `<svg viewBox="0 0 24 24">${icons.bolt}</svg>`;
     headingText.textContent = item.type === 'mcpToolCall' ? `Ferramenta · ${item.tool || 'MCP'}` : item.type === 'plan' ? 'Plano de trabalho' : item.type || 'Atividade';
-    if (item.text || item.result || item.error) output.textContent = item.text || item.result || item.error;
+    const result = item.text ?? item.result ?? item.error;
+    if (result != null && result !== '') output.textContent = formatActivityOutput(result);
   }
   if (output.textContent) output.classList.remove('hidden');
   if (append) scrollConversation();

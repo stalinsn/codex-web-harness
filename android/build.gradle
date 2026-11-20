@@ -1,0 +1,15 @@
+plugins { id 'com.android.application' version '9.2.0' }
+android {
+    namespace 'br.com.nyxrooms.harness'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'br.com.nyxrooms.harness'
+        minSdk 26
+        targetSdk 34
+        versionCode 4
+        versionName '1.3'
+    }
+}
+
+
+

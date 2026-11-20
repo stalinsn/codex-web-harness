@@ -2,7 +2,7 @@
 import { api } from './api.js';
 import { $, debounce, escapeHtml, installIcons, toast } from './dom.js';
 import { formatCountdown } from './format.js';
-import { renderInspectorSummary } from './inspector-layout.js';
+import { renderInspectorSummary, usageWindows } from './inspector-layout.js';
 import { populateAccountSelect } from './models.js';
 import { renderRateLimitNotice } from './rate-limit.js';
 import { providerClass } from './responders.js';
@@ -11,6 +11,7 @@ import { openWizard } from './wizard.js';
 
 let accountsRequest = null;
 let renderPending = false;
+const expandedAccess = new Set();
 
 export function refreshAccounts() {
   accountsRequest ||= api('/api/accounts').then(applyAccounts).finally(() => { accountsRequest = null; });
@@ -43,6 +44,16 @@ function statusOf(account) {
 }
 
 function usageMeter(account) {
+  if (account.provider === 'claude-code') {
+    const readings = usageWindows(account);
+    return ['5 horas', '7 dias'].map((label) => {
+      const reading = readings.find((item) => item.label === label);
+      if (!reading) return `<div><small class="account-usage-note">${label} · aguardando leitura</small><div class="meter-track account-meter" aria-hidden="true"></div></div>`;
+      const used = Math.min(100, Math.max(0, reading.usedPercent));
+      const tone = used >= 90 ? 'critical' : used >= 75 ? 'high' : '';
+      return `<div><small class="account-usage-note">${label} · ${Math.round(used)}% usado</small><div class="meter-track account-meter" aria-hidden="true"><div class="meter-fill ${tone}" style="width:${used}%"></div></div></div>`;
+    }).join('');
+  }
   if (account.percent == null) return account.usageSource === 'reported' || account.usageSource === 'events' ? '' : '<small class="account-usage-note">uso não informado pela CLI</small>';
   const percent = Math.min(100, Math.max(0, Number(account.percent)));
   const tone = percent >= (state.rotation?.switchAtPercent ?? 95) ? 'critical' : percent >= 75 ? 'high' : '';
@@ -61,9 +72,18 @@ export function renderAccounts() {
   list.innerHTML = state.accounts.map((account, index) => {
     const status = statusOf(account);
     const details = [account.providerLabel, account.model, account.effort ? `esforço ${account.effort}` : ''].filter(Boolean).map(escapeHtml).join(' · ');
-    const accessMode = account.permissionMode || (account.provider === 'antigravity' ? 'request-review' : '');
-    const modeLabel = accessMode === 'always-proceed' ? 'Acesso completo' : accessMode === 'request-review' ? 'Com autorização' : `Outro modo da CLI: ${accessMode}`;
-    const accessControls = account.provider === 'antigravity' ? `<div class="account-access-controls"><span>Acesso do agente</span><small class="account-access-current">Modo atual: ${escapeHtml(modeLabel)}</small><div role="group" aria-label="Modo de acesso de ${escapeHtml(account.label)}"><button type="button" class="account-access-button ${accessMode === 'always-proceed' ? 'active' : ''}" data-action="access-mode" data-mode="always-proceed" aria-pressed="${accessMode === 'always-proceed'}" ${account.busyWith ? 'disabled' : ''}>Acesso completo</button><button type="button" class="account-access-button ${accessMode === 'request-review' ? 'active' : ''}" data-action="access-mode" data-mode="request-review" aria-pressed="${accessMode === 'request-review'}" ${account.busyWith ? 'disabled' : ''}>Com autorização</button></div><small>Esse modo vale para a conta e libera as ferramentas que a CLI oferece; não cria capacidade no modelo. Em headless, pedidos de aprovação são bloqueados e registrados em Erros da conversa. Regras de aprovação ou negação em outros escopos continuam valendo.</small></div>` : '';
+    const claude = account.provider === 'claude-code';
+    const antigravity = account.provider === 'antigravity';
+    const full = claude ? 'bypassPermissions' : 'always-proceed';
+    const manual = claude ? 'acceptEdits' : 'request-review';
+    const accessMode = account.permissionMode || manual;
+    const modeLabel = accessMode === full ? 'Acesso completo' : accessMode === manual ? 'Com autorização' : `Outro modo da CLI: ${accessMode}`;
+    const accessButton = (mode, label) => `<button type="button" class="account-access-button ${accessMode === mode ? 'active' : ''}" data-action="access-mode" data-mode="${mode}" aria-pressed="${accessMode === mode}" ${account.busyWith ? 'disabled' : ''}>${label}</button>`;
+    const accessHint = claude ? 'Com autorização permite edições de arquivos. Ações que exigem confirmação podem ser bloqueadas em execução sem interação.' : 'Em execução sem interação, pedidos de aprovação são bloqueados. Regras de outros escopos continuam valendo.';
+    const expanded = expandedAccess.has(account.id) ? 'open' : '';
+    const accessControls = claude || antigravity
+      ? `<details class="account-access-panel" ${expanded}><summary>Acesso do agente · ${escapeHtml(modeLabel)}</summary><div class="account-access-controls"><div role="group" aria-label="Modo de acesso de ${escapeHtml(account.label)}">${accessButton(full, 'Acesso completo')}${accessButton(manual, 'Com autorização')}</div><small>${accessHint}</small></div></details>`
+      : account.primary ? `<details class="account-access-panel" ${expanded}><summary>Acesso por conversa</summary><div class="account-access-controls"><small>Com o Codex selecionado, abra Ajustes → Permissões e escolha Pedir aprovação ou Automático.</small></div></details>` : '';
     return `<li class="account-row tone-${status.tone} ${providerClass(account.provider)}" data-account-id="${escapeHtml(account.id)}">
       <span class="account-position">${index + 1}</span>
       <div class="account-main">
@@ -87,7 +107,7 @@ export function renderAccounts() {
         <small>${details}</small>
         ${usageMeter(account)}
         ${accessControls}
-        <small class="account-status"><span class="account-dot"></span>${status.tone === 'error' && !account.primary ? `<button type="button" class="account-connect-link" data-action="connect" title="${escapeHtml(status.title || '')}">${escapeHtml(status.text)} · Conectar</button>` : escapeHtml(status.text)}${account.percent != null ? ` · ${Math.round(account.percent)}% usado` : ''}</small>
+        <small class="account-status"><span class="account-dot"></span>${status.tone === 'error' && !account.primary ? `<button type="button" class="account-connect-link" data-action="connect" title="${escapeHtml(status.title || '')}">${escapeHtml(status.text)} · Conectar</button>` : escapeHtml(status.text)}${account.provider !== 'claude-code' && account.percent != null ? ` · ${Math.round(account.percent)}% usado` : ''}</small>
       </div>
     </li>`;
   }).join('') || '<li class="muted-note">Nenhuma conta cadastrada.</li>';
@@ -108,9 +128,11 @@ async function copyText(text) {
 async function accountAction(account, action, mode = '') {
   const id = encodeURIComponent(account.id);
   if (action === 'access-mode') {
+    const full = ['always-proceed', 'bypassPermissions'].includes(mode);
+    if (full && !window.confirm(`Ativar acesso completo para ${account.label}? As próximas execuções poderão usar ferramentas sem pedir confirmação.`)) return;
     const data = await api(`/api/accounts/${id}/access`, { method: 'POST', body: JSON.stringify({ mode }) });
     applyAccounts(data);
-    return toast(mode === 'always-proceed' ? `${account.label}: acesso automático ativado.` : `${account.label}: ações sem autorização serão bloqueadas.`);
+    return toast(full ? `${account.label}: acesso automático ativado.` : `${account.label}: ações sem autorização serão bloqueadas.`);
   }
   if (action === 'up' || action === 'down') {
     const order = state.accounts.map((item) => item.id);
@@ -150,6 +172,26 @@ const saveRotation = debounce(async (changes) => {
 }, 500);
 
 export function bindAccountEvents() {
+  $('#accountList').addEventListener('toggle', (event) => {
+    const panel = event.target;
+    if (!panel.matches?.('.account-access-panel') || !panel.isConnected) return;
+    const id = panel.closest('[data-account-id]')?.dataset.accountId;
+    if (!id) return;
+    if (panel.open) expandedAccess.add(id);
+    else expandedAccess.delete(id);
+  }, true);
+  document.addEventListener('click', (event) => {
+    for (const menu of document.querySelectorAll('.account-menu[open]')) {
+      if (!menu.contains(event.target)) menu.open = false;
+    }
+  }, true);
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    for (const menu of document.querySelectorAll('.account-menu[open]')) {
+      if (menu.contains(document.activeElement)) menu.querySelector('summary')?.focus();
+      menu.open = false;
+    }
+  });
   $('#accountList').addEventListener('click', (event) => {
     const button = event.target.closest('button[data-action]');
     if (!button) return;

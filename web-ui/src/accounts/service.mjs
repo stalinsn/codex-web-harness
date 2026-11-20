@@ -38,6 +38,7 @@ export class AccountService {
         if (percent != null) Object.assign(state, { percent, resetsAt, percentAt: now });
         if (this.primaryCodex.account) state.loggedIn = true;
       }
+      const usage = this.currentUsage(account, now);
       return {
         id: account.id,
         provider: account.provider,
@@ -52,7 +53,9 @@ export class AccountService {
         loggedIn: state.loggedIn,
         statusDetail: state.statusDetail,
         checkedAt: state.checkedAt,
-        percent: state.percent,
+        percent: usage?.percent ?? null,
+        usageWindow: usage?.window || '',
+        usageWindows: Object.entries(state.usageWindows || {}).flatMap(([window, reading]) => reading.resetsAt && reading.resetsAt * 1000 <= now ? [] : [{ window, ...reading }]),
         percentAt: state.percentAt,
         resetsAt: state.resetsAt,
         cooldownUntil: state.cooldownUntil > now ? state.cooldownUntil : 0,
@@ -79,6 +82,13 @@ export class AccountService {
     return `${prefix}${extra}${bin}`;
   }
 
+  currentUsage(account, now = Date.now()) {
+    const state = this.registry.stateOf(account.id);
+    if (account.provider === 'claude-code' && (!state.usageWindow || now - state.percentAt >= USAGE_FRESH_MS)) return null;
+    if (state.resetsAt && state.resetsAt * 1000 <= now) return null;
+    return { percent: state.percent, window: state.usageWindow };
+  }
+
   availability(account, now = Date.now()) {
     const state = this.registry.stateOf(account.id);
     if (!account.enabled) return { ok: false, reason: 'Desativada' };
@@ -86,7 +96,7 @@ export class AccountService {
     if (state.cooldownUntil > now) return { ok: false, reason: 'Aguardando a janela de uso', until: state.cooldownUntil };
     if (this.busy.has(account.id)) return { ok: false, reason: 'Em uso por outra execução', until: now + 60 * 1000 };
     const fresh = state.percentAt && now - state.percentAt < USAGE_FRESH_MS && (!state.resetsAt || state.resetsAt * 1000 > now);
-    if (fresh && state.percent != null && state.percent >= this.registry.rotation.switchAtPercent) {
+    if (fresh && this.currentUsage(account, now)?.percent >= this.registry.rotation.switchAtPercent) {
       return { ok: false, reason: `Uso em ${Math.round(state.percent)}%`, until: state.resetsAt ? state.resetsAt * 1000 : 0 };
     }
     return { ok: true, reason: '' };
@@ -155,8 +165,11 @@ export class AccountService {
     this.emit('accounts-changed', {});
   }
 
-  async recordUsage(id, percent, resetsAt = 0) {
-    Object.assign(this.registry.stateOf(id), { percent, resetsAt, percentAt: Date.now() });
+  async recordUsage(id, percent, resetsAt = 0, usageWindow = '', windows = null) {
+    const state = this.registry.stateOf(id);
+    const now = Date.now();
+    Object.assign(state, { percent, resetsAt, usageWindow, percentAt: now });
+    if (windows) state.usageWindows = { ...state.usageWindows, ...Object.fromEntries(Object.entries(windows).map(([key, value]) => [key, { ...value, updatedAt: now }])) };
     await this.registry.saveState();
     this.emit('accounts-changed', {});
   }
@@ -191,7 +204,7 @@ export class AccountService {
     state.lastUsedAt = Date.now();
     this.emit('accounts-changed', {});
     const handleEvent = (event) => {
-      if (event.type === 'usage' && account.provider !== 'codex') this.recordUsage(account.id, event.percent, event.resetsAt).catch(() => {});
+      if (event.type === 'usage' && account.provider !== 'codex') this.recordUsage(account.id, event.percent, event.resetsAt, event.window, event.windows).catch(() => {});
       if (event.type === 'session' && account.primary) this.onOrchestratedThread(event.sessionId);
       onEvent(event);
     };

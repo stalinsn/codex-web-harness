@@ -48,6 +48,8 @@ const resultText = (content) => (typeof content === 'string' ? content : Array.i
 
 function claudeParser() {
   let messageId = 'm0';
+  const streamedText = new Map();
+  const completedText = new Set();
   return function parseClaude(line) {
     let event;
     try { event = JSON.parse(line); } catch { return [{ type: 'text', text: line, key: `raw:${Math.random()}` }]; }
@@ -60,7 +62,10 @@ function claudeParser() {
         if (inner.type === 'message_start' && inner.message?.id) messageId = inner.message.id;
         if (inner.type !== 'content_block_delta') return [];
         const key = `${messageId}:${inner.index ?? 0}`;
-        if (inner.delta?.type === 'text_delta' && inner.delta.text) return [{ type: 'text', text: inner.delta.text, key, delta: true }];
+        if (inner.delta?.type === 'text_delta' && inner.delta.text) {
+          streamedText.set(key, (streamedText.get(key) || '') + inner.delta.text);
+          return [{ type: 'text', text: inner.delta.text, key, delta: true }];
+        }
         if (inner.delta?.type === 'thinking_delta' && inner.delta.thinking) return [{ type: 'reasoning', text: inner.delta.thinking, key, delta: true }];
         return [];
       }
@@ -70,7 +75,14 @@ function claudeParser() {
         return content.flatMap((block, index) => {
           if (!block || typeof block !== 'object') return [];
           const key = `${id}:${index}`;
-          if (block.type === 'text' && block.text) return [{ type: 'text', text: block.text, key }];
+          if (block.type === 'text' && block.text) {
+            const matchingStream = [...streamedText].find(([streamKey, text]) =>
+              (streamKey.startsWith(`${id}:`) || streamKey.startsWith(`${messageId}:`))
+              && !completedText.has(streamKey) && text === block.text);
+            const textKey = streamedText.get(key) === block.text ? key : matchingStream?.[0] || key;
+            completedText.add(textKey);
+            return [{ type: 'text', text: block.text, key: textKey }];
+          }
           if (block.type === 'thinking' && block.thinking) return [{ type: 'reasoning', text: block.thinking, key }];
           if (block.type === 'tool_use') return [{ type: 'tool', id: block.id || key, name: block.name, input: block.input || {}, detail: short(block.input?.command || block.input?.file_path || block.input) }];
           return [];
@@ -83,9 +95,17 @@ function claudeParser() {
       case 'rate_limit_event': {
         const info = event.rate_limit_info || {};
         const resetsAt = Number(info.resetsAt) || 0;
-        if (/rate_?limited|rejected|exceeded/i.test(String(info.status || ''))) return [{ type: 'rate-limit', resetsAt, message: `Limite da assinatura (${info.rateLimitType || 'uso'})` }];
-        const percent = percentOf(info.utilization);
-        return percent == null ? [] : [{ type: 'usage', percent, resetsAt }];
+        const windows = {};
+        for (const [window, reading] of Object.entries({ [info.rateLimitType || '']: info, ...info.unifiedWindows })) {
+          const raw = reading?.utilization;
+          if (window && typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
+            windows[window] = { percent: Math.min(100, Math.round(raw * 1000) / 10), resetsAt: Number(reading.resetsAt) || 0 };
+          }
+        }
+        const primary = windows[info.rateLimitType] || windows.five_hour || Object.values(windows)[0];
+        const out = primary ? [{ type: 'usage', percent: primary.percent, resetsAt: primary.resetsAt, window: Object.keys(windows).find((key) => windows[key] === primary), windows }] : [];
+        if (/rate_?limited|rejected|exceeded/i.test(String(info.status || ''))) out.push({ type: 'rate-limit', resetsAt, message: `Limite da assinatura (${info.rateLimitType || 'uso'})` });
+        return out;
       }
       case 'result': {
         const text = String(event.result || '');
